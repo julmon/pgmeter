@@ -18,8 +18,10 @@ use itoa;
 use ryu;
 
 mod benchmark;
+mod benchmark_wrapper;
 mod txmessage;
 mod tpcc;
+mod tpciot;
 mod terminal;
 mod data_agg;
 
@@ -544,13 +546,8 @@ impl Executor {
         }
     }
 
-    fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> impl Benchmark {
-        let benchmark = match self.benchmark_type.as_str() {
-            "tpcc" => tpcc::TPCC::new(scalefactor, min_id, max_id),
-            _ => tpcc::TPCC::new(scalefactor, min_id, max_id),
-        };
-
-        benchmark
+    fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> benchmark_wrapper::BenchmarkWrapper {
+        benchmark_wrapper::BenchmarkWrapper::new(&self.benchmark_type, scalefactor, min_id, max_id)
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs

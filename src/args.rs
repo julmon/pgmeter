@@ -115,12 +115,12 @@ impl PgMtrArgs {
     {
 
         // Global options
-        // Define the global --host/-h command line option
+        // Define the global --host/-H command line option
         let host_option = Arg::new("host")
             .long("host") // allow --host
             .action(ArgAction::Set)
             .env("PGHOST")
-            .short('h') // allow -h
+            .short('H') // allow -H
             .help("Database server host or socket directory")
             .required(false)
             .value_name("HOSTNAME")
@@ -238,6 +238,15 @@ impl PgMtrArgs {
         // run tpcc <OPTIONS>
         let run_tpcc = Command::new("tpcc")
             .about("Run TPC-C-like benchmark")
+            .arg(client_option.clone())
+            .arg(time_option.clone())
+            .arg(rampup_option.clone())
+            .arg(min_id_option.clone())
+            .arg(max_id_option.clone());
+
+        // run tpciot <OPTIONS>
+        let run_tpciot = Command::new("tpciot")
+            .about("Run TPCx-IoT-like benchmark")
             .arg(client_option)
             .arg(time_option)
             .arg(rampup_option)
@@ -247,6 +256,13 @@ impl PgMtrArgs {
         // init tpcc <OPTIONS>
         let init_tpcc = Command::new("tpcc")
             .about("Initialize TPC-C-like benchmark data")
+            .arg(scalefactor_option.clone())
+            .arg(jobs_option.clone())
+            .arg(no_fkey_option.clone());
+
+        // init tpciot <OPTIONS>
+        let init_tpciot = Command::new("tpciot")
+            .about("Initialize TPCx-IoT-like benchmark data")
             .arg(scalefactor_option)
             .arg(jobs_option)
             .arg(no_fkey_option);
@@ -256,14 +272,16 @@ impl PgMtrArgs {
             .about("Initialize benchmark data")
             .arg_required_else_help(true)
             .subcommand_required(true)
-            .subcommand(init_tpcc);
+            .subcommand(init_tpcc)
+            .subcommand(init_tpciot);
 
         // run <SUBCOMMAND> <OPTIONS>
         let run = Command::new("run")
             .about("Run benchmark")
             .arg_required_else_help(true)
             .subcommand_required(true)
-            .subcommand(run_tpcc);
+            .subcommand(run_tpcc)
+            .subcommand(run_tpciot);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -302,34 +320,60 @@ impl PgMtrArgs {
         // Convert port ton u16
         let port = parse_string_arg_to_u16(port_str, "invalid port number".to_string())?;
 
+        // Helper function to parse init subcommand arguments
+        fn parse_init_args(init_m: &clap::ArgMatches, benchmark_name: &str) -> Result<(RunArgs, InitArgs, String), clap::Error> {
+            let (scalefactor, jobs, no_fkey) = match init_m.subcommand_matches(benchmark_name) {
+                Some(bm_m) => {
+                    let scalefactor_str = bm_m
+                        .get_one::<String>("scalefactor")
+                        .unwrap();
+                    let jobs_str = bm_m
+                        .get_one::<String>("jobs")
+                        .unwrap();
+                    let no_fkey = bm_m.get_flag("no_fkey");
+
+                    let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
+                    let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
+
+                    (scalefactor, jobs, no_fkey)
+                },
+                _ => (0, 0, false)
+            };
+
+            Ok((RunArgs::empty(), InitArgs {scalefactor, jobs, no_fkey}, benchmark_name.to_string()))
+        }
+
+        // Helper function to parse run subcommand arguments
+        fn parse_run_args(run_m: &clap::ArgMatches, benchmark_name: &str) -> Result<(RunArgs, InitArgs, String), clap::Error> {
+            let (client, time, rampup, min_id, max_id) = match run_m.subcommand_matches(benchmark_name) {
+                Some(bm_m) => {
+                    let client_str = bm_m.get_one::<String>("client").unwrap();
+                    let time_str = bm_m.get_one::<String>("time").unwrap();
+                    let rampup_str = bm_m.get_one::<String>("rampup").unwrap();
+                    let min_id_str = bm_m.get_one::<String>("min_id").unwrap();
+                    let max_id_str = bm_m.get_one::<String>("max_id").unwrap();
+
+                    let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
+                    let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
+                    let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
+                    let min_id = parse_string_arg_to_u32(min_id_str, "invalid min ID value".to_string())?;
+                    let max_id = parse_string_arg_to_u32(max_id_str, "invalid end id value".to_string())?;
+
+                    (client, time, rampup, min_id, max_id)
+                },
+                _ => (0, 0, 0, 0, 0),
+            };
+
+            Ok((RunArgs {client, time, rampup, min_id, max_id}, InitArgs::empty(), benchmark_name.to_string()))
+        }
+
         // Extract subcommand options
         let (run_args, init_args, action, benchmark_type) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
                 let (run_args, init_args, benchmark_type) = match init_m.subcommand_name() {
-                    Some("tpcc") => {
-                        let (scalefactor, jobs, no_fkey) = match init_m.subcommand_matches("tpcc") {
-                            Some(tpcc_m) => {
-                                let scalefactor_str = tpcc_m
-                                    .get_one::<String>("scalefactor")
-                                    .unwrap();
-                                let jobs_str = tpcc_m
-                                    .get_one::<String>("jobs")
-                                    .unwrap();
-                                let no_fkey = tpcc_m.get_flag("no_fkey");
-
-                                // Convert scalefactor to u32
-                                let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
-                                // Convert jobs to u32
-                                let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
-
-                                (scalefactor, jobs, no_fkey)
-                            },
-                            _ => (0, 0, false)
-                        };
-
-                        (RunArgs::empty(), InitArgs {scalefactor: scalefactor, jobs: jobs, no_fkey: no_fkey}, "tpcc".to_string())
-                    },
+                    Some("tpcc") => parse_init_args(init_m, "tpcc")?,
+                    Some("tpciot") => parse_init_args(init_m, "tpciot")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };
 
@@ -338,42 +382,8 @@ impl PgMtrArgs {
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
                 let (run_args, init_args, benchmark_type) = match run_m.subcommand_name() {
-                    Some("tpcc") => {
-                        let (client, time, rampup, min_id, max_id) = match run_m.subcommand_matches("tpcc") {
-                            Some(tpcc_m) => {
-                                let client_str = tpcc_m
-                                    .get_one::<String>("client")
-                                    .unwrap();
-                                let time_str = tpcc_m
-                                    .get_one::<String>("time")
-                                    .unwrap();
-                                let rampup_str = tpcc_m
-                                    .get_one::<String>("rampup")
-                                    .unwrap();
-                                let min_id_str = tpcc_m
-                                    .get_one::<String>("min_id")
-                                    .unwrap();
-                                let max_id_str = tpcc_m
-                                    .get_one::<String>("max_id")
-                                    .unwrap();
-                                // Convert client to u16
-                                let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
-                                // Convert time to u16
-                                let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
-                                // Convert rampup to u16
-                                let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
-                                // Convert min_id to u32
-                                let min_id = parse_string_arg_to_u32(min_id_str, "invalid min ID value".to_string())?;
-                                // Convert max_id to u32
-                                let max_id = parse_string_arg_to_u32(max_id_str, "invalid end id value".to_string())?;
-
-                                (client, time, rampup, min_id, max_id)
-                            },
-                            _ => (0, 0, 0, 0, 0),
-                        };
-
-                        (RunArgs {client: client, time: time, rampup: rampup, min_id: min_id, max_id: max_id}, InitArgs::empty(), "tpcc".to_string())
-                    },
+                    Some("tpcc") => parse_run_args(run_m, "tpcc")?,
+                    Some("tpciot") => parse_run_args(run_m, "tpciot")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };
 
