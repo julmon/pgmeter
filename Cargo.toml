@@ -21,9 +21,10 @@ itertools = "0.10.5"
 tabled = "0.10.0"
 ryu = "1.0"
 itoa = "1.0"
+num_cpus = "1.16"
 polars = { version = "0.26.1", features =["lazy", "temporal", "streaming", "fmt", "describe"] }
 
-#[profile.release]
-#strip = true
-#opt-level = "z"
-#lto = true
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

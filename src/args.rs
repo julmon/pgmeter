@@ -244,6 +244,15 @@ impl PgMtrArgs {
             .arg(min_id_option.clone())
             .arg(max_id_option.clone());
 
+        // run tpcb <OPTIONS>
+        let run_tpcb = Command::new("tpcb")
+            .about("Run TPC-B benchmark (banking debit/credit)")
+            .arg(client_option.clone())
+            .arg(time_option.clone())
+            .arg(rampup_option.clone())
+            .arg(min_id_option.clone())
+            .arg(max_id_option.clone());
+
         // run tpciot <OPTIONS>
         let run_tpciot = Command::new("tpciot")
             .about("Run TPCx-IoT-like benchmark")
@@ -256,6 +265,13 @@ impl PgMtrArgs {
         // init tpcc <OPTIONS>
         let init_tpcc = Command::new("tpcc")
             .about("Initialize TPC-C-like benchmark data")
+            .arg(scalefactor_option.clone())
+            .arg(jobs_option.clone())
+            .arg(no_fkey_option.clone());
+
+        // init tpcb <OPTIONS>
+        let init_tpcb = Command::new("tpcb")
+            .about("Initialize TPC-B benchmark data (banking debit/credit)")
             .arg(scalefactor_option.clone())
             .arg(jobs_option.clone())
             .arg(no_fkey_option.clone());
@@ -273,6 +289,7 @@ impl PgMtrArgs {
             .arg_required_else_help(true)
             .subcommand_required(true)
             .subcommand(init_tpcc)
+            .subcommand(init_tpcb)
             .subcommand(init_tpciot);
 
         // run <SUBCOMMAND> <OPTIONS>
@@ -281,6 +298,7 @@ impl PgMtrArgs {
             .arg_required_else_help(true)
             .subcommand_required(true)
             .subcommand(run_tpcc)
+            .subcommand(run_tpcb)
             .subcommand(run_tpciot);
 
         // Basic app information
@@ -373,6 +391,7 @@ impl PgMtrArgs {
                 let init_m = matches.subcommand_matches("init").unwrap();
                 let (run_args, init_args, benchmark_type) = match init_m.subcommand_name() {
                     Some("tpcc") => parse_init_args(init_m, "tpcc")?,
+                    Some("tpcb") => parse_init_args(init_m, "tpcb")?,
                     Some("tpciot") => parse_init_args(init_m, "tpciot")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };
@@ -383,6 +402,7 @@ impl PgMtrArgs {
                 let run_m = matches.subcommand_matches("run").unwrap();
                 let (run_args, init_args, benchmark_type) = match run_m.subcommand_name() {
                     Some("tpcc") => parse_run_args(run_m, "tpcc")?,
+                    Some("tpcb") => parse_run_args(run_m, "tpcb")?,
                     Some("tpciot") => parse_run_args(run_m, "tpciot")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };

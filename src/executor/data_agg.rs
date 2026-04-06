@@ -21,12 +21,48 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
 
     // Produce aggregated data for each type of transaction
     for transaction in transactions {
-        // Calculate transaction throughput: number of transaction over a period of time
-        let mut tpm_df = df
+        // Filter data for this transaction type
+        let filtered_df = df
             .clone()
-            .filter(
-                col("column_3").eq(transaction.id as i64)
-            )
+            .filter(col("column_3").eq(transaction.id as i64));
+
+        // Check if there's any data for this transaction
+        let count_df = filtered_df.clone().select([col("column_3").count()]).collect()?;
+        let count: u32 = count_df.column("column_3")
+            .ok()
+            .and_then(|c| c.get(0).ok())
+            .and_then(|v| v.try_extract::<u32>().ok())
+            .unwrap_or(0);
+
+        if count == 0 {
+            // No data for this transaction - create empty files
+            let empty_tpm = DataFrame::new(vec![
+                Series::new("time_s", Vec::<i64>::new()),
+                Series::new("tpm", Vec::<i64>::new()),
+            ])?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", transaction.name)))?;
+            CsvWriter::new(&mut file).finish(&mut empty_tpm.clone())?;
+
+            let empty_rt = DataFrame::new(vec![
+                Series::new("time_s", Vec::<i64>::new()),
+                Series::new("response_time_ms", Vec::<f64>::new()),
+            ])?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", transaction.name)))?;
+            CsvWriter::new(&mut file).finish(&mut empty_rt.clone())?;
+
+            let empty_stats = DataFrame::new(vec![
+                Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
+                Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ])?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name)))?;
+            CsvWriter::new(&mut file).finish(&mut empty_stats.clone())?;
+
+            continue;
+        }
+
+        // Calculate transaction throughput: number of transaction over a period of time
+        let mut tpm_df = filtered_df
+            .clone()
             // Group by timestamp (in second) and transaction_id
             .groupby([col("column_1"), col("column_3")])
             // We want to calculate the number of transaction per minute
@@ -43,11 +79,8 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
         CsvWriter::new(&mut file).finish(&mut tpm_df)?;
 
         // Calculate the average (mean) response time over a period of time
-        let mut response_time_df = df
+        let mut response_time_df = filtered_df
             .clone()
-            .filter(
-                col("column_3").eq(transaction.id as i64)
-            )
             // Group by timestamp (in second) and transaction_id
             .groupby([col("column_1"), col("column_3")])
             .agg([col("column_4").mean()])
@@ -59,17 +92,25 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
             .collect()?;
 
         // Response times statistics
-        let mut stats = df
+        let stats_result = filtered_df
             .clone()
-            .filter(
-                col("column_3").eq(transaction.id as i64)
-            )
-            .select([
-                col("column_4").alias("response_time_ms"),
-            ])
-            .collect()?
-            .describe(Some(&[0.95, 0.99]))
-            .select(["describe", "response_time_ms"])?;
+            .select([col("column_4").alias("response_time_ms")])
+            .collect();
+
+        let mut stats = match stats_result {
+            Ok(stats_df) => {
+                stats_df.describe(Some(&[0.95, 0.99]))
+                    .select(["describe", "response_time_ms"])
+                    .unwrap_or_else(|_| DataFrame::new(vec![
+                        Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
+                        Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                    ]).unwrap())
+            },
+            Err(_) => DataFrame::new(vec![
+                Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
+                Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ])?,
+        };
 
         // Save data as a CSV file
         let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", transaction.name)))?;
@@ -115,21 +156,43 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
             percentile_95: 0.0,
             percentile_99: 0.0,
         };
-        
-        let df = LazyCsvReader::new(target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name)))
+
+        let stats_file = target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name));
+
+        // Check if stats file exists and has data
+        if !stats_file.exists() {
+            stats_map.insert(transaction.id, stats);
+            continue;
+        }
+
+        let df = match LazyCsvReader::new(&stats_file)
             .with_delimiter(b',')
             .has_header(true)
-            .finish()?;
+            .finish() {
+                Ok(df) => df,
+                Err(_) => {
+                    stats_map.insert(transaction.id, stats);
+                    continue;
+                }
+            };
 
         for label in labels.iter() {
-
-            let row = df
+            let row = match df
                 .clone()
                 .filter(col("describe").eq(lit(*label)))
                 .first()
                 .select([col("response_time_ms")])
-                .collect()?;
-            let value: f64 = row.column("response_time_ms")?.get(0)?.try_extract::<f64>()?;
+                .collect() {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+
+            // Try to extract the value, defaulting to 0.0 if it fails
+            let value: f64 = row.column("response_time_ms")
+                .ok()
+                .and_then(|col| col.get(0).ok())
+                .and_then(|v| v.try_extract::<f64>().ok())
+                .unwrap_or(0.0);
 
             match *label {
                 "mean" => {
@@ -153,7 +216,7 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
                 &_ => (),
             }
         }
-        stats_map.insert(transaction.id, stats); 
+        stats_map.insert(transaction.id, stats);
     }
 
     Ok(stats_map)

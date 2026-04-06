@@ -14,7 +14,9 @@ use super::benchmark::{
     Benchmark,
     BenchmarkStmt,
     BenchmarkTransaction,
+    PreparedStatements,
     ReadWrite,
+    ReadWriteSync,
 };
 
 // TPC-C like benchmark
@@ -1754,5 +1756,393 @@ impl Benchmark for TPCC {
 
     fn get_vacuum_stmts(&self) -> Vec<BenchmarkStmt> {
         self.vacuum_stmts.clone()
+    }
+}
+
+/// Synchronous implementation for high-performance TPC-C execution
+impl ReadWriteSync for TPCC {
+    fn supports_sync(&self) -> bool {
+        true
+    }
+
+    fn prepare_statements(&self, _client: &mut Client) -> Result<PreparedStatements, postgres::Error> {
+        // TPC-C uses simple protocol for fixed queries
+        Ok(PreparedStatements::new())
+    }
+
+    fn execute_rw_transaction_sync(
+        &self,
+        client: &mut Client,
+        _prepared: &PreparedStatements,
+        transaction: &BenchmarkTransaction,
+    ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let warehouse_id: i32 = rand::thread_rng()
+            .gen_range(self.min_id..=self.max_id) as i32;
+
+        match transaction.id {
+            1 => Self::delivery_sync(client, warehouse_id),
+            2 => Self::new_order_sync(client, warehouse_id, self.min_id, self.max_id),
+            3 => Self::payment_sync(client, warehouse_id, self.min_id, self.max_id),
+            4 => Self::order_status_sync(client, warehouse_id),
+            5 => Self::stock_level_sync(client, warehouse_id),
+            _ => Err("Unknown transaction".into()),
+        }
+    }
+}
+
+impl TPCC {
+    /// Synchronous Delivery transaction
+    fn delivery_sync(client: &mut Client, warehouse_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let carrier_id: i32 = rand::thread_rng().gen_range(1..=10);
+        let start = Instant::now();
+
+        let mut tx = client.transaction()?;
+
+        for district_id in 1..=10 {
+            // Get oldest new order
+            let rows = tx.query(
+                "SELECT no_o_id FROM new_order WHERE no_w_id = $1 AND no_d_id = $2 ORDER BY no_o_id ASC LIMIT 1",
+                &[&warehouse_id, &district_id]
+            )?;
+
+            if rows.is_empty() {
+                continue;
+            }
+            let order_id: i32 = rows[0].get(0);
+
+            // Delete from new_order
+            tx.execute(
+                "DELETE FROM new_order WHERE no_o_id = $1 AND no_w_id = $2 AND no_d_id = $3",
+                &[&order_id, &warehouse_id, &district_id]
+            )?;
+
+            // Update orders and get customer_id
+            let rows = tx.query(
+                "UPDATE orders SET o_carrier_id = $1 WHERE o_id = $2 AND o_w_id = $3 AND o_d_id = $4 RETURNING o_c_id",
+                &[&carrier_id, &order_id, &warehouse_id, &district_id]
+            )?;
+            let customer_id: i32 = rows[0].get(0);
+
+            // Update order_line delivery date
+            tx.execute(
+                "UPDATE order_line SET ol_delivery_d = current_timestamp WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
+                &[&order_id, &warehouse_id, &district_id]
+            )?;
+
+            // Get total amount
+            let rows = tx.query(
+                "SELECT SUM(ol_amount * ol_quantity) FROM order_line WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
+                &[&order_id, &warehouse_id, &district_id]
+            )?;
+            let total_amount: f64 = rows[0].get(0);
+
+            // Update customer
+            tx.execute(
+                "UPDATE customer SET c_delivery_cnt = c_delivery_cnt + 1, c_balance = c_balance + $1 WHERE c_id = $2 AND c_w_id = $3 AND c_d_id = $4",
+                &[&total_amount, &customer_id, &warehouse_id, &district_id]
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous New-Order transaction
+    fn new_order_sync(client: &mut Client, warehouse_id: i32, min_id: u32, max_id: u32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let district_id: i32 = rand::thread_rng().gen_range(1..=10);
+        let customer_id: i32 = rand::thread_rng().gen_range(1..=3000);
+        let ol_cnt: i32 = rand::thread_rng().gen_range(5..=15);
+        let mut ol_all_local: i32 = 1;
+
+        // Build order lines data
+        let mut order_lines: Vec<(i32, i32, i32, i32)> = Vec::with_capacity(ol_cnt as usize);
+        let mut item_ids: Vec<i32> = Vec::with_capacity(ol_cnt as usize);
+
+        let rbk: i32 = rand::thread_rng().gen_range(1..=100);
+
+        for ol_number in 1..=ol_cnt {
+            let mut ol_supply_w_id = warehouse_id;
+            let ol_quantity: i32 = rand::thread_rng().gen_range(1..=10);
+
+            // Generate unique item id
+            let mut ol_i_id: i32;
+            loop {
+                ol_i_id = rand::thread_rng().gen_range(1..=100_000);
+                if !item_ids.contains(&ol_i_id) {
+                    item_ids.push(ol_i_id);
+                    break;
+                }
+            }
+
+            // 1% rollback with invalid item
+            if rbk == 1 && ol_number == ol_cnt {
+                ol_i_id = 999_999;
+            }
+
+            // Remote warehouse 1% of the time
+            if (max_id - min_id) > 0 && rand::thread_rng().gen_range(1..=100) == 1 {
+                ol_all_local = 0;
+                while ol_supply_w_id == warehouse_id {
+                    ol_supply_w_id = rand::thread_rng().gen_range(min_id as i32..=max_id as i32);
+                }
+            }
+
+            order_lines.push((ol_number, ol_supply_w_id, ol_quantity, ol_i_id));
+        }
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Get warehouse tax
+        tx.query("SELECT w_tax FROM warehouse WHERE w_id = $1", &[&warehouse_id])?;
+
+        // Get next order id and district tax
+        let rows = tx.query(
+            "UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = $1 AND d_id = $2 RETURNING d_tax, d_next_o_id",
+            &[&warehouse_id, &district_id]
+        )?;
+        let o_id: i32 = rows[0].get::<_, i32>(1) - 1;
+
+        // Get customer info
+        tx.query(
+            "SELECT c_discount, c_last, c_credit FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3",
+            &[&warehouse_id, &district_id, &customer_id]
+        )?;
+
+        // Insert order
+        tx.execute(
+            "INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_ol_cnt, o_all_local) VALUES ($1, $2, $3, $4, NOW(), $5, $6)",
+            &[&o_id, &district_id, &warehouse_id, &customer_id, &ol_cnt, &ol_all_local]
+        )?;
+
+        // Insert new_order
+        tx.execute(
+            "INSERT INTO new_order (no_o_id, no_d_id, no_w_id) VALUES ($1, $2, $3)",
+            &[&o_id, &district_id, &warehouse_id]
+        )?;
+
+        // Build stock query for this district
+        let stock_query = format!(
+            "SELECT s_quantity, s_dist_{:02}, s_data FROM stock WHERE s_i_id = $1 AND s_w_id = $2",
+            district_id
+        );
+
+        for (ol_number, ol_supply_w_id, ol_quantity, ol_i_id) in order_lines {
+            // Get item info
+            let rows = tx.query("SELECT i_price, i_name, i_data FROM item WHERE i_id = $1", &[&ol_i_id])?;
+
+            if rows.is_empty() {
+                tx.rollback()?;
+                return Err("New-order rollback: item not found".into());
+            }
+
+            let i_price: f32 = rows[0].get(0);
+            let ol_amount = i_price * ol_quantity as f32;
+
+            // Get stock info
+            let rows = tx.query(&stock_query, &[&ol_i_id, &ol_supply_w_id])?;
+            let mut s_quantity: i32 = rows[0].get(0);
+            let s_dist: String = rows[0].get(1);
+
+            // Update stock quantity
+            if s_quantity - ol_quantity > 10 {
+                s_quantity -= ol_quantity;
+            } else {
+                s_quantity = s_quantity - ol_quantity + 91;
+            }
+
+            let s_remote_cnt_inc: f32 = if ol_supply_w_id != warehouse_id { 1.0 } else { 0.0 };
+
+            tx.execute(
+                "UPDATE stock SET s_quantity = $3, s_ytd = s_ytd + $4::FLOAT, s_order_cnt = s_order_cnt + 1, s_remote_cnt = s_remote_cnt + $5 WHERE s_i_id = $1 AND s_w_id = $2",
+                &[&ol_i_id, &ol_supply_w_id, &s_quantity, &ol_quantity, &s_remote_cnt_inc]
+            )?;
+
+            // Insert order_line
+            tx.execute(
+                "INSERT INTO order_line (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_dist_info) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                &[&o_id, &district_id, &warehouse_id, &ol_number, &ol_i_id, &ol_supply_w_id, &ol_quantity, &ol_amount, &s_dist]
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Payment transaction
+    fn payment_sync(client: &mut Client, warehouse_id: i32, min_id: u32, max_id: u32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let x: u8 = rand::thread_rng().gen_range(1..=100);
+        let y: u8 = rand::thread_rng().gen_range(1..=100);
+        let district_id: i32 = rand::thread_rng().gen_range(1..=10);
+
+        let (c_d_id, c_w_id) = if x <= 85 {
+            (district_id, warehouse_id)
+        } else {
+            let c_d_id = rand::thread_rng().gen_range(1..=10);
+            let c_w_id = if (max_id - min_id) > 0 {
+                let mut w = warehouse_id;
+                while w == warehouse_id {
+                    w = rand::thread_rng().gen_range(min_id as i32..=max_id as i32);
+                }
+                w
+            } else {
+                warehouse_id
+            };
+            (c_d_id, c_w_id)
+        };
+
+        let mut c_id: i32 = rand::thread_rng().gen_range(1..=3000);
+        let c_last = if y <= 60 {
+            Some(TPCC::gen_last(rand::thread_rng().gen_range(1..=1000)))
+        } else {
+            None
+        };
+
+        let h_amount: f32 = rand::thread_rng().gen_range(1.00..=5000.00);
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Update warehouse
+        let rows = tx.query(
+            "UPDATE warehouse SET w_ytd = w_ytd + $1::FLOAT WHERE w_id = $2 RETURNING w_name",
+            &[&h_amount, &warehouse_id]
+        )?;
+        let w_name: String = rows[0].get(0);
+
+        // Update district
+        let rows = tx.query(
+            "UPDATE district SET d_ytd = d_ytd + $1::FLOAT WHERE d_w_id = $2 AND d_id = $3 RETURNING d_name",
+            &[&h_amount, &warehouse_id, &district_id]
+        )?;
+        let d_name: String = rows[0].get(0);
+
+        // Find customer by last name if needed
+        if let Some(ref last) = c_last {
+            let rows = tx.query(
+                "SELECT c_id FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_last = $3 ORDER BY c_first ASC",
+                &[&c_w_id, &c_d_id, last]
+            )?;
+            if rows.is_empty() {
+                tx.rollback()?;
+                return Err("Payment rollback: customer not found".into());
+            }
+            c_id = rows[rows.len() / 2].get(0);
+        }
+
+        // Get customer credit
+        let rows = tx.query(
+            "SELECT c_credit FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3",
+            &[&c_w_id, &c_d_id, &c_id]
+        )?;
+        let c_credit: String = rows[0].get(0);
+
+        // Update customer based on credit type
+        if c_credit == "BC" {
+            let pre_c_data = format!("{} {} {} {} {} {}", c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount);
+            tx.execute(
+                "UPDATE customer SET c_balance = c_balance - $1::FLOAT, c_ytd_payment = c_ytd_payment + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+                &[&h_amount, &c_id, &c_d_id, &c_w_id, &pre_c_data]
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE customer SET c_balance = c_balance - $1::FLOAT, c_ytd_payment = c_ytd_payment + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+                &[&h_amount, &c_id, &c_d_id, &c_w_id]
+            )?;
+        }
+
+        // Insert history
+        tx.execute(
+            "INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) VALUES ($1, $2, $3, $4, $5, NOW(), $6, substring($7||'    '||$8, 1, 24))",
+            &[&c_id, &c_d_id, &c_w_id, &district_id, &warehouse_id, &h_amount, &w_name, &d_name]
+        )?;
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Order-Status transaction
+    fn order_status_sync(client: &mut Client, warehouse_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let y: u8 = rand::thread_rng().gen_range(1..=100);
+        let district_id: i32 = rand::thread_rng().gen_range(1..=10);
+
+        let mut c_id: i32 = rand::thread_rng().gen_range(1..=3000);
+        let c_last = if y <= 60 {
+            Some(TPCC::gen_last(rand::thread_rng().gen_range(1..=999)))
+        } else {
+            None
+        };
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Find customer by last name if needed
+        if let Some(ref last) = c_last {
+            let rows = tx.query(
+                "SELECT c_id FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_last = $3 ORDER BY c_first ASC",
+                &[&warehouse_id, &district_id, last]
+            )?;
+            if rows.is_empty() {
+                tx.rollback()?;
+                return Err("Order-status rollback: customer not found".into());
+            }
+            c_id = rows[rows.len() / 2].get(0);
+        }
+
+        // Get customer info
+        tx.query(
+            "SELECT c_balance, c_first, c_middle, c_last FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3",
+            &[&warehouse_id, &district_id, &c_id]
+        )?;
+
+        // Get last order
+        let rows = tx.query(
+            "SELECT o_id FROM orders WHERE o_w_id = $1 AND o_d_id = $2 AND o_c_id = $3 ORDER BY o_entry_d DESC LIMIT 1",
+            &[&warehouse_id, &district_id, &c_id]
+        )?;
+        let o_id: i32 = rows[0].get(0);
+
+        // Get order lines
+        tx.query(
+            "SELECT ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_delivery_d FROM order_line WHERE ol_w_id = $1 AND ol_d_id = $2 AND ol_o_id = $3",
+            &[&warehouse_id, &district_id, &o_id]
+        )?;
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Stock-Level transaction
+    fn stock_level_sync(client: &mut Client, warehouse_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let district_id: i32 = rand::thread_rng().gen_range(1..=10);
+        let threshold: i32 = rand::thread_rng().gen_range(10..=20);
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Get next order id
+        let rows = tx.query(
+            "SELECT d_next_o_id FROM district WHERE d_w_id = $1 AND d_id = $2",
+            &[&warehouse_id, &district_id]
+        )?;
+        let d_next_o_id: i32 = rows[0].get(0);
+
+        // Get distinct items from recent orders
+        let rows = tx.query(
+            "SELECT DISTINCT ol_i_id FROM order_line WHERE ol_w_id = $1 AND ol_d_id = $2 AND ol_o_id < $3 AND ol_o_id >= ($3 - 20)",
+            &[&warehouse_id, &district_id, &d_next_o_id]
+        )?;
+
+        // Check stock for each item
+        for row in rows {
+            let ol_i_id: i32 = row.get(0);
+            tx.query(
+                "SELECT s_quantity FROM stock WHERE s_w_id = $1 AND s_i_id = $2 AND s_quantity < $3",
+                &[&warehouse_id, &ol_i_id, &threshold]
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
     }
 }

@@ -1,9 +1,10 @@
 # pgmtr
 
-A next-generation PostgreSQL benchmarking tool written in Rust. pgmtr implements TPC-C-like and TPCx-IoT-like workloads to measure and analyze PostgreSQL database performance.
+A next-generation PostgreSQL benchmarking tool written in Rust. pgmtr implements TPC-B-like, TPC-C-like, and TPCx-IoT-like workloads to measure and analyze PostgreSQL database performance.
 
 ## Features
 
+- **TPC-B Benchmark**: Banking benchmark per official TPC-B specification (debit/credit transaction)
 - **TPC-C-like Benchmark**: Implements the standard TPC-C benchmark transactions (New-Order, Payment, Order-Status, Delivery, Stock-Level)
 - **TPCx-IoT-like Benchmark**: Implements IoT gateway workloads (Data-Ingestion, Scan-Query, Device-Query, Alert-Query, Threshold-Update)
 - **Concurrent Clients**: Support for multiple concurrent database connections
@@ -45,6 +46,53 @@ pgmtr uses PostgreSQL connection parameters similar to standard PostgreSQL tools
 The password can be provided via the `PGPASSWORD` environment variable.
 
 ## Benchmarks
+
+### TPC-B Benchmark
+
+TPC-B is a database benchmark based on the official TPC-B specification from the Transaction Processing Performance Council. It simulates a banking system performing debit/credit transactions.
+
+#### Schema (per TPC-B specification)
+
+- **branch**: Bank branches (1 per scale factor unit)
+- **teller**: Tellers belonging to branches (10 per branch)
+- **account**: Customer accounts (100,000 per branch)
+- **history**: Transaction history log (grows during benchmark)
+
+#### Initialize TPC-B Database
+
+```bash
+# Initialize with scale factor 10 (10 branches) using 4 parallel jobs
+pgmtr -H localhost -d benchmark init tpcb -s 10 -j 4
+
+# Initialize without foreign keys
+pgmtr init tpcb -s 10 -j 4 --no-fkey
+```
+
+#### Run TPC-B Benchmark
+
+```bash
+# Run with 8 clients for 60 seconds with 10 second ramp-up
+pgmtr -H localhost -d benchmark run tpcb -c 8 -T 60 -r 10
+
+# Run targeting specific branch range
+pgmtr run tpcb -c 16 -T 300 --min-id 1 --max-id 10
+```
+
+#### TPC-B Transaction (Debit/Credit)
+
+The benchmark executes a single transaction type per the TPC-B specification:
+
+1. Updates an account balance (debit or credit by delta amount)
+2. Selects the updated account balance
+3. Updates the teller balance
+4. Updates the branch balance
+5. Inserts a history record
+
+The scale factor determines the database size:
+- 1 branch = 10 tellers = 100,000 accounts
+- Each branch adds approximately 15 MB of data
+
+---
 
 ### TPC-C Benchmark
 
@@ -139,7 +187,7 @@ The scale factor determines the database size:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-s, --scalefactor` | 1 | Scale factor (warehouses for TPC-C, substations for TPCx-IoT) |
+| `-s, --scalefactor` | 1 | Scale factor (branches for TPC-B, warehouses for TPC-C, substations for TPCx-IoT) |
 | `-j, --jobs` | 1 | Number of parallel threads for data loading |
 | `--no-fkey` | false | Skip foreign key creation |
 
@@ -150,10 +198,26 @@ The scale factor determines the database size:
 | `-c, --client` | 1 | Number of concurrent database clients |
 | `-T, --time` | 1 | Duration of benchmark in seconds |
 | `-r, --rampup` | 0 | Ramp-up period in seconds (clients start gradually) |
-| `--min-id` | 1 | Minimum ID to target (warehouse/substation) |
+| `--min-id` | 1 | Minimum ID to target (branch/warehouse/substation) |
 | `--max-id` | 0 | Maximum ID (0 = auto-detect from data) |
 
 ## Example Workflows
+
+### TPC-B Example (Banking debit/credit test)
+
+```bash
+# Set connection password
+export PGPASSWORD='your_password'
+
+# Create a dedicated benchmark database
+psql -h localhost -U postgres -c "CREATE DATABASE benchmark;"
+
+# Initialize with 10 branches (1M accounts)
+pgmtr -H localhost -U postgres -d benchmark init tpcb -s 10 -j 4
+
+# Run a 2-minute benchmark with 8 clients
+pgmtr -H localhost -U postgres -d benchmark run tpcb -c 8 -T 120 -r 10
+```
 
 ### TPC-C Example
 
@@ -162,7 +226,7 @@ The scale factor determines the database size:
 export PGPASSWORD='your_password'
 
 # Create a dedicated benchmark database
-psql -H localhost -U postgres -c "CREATE DATABASE benchmark;"
+psql -h localhost -U postgres -c "CREATE DATABASE benchmark;"
 
 # Initialize with 5 warehouses
 pgmtr -H localhost -U postgres -d benchmark init tpcc -s 5 -j 4
@@ -247,6 +311,7 @@ src/
     ├── mod.rs                 # Benchmark executor
     ├── benchmark.rs           # Benchmark traits and types
     ├── benchmark_wrapper.rs   # Enum wrapper for multiple benchmarks
+    ├── tpcb.rs                # TPC-B implementation
     ├── tpcc.rs                # TPC-C implementation
     ├── tpciot.rs              # TPCx-IoT implementation
     ├── data_agg.rs            # Data aggregation and statistics

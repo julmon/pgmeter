@@ -14,7 +14,9 @@ use super::benchmark::{
     Benchmark,
     BenchmarkStmt,
     BenchmarkTransaction,
+    PreparedStatements,
     ReadWrite,
+    ReadWriteSync,
 };
 
 /// TPCx-IoT-like benchmark for PostgreSQL
@@ -257,9 +259,9 @@ impl TPCIoT {
                 BenchmarkStmt {
                     sql: "CREATE INDEX i_measurement_sensor ON measurement (m_sn_id, m_timestamp)".to_string(),
                 },
-                // Index for substation-level queries
+                // Covering index for scan query - enables index-only scan for substation aggregations
                 BenchmarkStmt {
-                    sql: "CREATE INDEX i_measurement_substation ON measurement (m_ss_id, m_timestamp)".to_string(),
+                    sql: "CREATE INDEX i_measurement_substation ON measurement (m_ss_id, m_timestamp) INCLUDE (m_sn_id, m_value)".to_string(),
                 },
                 // Index for unacknowledged alerts
                 BenchmarkStmt {
@@ -284,68 +286,82 @@ impl TPCIoT {
 
     /// Data Ingestion transaction - bulk insert of sensor measurements
     /// This is the primary workload representing IoT data stream ingestion
+    ///
+    /// OPTIMIZED: Uses a single INSERT with UNNEST to batch all measurements
+    /// instead of 100 individual INSERTs (reduces round-trips from 100+ to 3)
     pub async fn data_ingestion(conn: &mut PgConnection, substation_id: i32, _min_id: u32, _max_id: u32) -> Result<u128, Box<dyn std::error::Error>> {
         let start = Instant::now();
 
         // Calculate sensor ID range for this substation
         let sensor_base = (substation_id as i64 - 1) * SENSORS_PER_SUBSTATION as i64;
 
-        // Select a random sensor from this substation
+        // Pre-generate ALL random values before any await points (ThreadRng is not Send)
         let sensor_offset: i64 = rand::thread_rng().gen_range(0..SENSORS_PER_SUBSTATION as i64);
         let sensor_id = sensor_base + sensor_offset + 1;
 
-        let mut transaction = conn.begin().await?;
+        // Pre-generate all measurement data for the batch
+        let mut values: Vec<f64> = Vec::with_capacity(MEASUREMENT_BATCH_SIZE as usize);
+        let mut qualities: Vec<i32> = Vec::with_capacity(MEASUREMENT_BATCH_SIZE as usize);
+        let mut ms_offsets: Vec<i32> = Vec::with_capacity(MEASUREMENT_BATCH_SIZE as usize);
 
-        // Insert a batch of measurements using nextval() for concurrent-safe ID generation
-        for i in 0..MEASUREMENT_BATCH_SIZE {
-            // Generate realistic sensor value with some noise
-            let base_value: f64 = rand::thread_rng().gen_range(50.0..150.0);
-            let noise: f64 = rand::thread_rng().gen_range(-5.0..5.0);
-            let value = base_value + noise;
-
-            // Quality indicator (0-100, higher is better)
-            let quality: i32 = rand::thread_rng().gen_range(90..100);
-
-            // Use interval arithmetic for millisecond offset
-            let ms_offset = i * 10;
-
-            sqlx::query(r"
-                INSERT INTO measurement (m_id, m_sn_id, m_ss_id, m_timestamp, m_value, m_quality)
-                VALUES (nextval('measurement_id_seq'), $1, $2, NOW() + ($3 || ' milliseconds')::interval, $4, $5)
-            ")
-            .bind(sensor_id)
-            .bind(substation_id)
-            .bind(ms_offset.to_string())
-            .bind(value)
-            .bind(quality)
-            .execute(&mut transaction)
-            .await?;
+        {
+            // Scope the RNG so it's dropped before any await
+            let mut rng = rand::thread_rng();
+            for i in 0..MEASUREMENT_BATCH_SIZE {
+                let base_value: f64 = rng.gen_range(50.0..150.0);
+                let noise: f64 = rng.gen_range(-5.0..5.0);
+                values.push(base_value + noise);
+                qualities.push(rng.gen_range(90..100));
+                ms_offsets.push(i * 10);
+            }
         }
 
-        // Update sensor's last reading
-        let last_reading: f64 = rand::thread_rng().gen_range(50.0..150.0);
+        let last_reading = *values.last().unwrap_or(&100.0);
+
+        // Check for threshold violations before transaction (10% chance)
+        let create_alert: bool = rand::thread_rng().gen_range(1..=100) <= 10;
+        let alert_value: f64 = rand::thread_rng().gen_range(150.0..200.0);
+
+        let mut transaction = conn.begin().await?;
+
+        // OPTIMIZED: Single bulk INSERT using UNNEST to insert all measurements at once
         sqlx::query(r"
-            UPDATE sensor
-            SET sn_last_reading = $1, sn_last_reading_at = NOW()
-            WHERE sn_id = $2
+            INSERT INTO measurement (m_id, m_sn_id, m_ss_id, m_timestamp, m_value, m_quality)
+            SELECT
+                nextval('measurement_id_seq'),
+                $1,
+                $2,
+                NOW() + (ms_offset * interval '1 millisecond'),
+                value,
+                quality
+            FROM UNNEST($3::int[], $4::float8[], $5::int[]) AS t(ms_offset, value, quality)
         ")
+        .bind(sensor_id)
+        .bind(substation_id)
+        .bind(&ms_offsets)
+        .bind(&values)
+        .bind(&qualities)
+        .execute(&mut transaction)
+        .await?;
+
+        // Update sensor's last reading
+        sqlx::query(
+            "UPDATE sensor SET sn_last_reading = $1, sn_last_reading_at = NOW() WHERE sn_id = $2"
+        )
         .bind(last_reading)
         .bind(sensor_id)
         .execute(&mut transaction)
         .await?;
 
-        // Check for threshold violations and create alert if needed (10% chance)
-        if rand::thread_rng().gen_range(1..=100) <= 10 {
-            let alert_value: f64 = rand::thread_rng().gen_range(150.0..200.0);
+        // Create alert if threshold violation occurred
+        if create_alert {
             let threshold: f64 = 150.0;
-
             sqlx::query(r"
                 INSERT INTO alert (a_id, a_sn_id, a_ss_id, a_timestamp, a_type, a_value, a_threshold, a_acknowledged, a_acknowledged_at)
-                VALUES (nextval('alert_id_seq'), $1, $2, NOW(), $3, $4, $5, false, NULL)
+                VALUES (nextval('alert_id_seq'), $1, $2, NOW(), 'HIGH', $3, $4, false, NULL)
             ")
             .bind(sensor_id)
             .bind(substation_id)
-            .bind("HIGH")
             .bind(alert_value)
             .bind(threshold)
             .execute(&mut transaction)
@@ -840,5 +856,190 @@ impl Benchmark for TPCIoT {
 
     fn get_vacuum_stmts(&self) -> Vec<BenchmarkStmt> {
         self.vacuum_stmts.clone()
+    }
+}
+
+/// Synchronous implementation for high-performance TPCx-IoT execution
+impl ReadWriteSync for TPCIoT {
+    fn supports_sync(&self) -> bool {
+        true
+    }
+
+    fn prepare_statements(&self, _client: &mut Client) -> Result<PreparedStatements, postgres::Error> {
+        Ok(PreparedStatements::new())
+    }
+
+    fn execute_rw_transaction_sync(
+        &self,
+        client: &mut Client,
+        _prepared: &PreparedStatements,
+        transaction: &BenchmarkTransaction,
+    ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let substation_id: i32 = rand::thread_rng()
+            .gen_range(self.min_id..=self.max_id) as i32;
+
+        match transaction.id {
+            1 => Self::data_ingestion_sync(client, substation_id),
+            2 => Self::scan_query_sync(client, substation_id),
+            3 => Self::device_query_sync(client, substation_id),
+            4 => Self::alert_query_sync(client, substation_id),
+            5 => Self::threshold_update_sync(client, substation_id),
+            _ => Err("Unknown transaction".into()),
+        }
+    }
+}
+
+impl TPCIoT {
+    /// Synchronous Data Ingestion - bulk insert using simple protocol
+    fn data_ingestion_sync(client: &mut Client, substation_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let sensor_base = (substation_id as i64 - 1) * SENSORS_PER_SUBSTATION as i64;
+        let sensor_offset: i64 = rand::thread_rng().gen_range(0..SENSORS_PER_SUBSTATION as i64);
+        let sensor_id = sensor_base + sensor_offset + 1;
+
+        // Pre-generate measurement data
+        let mut values: Vec<f64> = Vec::with_capacity(MEASUREMENT_BATCH_SIZE as usize);
+        let mut qualities: Vec<i32> = Vec::with_capacity(MEASUREMENT_BATCH_SIZE as usize);
+
+        {
+            let mut rng = rand::thread_rng();
+            for _ in 0..MEASUREMENT_BATCH_SIZE {
+                let base_value: f64 = rng.gen_range(50.0..150.0);
+                let noise: f64 = rng.gen_range(-5.0..5.0);
+                values.push(base_value + noise);
+                qualities.push(rng.gen_range(90..100));
+            }
+        }
+
+        let last_reading = *values.last().unwrap_or(&100.0);
+        let create_alert = rand::thread_rng().gen_range(1..=100) <= 10;
+        let alert_value: f64 = rand::thread_rng().gen_range(150.0..200.0);
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Bulk insert using UNNEST - much faster than individual inserts
+        // Build arrays as SQL literals
+        let values_str: Vec<String> = values.iter().map(|v| format!("{:.4}", v)).collect();
+        let qualities_str: Vec<String> = qualities.iter().map(|q| q.to_string()).collect();
+        let offsets_str: Vec<String> = (0..MEASUREMENT_BATCH_SIZE).map(|i| (i * 10).to_string()).collect();
+
+        let sql = format!(
+            "INSERT INTO measurement (m_id, m_sn_id, m_ss_id, m_timestamp, m_value, m_quality) \
+             SELECT nextval('measurement_id_seq'), {0}, {1}, NOW() + (ms_offset * interval '1 millisecond'), value, quality \
+             FROM UNNEST(ARRAY[{2}]::int[], ARRAY[{3}]::float8[], ARRAY[{4}]::int[]) AS t(ms_offset, value, quality)",
+            sensor_id, substation_id,
+            offsets_str.join(","),
+            values_str.join(","),
+            qualities_str.join(",")
+        );
+        tx.batch_execute(&sql)?;
+
+        // Update sensor last reading
+        tx.execute(
+            "UPDATE sensor SET sn_last_reading = $1, sn_last_reading_at = NOW() WHERE sn_id = $2",
+            &[&last_reading, &sensor_id]
+        )?;
+
+        // Create alert if threshold violation (10% chance)
+        if create_alert {
+            let threshold: f64 = 150.0;
+            tx.execute(
+                "INSERT INTO alert (a_id, a_sn_id, a_ss_id, a_timestamp, a_type, a_value, a_threshold, a_acknowledged, a_acknowledged_at) \
+                 VALUES (nextval('alert_id_seq'), $1, $2, NOW(), 'HIGH', $3, $4, false, NULL)",
+                &[&sensor_id, &substation_id, &alert_value, &threshold]
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Scan Query
+    fn scan_query_sync(client: &mut Client, substation_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        tx.query(
+            "SELECT m_sn_id, AVG(m_value), MIN(m_value), MAX(m_value), COUNT(*) \
+             FROM measurement WHERE m_ss_id = $1 AND m_timestamp >= NOW() - INTERVAL '1 hour' \
+             GROUP BY m_sn_id ORDER BY AVG(m_value) DESC LIMIT 10",
+            &[&substation_id]
+        )?;
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Device Query
+    fn device_query_sync(client: &mut Client, substation_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let sensor_base = (substation_id as i64 - 1) * SENSORS_PER_SUBSTATION as i64;
+        let sensor_id = sensor_base + rand::thread_rng().gen_range(1..=SENSORS_PER_SUBSTATION as i64);
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Get sensor info
+        tx.query(
+            "SELECT sn_id, sn_type, sn_unit, sn_min_threshold, sn_max_threshold, sn_status, sn_last_reading, sn_last_reading_at \
+             FROM sensor WHERE sn_id = $1",
+            &[&sensor_id]
+        )?;
+
+        // Get recent measurements
+        tx.query(
+            "SELECT m_timestamp, m_value, m_quality FROM measurement \
+             WHERE m_sn_id = $1 AND m_timestamp >= NOW() - INTERVAL '15 minutes' \
+             ORDER BY m_timestamp DESC LIMIT 100",
+            &[&sensor_id]
+        )?;
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Alert Query
+    fn alert_query_sync(client: &mut Client, substation_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        // Get unacknowledged alerts
+        let rows = tx.query(
+            "SELECT a_id, a_sn_id, a_timestamp, a_type, a_value, a_threshold \
+             FROM alert WHERE a_ss_id = $1 AND a_acknowledged = false \
+             ORDER BY a_timestamp DESC LIMIT 20",
+            &[&substation_id]
+        )?;
+
+        // Acknowledge oldest alert if any exist
+        if !rows.is_empty() {
+            let alert_id: i64 = rows[rows.len() - 1].get(0);
+            tx.execute(
+                "UPDATE alert SET a_acknowledged = true, a_acknowledged_at = NOW() WHERE a_id = $1",
+                &[&alert_id]
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
+    }
+
+    /// Synchronous Threshold Update
+    fn threshold_update_sync(client: &mut Client, substation_id: i32) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+        let sensor_base = (substation_id as i64 - 1) * SENSORS_PER_SUBSTATION as i64;
+        let sensor_id = sensor_base + rand::thread_rng().gen_range(1..=SENSORS_PER_SUBSTATION as i64);
+
+        let new_min_threshold: f64 = rand::thread_rng().gen_range(5.0..15.0);
+        let new_max_threshold: f64 = rand::thread_rng().gen_range(145.0..155.0);
+
+        let start = Instant::now();
+        let mut tx = client.transaction()?;
+
+        tx.execute(
+            "UPDATE sensor SET sn_min_threshold = $1, sn_max_threshold = $2 WHERE sn_id = $3",
+            &[&new_min_threshold, &new_max_threshold, &sensor_id]
+        )?;
+
+        tx.commit()?;
+        Ok(start.elapsed().as_micros())
     }
 }

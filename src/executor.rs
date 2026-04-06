@@ -9,9 +9,10 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{Sender, Receiver, unbounded};
+use num_cpus;
 use postgres::{Client, NoTls};
 use rand::prelude::*;
-use tokio::runtime::Runtime;
+use tokio::runtime::Builder;
 use sqlx::PgConnection;
 use sqlx::Connection;
 use itoa;
@@ -21,6 +22,7 @@ mod benchmark;
 mod benchmark_wrapper;
 mod txmessage;
 mod tpcc;
+mod tpcb;
 mod tpciot;
 mod terminal;
 mod data_agg;
@@ -28,9 +30,9 @@ mod data_agg;
 use benchmark::{
     Benchmark,
     BenchmarkStmt,
-    BenchmarkTransaction,
     Counter,
     ReadWrite,
+    ReadWriteSync,
     ResponseTimeStatistics,
     TransactionSummary,
 };
@@ -77,18 +79,16 @@ impl Executor {
     }
 
     // Execute read/write mixed workload
-    pub fn run_benchmark(&mut self, args :RunArgs) -> &mut Self {
+    pub fn run_benchmark(&mut self, args: RunArgs) -> &mut Self {
         let rampup_ms = args.rampup as u64 * 1000;
         let time_ms = args.time as u64 * 1000;
         // Nap time before starting a new client
-        let sleep_ms = rampup_ms / args.client as u64;
+        let sleep_ms = if args.client > 0 { rampup_ms / args.client as u64 } else { 0 };
 
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
         // Channels used to send back the counters once data collector has finished its work.
         let (tx_counters, rx_counters): (Sender<HashMap<u16, Counter>>, Receiver<HashMap<u16, Counter>>) = unbounded();
-
-        let mut benchmark_clients = Vec::new();
 
         // Track total execution time in ms
         let start = Instant::now();
@@ -113,11 +113,11 @@ impl Executor {
         // Start data collector
         let dc_tx_counters = tx_counters.clone();
         let data_collector = self.start_data_collector(rx, dc_tx_counters);
+
         // Let's find the maximum object id if --max-id is set to 0 (default behavior)
-        let max_id :u32 = match args.max_id {
+        let max_id: u32 = match args.max_id {
             0 => {
                 terminal::start_msg(command, "Fetching maximum ID value");
-                // New database connection
                 let mut client = Executor::connect(self.dsn.clone());
                 let benchmark_client = self.get_benchmark(0, 0, 0);
 
@@ -129,50 +129,27 @@ impl Executor {
                     }
                 };
                 terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
-
                 max_id
             },
-            _default => args.max_id.clone(),
+            _ => args.max_id,
         };
 
-        let message = format!("Starting {} client(s) in {} seconds", args.client, args.rampup);
+        // Check if benchmark supports synchronous execution (faster path)
+        let benchmark_check = self.get_benchmark(0, args.min_id, max_id);
+        let use_sync = benchmark_check.supports_sync();
+
+        let message = format!("Starting {} client(s) in {} seconds{}",
+            args.client, args.rampup,
+            if use_sync { " (sync mode)" } else { "" });
         terminal::start_msg(command, message.as_str());
 
-        // Create the tokio runtime
-        let rt = Runtime::new().unwrap();
-
-        rt.block_on(async {
-            // Start the clients
-            for client_id in 1..=args.client {
-                // Test duration calculated by taking in consideration the rampup time and the
-                // remaining duration before the end of rampup stage.
-                let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
-
-                // Sleep accordingly to the rampup time and the number of clients
-                sleep(Duration::from_millis(sleep_ms));
-
-                // Start one new client
-                let benchmark_client = self.start_rw_client(duration_ms, self.dsn.clone(), args.min_id.clone(), max_id.clone(), tx.clone(), client_id as u32).await;
-
-                benchmark_clients.push(benchmark_client);
-            }
-            // All clients have been started
-            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
-
-            let message2 = format!("Running the workload for {} seconds", args.time);
-            terminal::start_msg(command, message2.as_str());
-            let start2 = Instant::now();
-
-            // Send end-of-rampup message to the data collector
-            tx.send(TXMessage::end_of_rampup()).unwrap();
-            self.rampup_time_ms = start.elapsed().as_millis();
-
-            for benchmark_client in benchmark_clients {
-                benchmark_client.await.expect("the client thread panicked");
-            }
-
-            terminal::done_msg(start2.elapsed().as_micros() as f64 / 1000 as f64);
-        });
+        if use_sync {
+            // Use synchronous execution with std::thread (faster, matches pgbench)
+            self.run_benchmark_sync(args.client, args.min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+        } else {
+            // Use async execution with tokio (for benchmarks that don't support sync)
+            self.run_benchmark_async(args.client, args.min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+        }
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
@@ -186,6 +163,163 @@ impl Executor {
         self.counters = rx_counters.recv().unwrap();
 
         self
+    }
+
+    /// Synchronous benchmark execution using std::thread and prepared statements
+    /// This path is significantly faster than async for simple benchmarks like TPC-B
+    fn run_benchmark_sync(
+        &mut self,
+        n_clients: u16,
+        min_id: u32,
+        max_id: u32,
+        time_ms: u64,
+        rampup_ms: u64,
+        sleep_ms: u64,
+        tx: Sender<TXMessage>,
+        start: Instant,
+    ) {
+        let command = "RUN";
+        let mut client_threads: Vec<JoinHandle<()>> = Vec::with_capacity(n_clients as usize);
+
+        // Start the clients using std::thread
+        for client_id in 1..=n_clients {
+            let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
+            sleep(Duration::from_millis(sleep_ms));
+
+            let dsn = self.dsn.clone();
+            let benchmark_type = self.benchmark_type.clone();
+            let tx_clone = tx.clone();
+
+            let handle = thread::spawn(move || {
+                // Create synchronous postgres connection
+                let mut client = Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
+                    eprintln!("ERROR: Connection failed: {}", err);
+                    std::process::exit(1);
+                });
+
+                // Get benchmark and prepare statements
+                let benchmark = benchmark_wrapper::BenchmarkWrapper::new(&benchmark_type, 0, min_id, max_id);
+                let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
+                    eprintln!("ERROR: Failed to prepare statements: {}", err);
+                    std::process::exit(1);
+                });
+
+                let transactions = benchmark.get_transactions_rw();
+
+                // Pre-compute cumulative weights for fast weighted selection
+                let total_weight: u32 = transactions.iter().map(|t| t.weight as u32).sum();
+                let cumulative_weights: Vec<u32> = transactions
+                    .iter()
+                    .scan(0u32, |acc, t| {
+                        *acc += t.weight as u32;
+                        Some(*acc)
+                    })
+                    .collect();
+
+                let loop_start = Instant::now();
+                let duration_limit = duration_ms as u128;
+
+                loop {
+                    // Fast weighted random selection
+                    let tx_idx = {
+                        let rand_val: u32 = thread_rng().gen_range(1..=total_weight);
+                        cumulative_weights.iter().position(|&w| rand_val <= w).unwrap_or(0)
+                    };
+                    let transaction = &transactions[tx_idx];
+
+                    // Execute transaction using prepared statements
+                    match benchmark.execute_rw_transaction_sync(&mut client, &prepared, transaction) {
+                        Ok(duration) => {
+                            let m = TXMessage::committed(transaction.id, client_id as u32, duration);
+                            let _ = tx_clone.send(m);
+                        }
+                        Err(error) => {
+                            let m = TXMessage::error(transaction.id, client_id as u32, format!("{}", error));
+                            let _ = tx_clone.send(m);
+                        }
+                    }
+
+                    if loop_start.elapsed().as_millis() >= duration_limit {
+                        break;
+                    }
+                }
+            });
+
+            client_threads.push(handle);
+        }
+
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
+
+        let message2 = format!("Running the workload for {} seconds", time_ms / 1000);
+        terminal::start_msg(command, message2.as_str());
+        let start2 = Instant::now();
+
+        // Send end-of-rampup message
+        tx.send(TXMessage::end_of_rampup()).unwrap();
+        self.rampup_time_ms = start.elapsed().as_millis();
+
+        // Wait for all client threads
+        for handle in client_threads {
+            handle.join().expect("Client thread panicked");
+        }
+
+        terminal::done_msg(start2.elapsed().as_micros() as f64 / 1000.0);
+    }
+
+    /// Async benchmark execution using tokio (for complex benchmarks)
+    fn run_benchmark_async(
+        &mut self,
+        n_clients: u16,
+        min_id: u32,
+        max_id: u32,
+        time_ms: u64,
+        rampup_ms: u64,
+        sleep_ms: u64,
+        tx: Sender<TXMessage>,
+        start: Instant,
+    ) {
+        let command = "RUN";
+        let worker_threads = std::cmp::min(n_clients as usize, num_cpus::get());
+        let rt = Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let mut benchmark_clients = Vec::new();
+
+            for client_id in 1..=n_clients {
+                let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
+                sleep(Duration::from_millis(sleep_ms));
+
+                let benchmark_client = self.start_rw_client(
+                    duration_ms,
+                    self.dsn.clone(),
+                    min_id,
+                    max_id,
+                    tx.clone(),
+                    client_id as u32,
+                ).await;
+
+                benchmark_clients.push(benchmark_client);
+            }
+
+            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
+
+            let message2 = format!("Running the workload for {} seconds", time_ms / 1000);
+            terminal::start_msg(command, message2.as_str());
+            let start2 = Instant::now();
+
+            tx.send(TXMessage::end_of_rampup()).unwrap();
+            self.rampup_time_ms = start.elapsed().as_millis();
+
+            for benchmark_client in benchmark_clients {
+                benchmark_client.await.expect("Client task panicked");
+            }
+
+            terminal::done_msg(start2.elapsed().as_micros() as f64 / 1000.0);
+        });
     }
 
     // Start a new read/write benchmark client in its own thread
@@ -206,31 +340,47 @@ impl Executor {
             };
             let transactions = benchmark_client.get_transactions_rw();
 
+            // Pre-compute cumulative weights for faster weighted selection
+            let total_weight: u32 = transactions.iter().map(|t| t.weight as u32).sum();
+            let cumulative_weights: Vec<u32> = transactions
+                .iter()
+                .scan(0u32, |acc, t| {
+                    *acc += t.weight as u32;
+                    Some(*acc)
+                })
+                .collect();
+
             // Used for tracking client execution time
             let start = Instant::now();
-            let mut transaction: &BenchmarkTransaction;
-            loop {
-                // Pickup a transaction, randomly and weight based.
-                transaction = {
-                    let mut rng = thread_rng();
+            let duration_limit = duration_ms as u128;
 
-                    transactions.choose_weighted(&mut rng, |item| item.weight).unwrap()
+            loop {
+                // Generate random value before await (ThreadRng is not Send)
+                // Fast weighted random selection using pre-computed cumulative weights
+                let tx_idx = {
+                    let rand_val: u32 = thread_rng().gen_range(1..=total_weight);
+                    cumulative_weights
+                        .iter()
+                        .position(|&w| rand_val <= w)
+                        .unwrap_or(0)
                 };
+                let transaction = &transactions[tx_idx];
+
                 // Execute the database transactions
                 match benchmark_client.execute_rw_transaction(&mut connection, &transaction).await {
                     Ok(duration) => {
-                        // Send committed message
-                        let m = TXMessage::committed(transaction.id, client_id, Utc::now().timestamp(), duration);
+                        // Send committed message (avoid timestamp computation in hot path)
+                        let m = TXMessage::committed(transaction.id, client_id, duration);
                         tx.send(m).unwrap();
                     },
                     Err(error) => {
                         // Send error message
-                        let m = TXMessage::error(transaction.id, client_id, Utc::now().timestamp(), format!("{}", error));
+                        let m = TXMessage::error(transaction.id, client_id, format!("{}", error));
                         tx.send(m).unwrap();
                     },
                 }
                 // Break the loop if we reach the time limit
-                if start.elapsed().as_millis() >= duration_ms as u128 {
+                if start.elapsed().as_millis() >= duration_limit {
                     break;
                 }
             }
@@ -252,7 +402,8 @@ impl Executor {
                     std::process::exit(1);
                 },
             };
-            let mut log_file = BufWriter::new(log_file);
+            // Use larger buffer for better I/O performance
+            let mut log_file = BufWriter::with_capacity(64 * 1024, log_file);
             // Create the error log file
             let error_file = match File::create(target_dir.join(ERROR_FILE)) {
                 Ok(f) => f,
@@ -261,15 +412,19 @@ impl Executor {
                     std::process::exit(1);
                 },
             };
-            let mut error_file = BufWriter::new(error_file);
+            let mut error_file = BufWriter::with_capacity(8 * 1024, error_file);
 
-            // Initialize the counters
-            let mut counters: HashMap<u16, Counter> = HashMap::new();
+            // Initialize the counters with expected capacity
+            let mut counters: HashMap<u16, Counter> = HashMap::with_capacity(16);
             let mut client_ids = BTreeMap::new();
 
-            let mut ramping_up :bool = true;
+            let mut ramping_up: bool = true;
             let mut buffer_i = itoa::Buffer::new();
             let mut buffer_f = ryu::Buffer::new();
+
+            // Track start time for timestamp generation
+            let start_time = Utc::now().timestamp();
+            let start_instant = Instant::now();
 
             let mut n_client: u32 = 0;
             loop {
@@ -284,67 +439,76 @@ impl Executor {
                     // Committed transaction
                     TXMessageKind::COMMITTED => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        n_client = match client_ids.get(&msg.client_id) {
-                            None => {
-                                client_ids.insert(msg.client_id, true);
-                                n_client += 1;
-                                n_client
-                            },
-                            Some(_) => n_client,
-                        };
-                        let duration_ms = msg.tx_duration_us as f64 / 1000 as f64;
-                        // Counters calculation
-                        // Update counters only if the rampup stage is over
-                        if !ramping_up {
-                            if let Some(c) = counters.get_mut(&msg.tx_id) {
-                                (*c).n_commits += 1;
-                                (*c).n_total += 1;
-                                (*c).total_duration_ms += duration_ms;
-                            }
-                            else {
-                                counters.insert(msg.tx_id, Counter {n_commits: 1, n_total: 1, total_duration_ms: duration_ms});
-                            }
+                        if !client_ids.contains_key(&msg.client_id) {
+                            client_ids.insert(msg.client_id, true);
+                            n_client += 1;
                         }
 
+                        let duration_ms = msg.tx_duration_us as f64 / 1000.0;
+
+                        // Counters calculation - update only if rampup stage is over
+                        if !ramping_up {
+                            counters
+                                .entry(msg.tx_id)
+                                .and_modify(|c| {
+                                    c.n_commits += 1;
+                                    c.n_total += 1;
+                                    c.total_duration_ms += duration_ms;
+                                })
+                                .or_insert(Counter {
+                                    n_commits: 1,
+                                    n_total: 1,
+                                    total_duration_ms: duration_ms,
+                                });
+                        }
+
+                        // Generate timestamp locally (more efficient than passing through channel)
+                        let tx_timestamp = start_time + start_instant.elapsed().as_secs() as i64;
+
                         // Format and write the line to the log file
-                        log_file.write(&buffer_i.format(msg.tx_timestamp).as_bytes()).expect("Failed to write");
-                        log_file.write(b" ").expect("Failed to write");
-                        log_file.write(&buffer_i.format(n_client).as_bytes()).expect("Failed to write");
-                        log_file.write(b" ").expect("Failed to write");
-                        log_file.write(&buffer_i.format(msg.tx_id).as_bytes()).expect("Failed to write");
-                        log_file.write(b" ").expect("Failed to write");
-                        log_file.write(&buffer_f.format(duration_ms).as_bytes()).expect("Failed to write");
-                        log_file.write(b"\n").expect("Failed to write");
+                        let _ = log_file.write(buffer_i.format(tx_timestamp).as_bytes());
+                        let _ = log_file.write(b" ");
+                        let _ = log_file.write(buffer_i.format(n_client).as_bytes());
+                        let _ = log_file.write(b" ");
+                        let _ = log_file.write(buffer_i.format(msg.tx_id).as_bytes());
+                        let _ = log_file.write(b" ");
+                        let _ = log_file.write(buffer_f.format(duration_ms).as_bytes());
+                        let _ = log_file.write(b"\n");
                     },
                     TXMessageKind::ERROR => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        n_client = match client_ids.get(&msg.client_id) {
-                            None => {
-                                client_ids.insert(msg.client_id, true);
-                                n_client += 1;
-                                n_client
-                            },
-                            Some(_) => n_client,
-                        };
-                        // Counters calculation
-                        if !ramping_up {
-                            if let Some(c) = counters.get_mut(&msg.tx_id) {
-                                (*c).n_total += 1;
-                            }
-                            else {
-                                counters.insert(msg.tx_id, Counter {n_commits: 0, n_total: 1, total_duration_ms: 0.0});
-                            }
+                        if !client_ids.contains_key(&msg.client_id) {
+                            client_ids.insert(msg.client_id, true);
+                            n_client += 1;
                         }
 
-                        // Format and write the line to the log file
-                        error_file.write(&buffer_i.format(msg.tx_timestamp).as_bytes()).expect("Failed to write");
-                        error_file.write(b" ").expect("Failed to write");
-                        error_file.write(&buffer_i.format(n_client).as_bytes()).expect("Failed to write");
-                        error_file.write(b" ").expect("Failed to write");
-                        error_file.write(&buffer_i.format(msg.tx_id).as_bytes()).expect("Failed to write");
-                        error_file.write(b" ").expect("Failed to write");
-                        error_file.write(msg.error.as_bytes()).expect("Failed to write");
-                        error_file.write(b"\n").expect("Failed to write");
+                        // Counters calculation
+                        if !ramping_up {
+                            counters
+                                .entry(msg.tx_id)
+                                .and_modify(|c| {
+                                    c.n_total += 1;
+                                })
+                                .or_insert(Counter {
+                                    n_commits: 0,
+                                    n_total: 1,
+                                    total_duration_ms: 0.0,
+                                });
+                        }
+
+                        // Generate timestamp locally
+                        let tx_timestamp = start_time + start_instant.elapsed().as_secs() as i64;
+                        let error_str = msg.error.as_deref().unwrap_or("");
+
+                        // Format and write the line to the error log file
+                        let _ = error_file.write(buffer_i.format(tx_timestamp).as_bytes());
+                        let _ = error_file.write(b" ");
+                        let _ = error_file.write(buffer_i.format(n_client).as_bytes());
+                        let _ = error_file.write(b" ");
+                        let _ = error_file.write(buffer_i.format(msg.tx_id).as_bytes());
+                        let _ = error_file.write(b" ");
+                        let _ = error_file.write(error_str.as_bytes());
+                        let _ = error_file.write(b"\n");
                     },
                     TXMessageKind::ENDOFRAMPUP => {
                         ramping_up = false;
@@ -354,6 +518,9 @@ impl Executor {
                     },
                 }
             }
+            // Flush buffers before sending counters
+            let _ = log_file.flush();
+            let _ = error_file.flush();
             // Send counters
             tx_counters.send(counters).unwrap();
         })

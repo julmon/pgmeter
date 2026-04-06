@@ -16,6 +16,20 @@ pub struct BenchmarkTransaction {
     pub description: String,
 }
 
+/// Prepared statements holder for synchronous benchmark execution
+/// This allows reusing prepared statements across multiple transactions
+pub struct PreparedStatements {
+    pub statements: Vec<postgres::Statement>,
+}
+
+impl PreparedStatements {
+    pub fn new() -> Self {
+        PreparedStatements {
+            statements: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Counter {
     pub n_commits: u64,
@@ -46,10 +60,30 @@ pub struct ResponseTimeStatistics {
     pub percentile_99: f64,
 }
 
-// ReadWrite trait for all benchmarks implementing read/write workload
+// ReadWrite trait for all benchmarks implementing read/write workload (async version)
 #[async_trait]
 pub trait ReadWrite {
     async fn execute_rw_transaction(&self, conn: &mut PgConnection, transaction :&BenchmarkTransaction) -> Result<u128, Box<dyn std::error::Error>>;
+}
+
+/// Synchronous ReadWrite trait for high-performance benchmark execution
+/// Uses prepared statements and synchronous I/O (matches pgbench architecture)
+pub trait ReadWriteSync: Send + Sync {
+    /// Prepare all statements needed for transactions (called once per connection)
+    fn prepare_statements(&self, client: &mut Client) -> Result<PreparedStatements, postgres::Error>;
+
+    /// Execute a transaction using prepared statements (hot path)
+    fn execute_rw_transaction_sync(
+        &self,
+        client: &mut Client,
+        prepared: &PreparedStatements,
+        transaction: &BenchmarkTransaction,
+    ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Check if this benchmark supports synchronous execution
+    fn supports_sync(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Tabled)]
