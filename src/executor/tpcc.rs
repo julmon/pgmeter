@@ -1762,7 +1762,7 @@ impl Benchmark for TPCC {
 /// Synchronous implementation for high-performance TPC-C execution
 impl ReadWriteSync for TPCC {
     fn supports_sync(&self) -> bool {
-        true
+        false  // Temporarily disabled - postgres crate type serialization issues
     }
 
     fn prepare_statements(&self, _client: &mut Client) -> Result<PreparedStatements, postgres::Error> {
@@ -1836,10 +1836,11 @@ impl TPCC {
             )?;
             let total_amount: f64 = rows[0].get(0);
 
-            // Update customer
+            // Update customer - cast to NUMERIC for c_balance column
+            let total_amount_str = format!("{:.2}", total_amount);
             tx.execute(
-                "UPDATE customer SET c_delivery_cnt = c_delivery_cnt + 1, c_balance = c_balance + $1 WHERE c_id = $2 AND c_w_id = $3 AND c_d_id = $4",
-                &[&total_amount, &customer_id, &warehouse_id, &district_id]
+                "UPDATE customer SET c_delivery_cnt = c_delivery_cnt + 1, c_balance = c_balance + $1::NUMERIC WHERE c_id = $2 AND c_w_id = $3 AND c_d_id = $4",
+                &[&total_amount_str, &customer_id, &warehouse_id, &district_id]
             )?;
         }
 
@@ -1952,10 +1953,11 @@ impl TPCC {
             }
 
             let s_remote_cnt_inc: f32 = if ol_supply_w_id != warehouse_id { 1.0 } else { 0.0 };
+            let ol_quantity_str = ol_quantity.to_string();
 
             tx.execute(
-                "UPDATE stock SET s_quantity = $3, s_ytd = s_ytd + $4::FLOAT, s_order_cnt = s_order_cnt + 1, s_remote_cnt = s_remote_cnt + $5 WHERE s_i_id = $1 AND s_w_id = $2",
-                &[&ol_i_id, &ol_supply_w_id, &s_quantity, &ol_quantity, &s_remote_cnt_inc]
+                "UPDATE stock SET s_quantity = $3, s_ytd = s_ytd + $4::NUMERIC, s_order_cnt = s_order_cnt + 1, s_remote_cnt = s_remote_cnt + $5 WHERE s_i_id = $1 AND s_w_id = $2",
+                &[&ol_i_id, &ol_supply_w_id, &s_quantity, &ol_quantity_str, &s_remote_cnt_inc]
             )?;
 
             // Insert order_line
@@ -1998,22 +2000,23 @@ impl TPCC {
             None
         };
 
-        let h_amount: f32 = rand::thread_rng().gen_range(1.00..=5000.00);
+        let h_amount: f64 = rand::thread_rng().gen_range(1.00..=5000.00);
+        let h_amount_str = format!("{:.2}", h_amount);
 
         let start = Instant::now();
         let mut tx = client.transaction()?;
 
-        // Update warehouse
+        // Update warehouse - cast to NUMERIC for w_ytd column
         let rows = tx.query(
-            "UPDATE warehouse SET w_ytd = w_ytd + $1::FLOAT WHERE w_id = $2 RETURNING w_name",
-            &[&h_amount, &warehouse_id]
+            "UPDATE warehouse SET w_ytd = w_ytd + $1::NUMERIC WHERE w_id = $2 RETURNING w_name",
+            &[&h_amount_str, &warehouse_id]
         )?;
         let w_name: String = rows[0].get(0);
 
-        // Update district
+        // Update district - cast to NUMERIC for d_ytd column
         let rows = tx.query(
-            "UPDATE district SET d_ytd = d_ytd + $1::FLOAT WHERE d_w_id = $2 AND d_id = $3 RETURNING d_name",
-            &[&h_amount, &warehouse_id, &district_id]
+            "UPDATE district SET d_ytd = d_ytd + $1::NUMERIC WHERE d_w_id = $2 AND d_id = $3 RETURNING d_name",
+            &[&h_amount_str, &warehouse_id, &district_id]
         )?;
         let d_name: String = rows[0].get(0);
 
@@ -2037,24 +2040,25 @@ impl TPCC {
         )?;
         let c_credit: String = rows[0].get(0);
 
-        // Update customer based on credit type
+        // Update customer based on credit type - cast to NUMERIC for c_balance column
         if c_credit == "BC" {
             let pre_c_data = format!("{} {} {} {} {} {}", c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount);
             tx.execute(
-                "UPDATE customer SET c_balance = c_balance - $1::FLOAT, c_ytd_payment = c_ytd_payment + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
-                &[&h_amount, &c_id, &c_d_id, &c_w_id, &pre_c_data]
+                "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+                &[&h_amount_str, &c_id, &c_d_id, &c_w_id, &pre_c_data]
             )?;
         } else {
             tx.execute(
-                "UPDATE customer SET c_balance = c_balance - $1::FLOAT, c_ytd_payment = c_ytd_payment + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
-                &[&h_amount, &c_id, &c_d_id, &c_w_id]
+                "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+                &[&h_amount_str, &c_id, &c_d_id, &c_w_id]
             )?;
         }
 
-        // Insert history
+        // Insert history - h_amount is REAL, so use f32
+        let h_amount_f32 = h_amount as f32;
         tx.execute(
             "INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) VALUES ($1, $2, $3, $4, $5, NOW(), $6, substring($7||'    '||$8, 1, 24))",
-            &[&c_id, &c_d_id, &c_w_id, &district_id, &warehouse_id, &h_amount, &w_name, &d_name]
+            &[&c_id, &c_d_id, &c_w_id, &district_id, &warehouse_id, &h_amount_f32, &w_name, &d_name]
         )?;
 
         tx.commit()?;
@@ -2127,20 +2131,13 @@ impl TPCC {
         )?;
         let d_next_o_id: i32 = rows[0].get(0);
 
-        // Get distinct items from recent orders
-        let rows = tx.query(
-            "SELECT DISTINCT ol_i_id FROM order_line WHERE ol_w_id = $1 AND ol_d_id = $2 AND ol_o_id < $3 AND ol_o_id >= ($3 - 20)",
-            &[&warehouse_id, &district_id, &d_next_o_id]
+        // Get distinct items from recent orders and check stock in one query
+        tx.query(
+            "SELECT COUNT(DISTINCT ol.ol_i_id) FROM order_line ol \
+             JOIN stock s ON s.s_w_id = $1 AND s.s_i_id = ol.ol_i_id AND s.s_quantity < $3 \
+             WHERE ol.ol_w_id = $1 AND ol.ol_d_id = $2 AND ol.ol_o_id < $4 AND ol.ol_o_id >= ($4 - 20)",
+            &[&warehouse_id, &district_id, &threshold, &d_next_o_id]
         )?;
-
-        // Check stock for each item
-        for row in rows {
-            let ol_i_id: i32 = row.get(0);
-            tx.query(
-                "SELECT s_quantity FROM stock WHERE s_w_id = $1 AND s_i_id = $2 AND s_quantity < $3",
-                &[&warehouse_id, &ol_i_id, &threshold]
-            )?;
-        }
 
         tx.commit()?;
         Ok(start.elapsed().as_micros())
