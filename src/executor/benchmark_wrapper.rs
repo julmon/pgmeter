@@ -13,6 +13,7 @@ use super::benchmark::{
 use super::tpcc::TPCC;
 use super::tpcb::TPCB;
 use super::tpciot::TPCIoT;
+use super::tpch::TPCH;
 
 /// Enum wrapper that holds different benchmark implementations
 /// This allows runtime dispatch to different benchmark types
@@ -20,6 +21,7 @@ pub enum BenchmarkWrapper {
     Tpcc(TPCC),
     Tpcb(TPCB),
     TpcIot(TPCIoT),
+    Tpch(TPCH),
 }
 
 impl BenchmarkWrapper {
@@ -30,6 +32,9 @@ impl BenchmarkWrapper {
             },
             "tpciot" | "tpc-iot" | "iot" => {
                 BenchmarkWrapper::TpcIot(TPCIoT::new(scalefactor, min_id, max_id))
+            },
+            "tpch" | "tpc-h" => {
+                BenchmarkWrapper::Tpch(TPCH::new(scalefactor, min_id, max_id))
             },
             _ => {
                 BenchmarkWrapper::Tpcc(TPCC::new(scalefactor, min_id, max_id))
@@ -45,6 +50,7 @@ impl ReadWrite for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.execute_rw_transaction(conn, transaction).await,
             BenchmarkWrapper::Tpcb(b) => b.execute_rw_transaction(conn, transaction).await,
             BenchmarkWrapper::TpcIot(b) => b.execute_rw_transaction(conn, transaction).await,
+            BenchmarkWrapper::Tpch(b) => b.execute_rw_transaction(conn, transaction).await,
         }
     }
 }
@@ -55,6 +61,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.initialize_schema(client),
             BenchmarkWrapper::Tpcb(b) => b.initialize_schema(client),
             BenchmarkWrapper::TpcIot(b) => b.initialize_schema(client),
+            BenchmarkWrapper::Tpch(b) => b.initialize_schema(client),
         }
     }
 
@@ -63,6 +70,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.pre_load_data(client),
             BenchmarkWrapper::Tpcb(b) => b.pre_load_data(client),
             BenchmarkWrapper::TpcIot(b) => b.pre_load_data(client),
+            BenchmarkWrapper::Tpch(b) => b.pre_load_data(client),
         }
     }
 
@@ -71,6 +79,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.load_data(client, ids),
             BenchmarkWrapper::Tpcb(b) => b.load_data(client, ids),
             BenchmarkWrapper::TpcIot(b) => b.load_data(client, ids),
+            BenchmarkWrapper::Tpch(b) => b.load_data(client, ids),
         }
     }
 
@@ -79,6 +88,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_default_max_id(client),
             BenchmarkWrapper::Tpcb(b) => b.get_default_max_id(client),
             BenchmarkWrapper::TpcIot(b) => b.get_default_max_id(client),
+            BenchmarkWrapper::Tpch(b) => b.get_default_max_id(client),
         }
     }
 
@@ -87,6 +97,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_transactions_rw(),
             BenchmarkWrapper::Tpcb(b) => b.get_transactions_rw(),
             BenchmarkWrapper::TpcIot(b) => b.get_transactions_rw(),
+            BenchmarkWrapper::Tpch(b) => b.get_transactions_rw(),
         }
     }
 
@@ -95,6 +106,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_table_ddls(),
             BenchmarkWrapper::Tpcb(b) => b.get_table_ddls(),
             BenchmarkWrapper::TpcIot(b) => b.get_table_ddls(),
+            BenchmarkWrapper::Tpch(b) => b.get_table_ddls(),
         }
     }
 
@@ -103,6 +115,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_pkey_ddls(),
             BenchmarkWrapper::Tpcb(b) => b.get_pkey_ddls(),
             BenchmarkWrapper::TpcIot(b) => b.get_pkey_ddls(),
+            BenchmarkWrapper::Tpch(b) => b.get_pkey_ddls(),
         }
     }
 
@@ -111,6 +124,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_fkey_ddls(),
             BenchmarkWrapper::Tpcb(b) => b.get_fkey_ddls(),
             BenchmarkWrapper::TpcIot(b) => b.get_fkey_ddls(),
+            BenchmarkWrapper::Tpch(b) => b.get_fkey_ddls(),
         }
     }
 
@@ -119,6 +133,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_index_ddls(),
             BenchmarkWrapper::Tpcb(b) => b.get_index_ddls(),
             BenchmarkWrapper::TpcIot(b) => b.get_index_ddls(),
+            BenchmarkWrapper::Tpch(b) => b.get_index_ddls(),
         }
     }
 
@@ -127,6 +142,7 @@ impl Benchmark for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.get_vacuum_stmts(),
             BenchmarkWrapper::Tpcb(b) => b.get_vacuum_stmts(),
             BenchmarkWrapper::TpcIot(b) => b.get_vacuum_stmts(),
+            BenchmarkWrapper::Tpch(b) => b.get_vacuum_stmts(),
         }
     }
 }
@@ -137,6 +153,7 @@ impl ReadWriteSync for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.supports_sync(),
             BenchmarkWrapper::Tpcb(b) => b.supports_sync(),
             BenchmarkWrapper::TpcIot(b) => b.supports_sync(),
+            BenchmarkWrapper::Tpch(b) => b.supports_sync(),
         }
     }
 
@@ -145,6 +162,7 @@ impl ReadWriteSync for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.prepare_statements(client),
             BenchmarkWrapper::Tpcb(b) => b.prepare_statements(client),
             BenchmarkWrapper::TpcIot(b) => b.prepare_statements(client),
+            BenchmarkWrapper::Tpch(b) => b.prepare_statements(client),
         }
     }
 
@@ -158,6 +176,7 @@ impl ReadWriteSync for BenchmarkWrapper {
             BenchmarkWrapper::Tpcc(b) => b.execute_rw_transaction_sync(client, prepared, transaction),
             BenchmarkWrapper::Tpcb(b) => b.execute_rw_transaction_sync(client, prepared, transaction),
             BenchmarkWrapper::TpcIot(b) => b.execute_rw_transaction_sync(client, prepared, transaction),
+            BenchmarkWrapper::Tpch(b) => b.execute_rw_transaction_sync(client, prepared, transaction),
         }
     }
 }

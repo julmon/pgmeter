@@ -256,6 +256,15 @@ impl PgMtrArgs {
         // run tpciot <OPTIONS>
         let run_tpciot = Command::new("tpciot")
             .about("Run TPCx-IoT-like benchmark")
+            .arg(client_option.clone())
+            .arg(time_option.clone())
+            .arg(rampup_option.clone())
+            .arg(min_id_option.clone())
+            .arg(max_id_option.clone());
+
+        // run tpch <OPTIONS>
+        let run_tpch = Command::new("tpch")
+            .about("Run TPC-H benchmark (decision support queries)")
             .arg(client_option)
             .arg(time_option)
             .arg(rampup_option)
@@ -279,8 +288,16 @@ impl PgMtrArgs {
         // init tpciot <OPTIONS>
         let init_tpciot = Command::new("tpciot")
             .about("Initialize TPCx-IoT-like benchmark data")
+            .arg(scalefactor_option.clone())
+            .arg(jobs_option.clone())
+            .arg(no_fkey_option.clone());
+
+        // init tpch <OPTIONS>
+        // Note: TPC-H doesn't support parallel data loading (-j) because
+        // the data isn't partitioned by warehouse like TPC-C
+        let init_tpch = Command::new("tpch")
+            .about("Initialize TPC-H benchmark data (decision support queries)")
             .arg(scalefactor_option)
-            .arg(jobs_option)
             .arg(no_fkey_option);
 
         // init <SUBCOMMAND> <OPTIONS>
@@ -290,7 +307,8 @@ impl PgMtrArgs {
             .subcommand_required(true)
             .subcommand(init_tpcc)
             .subcommand(init_tpcb)
-            .subcommand(init_tpciot);
+            .subcommand(init_tpciot)
+            .subcommand(init_tpch);
 
         // run <SUBCOMMAND> <OPTIONS>
         let run = Command::new("run")
@@ -299,7 +317,8 @@ impl PgMtrArgs {
             .subcommand_required(true)
             .subcommand(run_tpcc)
             .subcommand(run_tpcb)
-            .subcommand(run_tpciot);
+            .subcommand(run_tpciot)
+            .subcommand(run_tpch);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -345,9 +364,11 @@ impl PgMtrArgs {
                     let scalefactor_str = bm_m
                         .get_one::<String>("scalefactor")
                         .unwrap();
+                    // jobs is optional (not present for TPC-H)
                     let jobs_str = bm_m
                         .get_one::<String>("jobs")
-                        .unwrap();
+                        .map(|s| s.as_str())
+                        .unwrap_or("1");
                     let no_fkey = bm_m.get_flag("no_fkey");
 
                     let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
@@ -393,6 +414,7 @@ impl PgMtrArgs {
                     Some("tpcc") => parse_init_args(init_m, "tpcc")?,
                     Some("tpcb") => parse_init_args(init_m, "tpcb")?,
                     Some("tpciot") => parse_init_args(init_m, "tpciot")?,
+                    Some("tpch") => parse_init_args(init_m, "tpch")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };
 
@@ -404,6 +426,7 @@ impl PgMtrArgs {
                     Some("tpcc") => parse_run_args(run_m, "tpcc")?,
                     Some("tpcb") => parse_run_args(run_m, "tpcb")?,
                     Some("tpciot") => parse_run_args(run_m, "tpciot")?,
+                    Some("tpch") => parse_run_args(run_m, "tpch")?,
                     _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
                 };
 

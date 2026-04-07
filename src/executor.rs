@@ -24,6 +24,7 @@ mod txmessage;
 mod tpcc;
 mod tpcb;
 mod tpciot;
+mod tpch;
 mod terminal;
 mod data_agg;
 
