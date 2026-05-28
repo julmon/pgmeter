@@ -62,10 +62,10 @@ workload:
 
 ```bash
 # 1. Initialize: create schema and load data (scale factor 10, 4 loader threads)
-pgmtr -H localhost -d benchmark init yaml --spec samples/tpc-b.yaml -s 10 -j 4
+pgmtr -H localhost -d benchmark init --spec samples/tpc-b.yaml -s 10 -j 4
 
 # 2. Run: 8 clients for 60 seconds with a 10 second ramp-up
-pgmtr -H localhost -d benchmark run yaml --spec samples/tpc-b.yaml -c 8 -T 60 -r 10
+pgmtr -H localhost -d benchmark run --spec samples/tpc-b.yaml -c 8 -T 60 -r 10
 ```
 
 Swap the `--spec` file to run a different workload — the same `init`/`run` flow
@@ -91,7 +91,7 @@ It includes a worked from-scratch example.
 
 ## Command Options
 
-### Init Options (`init yaml`)
+### Init Options (`init`)
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -101,7 +101,7 @@ It includes a worked from-scratch example.
 | `--no-fkey` | false | Skip foreign key creation |
 | `--post-create-table` | — | Path to a SQL script run after table creation |
 
-### Run Options (`run yaml`)
+### Run Options (`run`)
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -122,10 +122,10 @@ export PGPASSWORD='your_password'
 psql -h localhost -U postgres -c "CREATE DATABASE benchmark;"
 
 # Initialize TPC-C with 5 warehouses using 4 loader threads
-pgmtr -H localhost -U postgres -d benchmark init yaml --spec samples/tpc-c.yaml -s 5 -j 4
+pgmtr -H localhost -U postgres -d benchmark init --spec samples/tpc-c.yaml -s 5 -j 4
 
 # Run a 5-minute benchmark with 10 clients and a 30 second ramp-up
-pgmtr -H localhost -U postgres -d benchmark run yaml --spec samples/tpc-c.yaml -c 10 -T 300 -r 30
+pgmtr -H localhost -U postgres -d benchmark run --spec samples/tpc-c.yaml -c 10 -T 300 -r 30
 ```
 
 ## Output

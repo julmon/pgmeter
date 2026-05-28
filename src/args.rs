@@ -253,38 +253,26 @@ impl PgMtrArgs {
             .value_name("FILE");
 
         // Sub-commands
-        // run yaml --spec <FILE> <OPTIONS>
-        let run_yaml = Command::new("yaml")
-            .about("Run benchmark from YAML specification file")
+        // init --spec <FILE> <OPTIONS>
+        let init = Command::new("init")
+            .about("Initialize benchmark from a YAML specification file")
+            .arg_required_else_help(true)
             .arg(spec_option.clone())
-            .arg(client_option)
-            .arg(time_option)
-            .arg(rampup_option)
-            .arg(min_id_option)
-            .arg(max_id_option);
-
-        // init yaml --spec <FILE> <OPTIONS>
-        let init_yaml = Command::new("yaml")
-            .about("Initialize benchmark from YAML specification file")
-            .arg(spec_option)
             .arg(scalefactor_option)
             .arg(jobs_option)
             .arg(no_fkey_option)
             .arg(post_create_table_option);
 
-        // init <SUBCOMMAND> <OPTIONS>
-        let init = Command::new("init")
-            .about("Initialize benchmark data")
-            .arg_required_else_help(true)
-            .subcommand_required(true)
-            .subcommand(init_yaml);
-
-        // run <SUBCOMMAND> <OPTIONS>
+        // run --spec <FILE> <OPTIONS>
         let run = Command::new("run")
-            .about("Run benchmark")
+            .about("Run benchmark from a YAML specification file")
             .arg_required_else_help(true)
-            .subcommand_required(true)
-            .subcommand(run_yaml);
+            .arg(spec_option)
+            .arg(client_option)
+            .arg(time_option)
+            .arg(rampup_option)
+            .arg(min_id_option)
+            .arg(max_id_option);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -323,87 +311,58 @@ impl PgMtrArgs {
         // Convert port ton u16
         let port = parse_string_arg_to_u16(port_str, "invalid port number".to_string())?;
 
-        // Helper function to parse init subcommand arguments
-        fn parse_init_args(init_m: &clap::ArgMatches, benchmark_name: &str) -> Result<(RunArgs, InitArgs, String), clap::Error> {
-            let (scalefactor, jobs, no_fkey, post_create_table) = match init_m.subcommand_matches(benchmark_name) {
-                Some(bm_m) => {
-                    let scalefactor_str = bm_m
-                        .get_one::<String>("scalefactor")
-                        .unwrap();
-                    // jobs is optional (not present for TPC-H)
-                    let jobs_str = bm_m
-                        .get_one::<String>("jobs")
-                        .map(|s| s.as_str())
-                        .unwrap_or("1");
-                    let no_fkey = bm_m.get_flag("no_fkey");
-                    let post_create_table = bm_m
-                        .get_one::<String>("post_create_table")
-                        .cloned();
+        // Helper function to parse init arguments
+        fn parse_init_args(bm_m: &clap::ArgMatches) -> Result<InitArgs, clap::Error> {
+            let scalefactor_str = bm_m
+                .get_one::<String>("scalefactor")
+                .unwrap();
+            let jobs_str = bm_m
+                .get_one::<String>("jobs")
+                .map(|s| s.as_str())
+                .unwrap_or("1");
+            let no_fkey = bm_m.get_flag("no_fkey");
+            let post_create_table = bm_m
+                .get_one::<String>("post_create_table")
+                .cloned();
 
-                    let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
-                    let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
+            let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
+            let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
 
-                    (scalefactor, jobs, no_fkey, post_create_table)
-                },
-                _ => (0, 0, false, None)
-            };
-
-            Ok((RunArgs::empty(), InitArgs {scalefactor, jobs, no_fkey, post_create_table}, benchmark_name.to_string()))
+            Ok(InitArgs {scalefactor, jobs, no_fkey, post_create_table})
         }
 
-        // Helper function to parse run subcommand arguments
-        fn parse_run_args(run_m: &clap::ArgMatches, benchmark_name: &str) -> Result<(RunArgs, InitArgs, String), clap::Error> {
-            let (client, time, rampup, min_id, max_id) = match run_m.subcommand_matches(benchmark_name) {
-                Some(bm_m) => {
-                    let client_str = bm_m.get_one::<String>("client").unwrap();
-                    let time_str = bm_m.get_one::<String>("time").unwrap();
-                    let rampup_str = bm_m.get_one::<String>("rampup").unwrap();
-                    let min_id_str = bm_m.get_one::<String>("min_id").unwrap();
-                    let max_id_str = bm_m.get_one::<String>("max_id").unwrap();
+        // Helper function to parse run arguments
+        fn parse_run_args(bm_m: &clap::ArgMatches) -> Result<RunArgs, clap::Error> {
+            let client_str = bm_m.get_one::<String>("client").unwrap();
+            let time_str = bm_m.get_one::<String>("time").unwrap();
+            let rampup_str = bm_m.get_one::<String>("rampup").unwrap();
+            let min_id_str = bm_m.get_one::<String>("min_id").unwrap();
+            let max_id_str = bm_m.get_one::<String>("max_id").unwrap();
 
-                    let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
-                    let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
-                    let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
-                    let min_id = parse_string_arg_to_u32(min_id_str, "invalid min ID value".to_string())?;
-                    let max_id = parse_string_arg_to_u32(max_id_str, "invalid end id value".to_string())?;
+            let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
+            let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
+            let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
+            let min_id = parse_string_arg_to_u32(min_id_str, "invalid min ID value".to_string())?;
+            let max_id = parse_string_arg_to_u32(max_id_str, "invalid end id value".to_string())?;
 
-                    (client, time, rampup, min_id, max_id)
-                },
-                _ => (0, 0, 0, 0, 0),
-            };
-
-            Ok((RunArgs {client, time, rampup, min_id, max_id}, InitArgs::empty(), benchmark_name.to_string()))
+            Ok(RunArgs {client, time, rampup, min_id, max_id})
         }
 
         // Extract subcommand options
         let (run_args, init_args, action, spec_file) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
-                let (run_args, init_args, spec) = match init_m.subcommand_name() {
-                    Some("yaml") => {
-                        let (r, i, _b) = parse_init_args(init_m, "yaml")?;
-                        let spec = init_m.subcommand_matches("yaml")
-                            .and_then(|m| m.get_one::<String>("spec").cloned());
-                        (r, i, spec)
-                    },
-                    _ => (RunArgs::empty(), InitArgs::empty(), None),
-                };
+                let init_args = parse_init_args(init_m)?;
+                let spec = init_m.get_one::<String>("spec").cloned();
 
-                (run_args, init_args, "init".to_string(), spec)
+                (RunArgs::empty(), init_args, "init".to_string(), spec)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
-                let (run_args, init_args, spec) = match run_m.subcommand_name() {
-                    Some("yaml") => {
-                        let (r, i, _b) = parse_run_args(run_m, "yaml")?;
-                        let spec = run_m.subcommand_matches("yaml")
-                            .and_then(|m| m.get_one::<String>("spec").cloned());
-                        (r, i, spec)
-                    },
-                    _ => (RunArgs::empty(), InitArgs::empty(), None),
-                };
+                let run_args = parse_run_args(run_m)?;
+                let spec = run_m.get_one::<String>("spec").cloned();
 
-                (run_args, init_args, "run".to_string(), spec)
+                (run_args, InitArgs::empty(), "run".to_string(), spec)
             },
             _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
         };
