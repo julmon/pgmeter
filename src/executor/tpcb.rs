@@ -42,6 +42,7 @@ use super::benchmark::{
 ///   3. Updates teller balance
 ///   4. Updates branch balance
 ///   5. Inserts history record
+#[allow(dead_code)]
 pub struct TPCB {
     pub name: String,
     pub description: String,

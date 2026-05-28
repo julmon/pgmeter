@@ -23,6 +23,9 @@ ryu = "1.0"
 itoa = "1.0"
 num_cpus = "1.16"
 polars = { version = "0.26.1", features =["lazy", "temporal", "streaming", "fmt", "describe"] }
+mlua = { version = "0.10", features = ["luau", "vendored", "send"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 
 [profile.release]
 opt-level = 3

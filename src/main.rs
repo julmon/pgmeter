@@ -8,14 +8,15 @@ fn main() {
 
     match &*env.action {
         "run" => {
-            executor::Executor::new(dsn, env.benchmark_type)
+            executor::Executor::new(dsn, env.benchmark_type, env.spec_file)
                 .run_benchmark(env.run_args)
                 .aggregate_data()
                 .print_results();
         },
         "init" => {
-            executor::Executor::new(dsn, env.benchmark_type)
+            executor::Executor::new(dsn, env.benchmark_type, env.spec_file)
                 .init_db_schema()
+                .exec_post_create_table_script(env.init_args.post_create_table)
                 .load_data(env.init_args.scalefactor, env.init_args.jobs)
                 .add_primary_keys(env.init_args.jobs)
                 .add_foreign_keys(env.init_args.jobs, env.init_args.no_fkey)

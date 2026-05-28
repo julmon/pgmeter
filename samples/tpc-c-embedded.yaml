@@ -1,0 +1,562 @@
+# TPC-C Benchmark Specification (self-contained)
+# All Lua scripts are embedded directly in this YAML file.
+
+name: TPC-C
+description: >
+  TPC-C-like benchmark for PostgreSQL. Simulates a complete order-entry
+  environment with warehouses, districts, customers, orders, and inventory.
+
+scaling:
+  unit: warehouse
+  max_id_query: "SELECT MAX(w_id) AS max_id FROM warehouse"
+  constants:
+    districts_per_warehouse: 10
+    customers_per_district: 3000
+    items: 100000
+
+schema:
+  tables:
+    - name: warehouse
+      columns:
+        - { name: w_id, type: INTEGER }
+        - { name: w_name, type: "VARCHAR(10)" }
+        - { name: w_street_1, type: "VARCHAR(20)" }
+        - { name: w_street_2, type: "VARCHAR(20)" }
+        - { name: w_city, type: "VARCHAR(20)" }
+        - { name: w_state, type: "CHAR(2)" }
+        - { name: w_zip, type: "CHAR(9)" }
+        - { name: w_tax, type: REAL }
+        - { name: w_ytd, type: "NUMERIC(24, 12)" }
+      primary_key: [w_id]
+
+    - name: district
+      columns:
+        - { name: d_id, type: INTEGER }
+        - { name: d_w_id, type: INTEGER }
+        - { name: d_name, type: "VARCHAR(10)" }
+        - { name: d_street_1, type: "VARCHAR(20)" }
+        - { name: d_street_2, type: "VARCHAR(20)" }
+        - { name: d_city, type: "VARCHAR(20)" }
+        - { name: d_state, type: "CHAR(2)" }
+        - { name: d_zip, type: "CHAR(9)" }
+        - { name: d_tax, type: REAL }
+        - { name: d_ytd, type: "NUMERIC(24, 12)" }
+        - { name: d_next_o_id, type: INTEGER }
+      primary_key: [d_w_id, d_id]
+
+    - name: customer
+      columns:
+        - { name: c_id, type: INTEGER }
+        - { name: c_d_id, type: INTEGER }
+        - { name: c_w_id, type: INTEGER }
+        - { name: c_first, type: "VARCHAR(16)" }
+        - { name: c_middle, type: "CHAR(2)" }
+        - { name: c_last, type: "VARCHAR(16)" }
+        - { name: c_street_1, type: "VARCHAR(20)" }
+        - { name: c_street_2, type: "VARCHAR(20)" }
+        - { name: c_city, type: "VARCHAR(20)" }
+        - { name: c_state, type: "CHAR(2)" }
+        - { name: c_zip, type: "CHAR(9)" }
+        - { name: c_phone, type: "CHAR(16)" }
+        - { name: c_since, type: TIMESTAMP }
+        - { name: c_credit, type: "CHAR(2)" }
+        - { name: c_credit_lim, type: "NUMERIC(24, 12)" }
+        - { name: c_discount, type: REAL }
+        - { name: c_balance, type: "NUMERIC(24, 12)" }
+        - { name: c_ytd_payment, type: "NUMERIC(24, 12)" }
+        - { name: c_payment_cnt, type: REAL }
+        - { name: c_delivery_cnt, type: REAL }
+        - { name: c_data, type: "VARCHAR(500)" }
+      primary_key: [c_w_id, c_d_id, c_id]
+
+    - name: history
+      columns:
+        - { name: h_c_id, type: INTEGER }
+        - { name: h_c_d_id, type: INTEGER }
+        - { name: h_c_w_id, type: INTEGER }
+        - { name: h_d_id, type: INTEGER }
+        - { name: h_w_id, type: INTEGER }
+        - { name: h_date, type: TIMESTAMP }
+        - { name: h_amount, type: REAL }
+        - { name: h_data, type: "VARCHAR(24)" }
+
+    - name: new_order
+      columns:
+        - { name: no_o_id, type: INTEGER }
+        - { name: no_d_id, type: INTEGER }
+        - { name: no_w_id, type: INTEGER }
+      primary_key: [no_w_id, no_d_id, no_o_id]
+
+    - name: orders
+      columns:
+        - { name: o_id, type: INTEGER }
+        - { name: o_d_id, type: INTEGER }
+        - { name: o_w_id, type: INTEGER }
+        - { name: o_c_id, type: INTEGER }
+        - { name: o_entry_d, type: TIMESTAMP }
+        - { name: o_carrier_id, type: INTEGER }
+        - { name: o_ol_cnt, type: INTEGER }
+        - { name: o_all_local, type: INTEGER }
+      primary_key: [o_w_id, o_d_id, o_id]
+
+    - name: order_line
+      columns:
+        - { name: ol_o_id, type: INTEGER }
+        - { name: ol_d_id, type: INTEGER }
+        - { name: ol_w_id, type: INTEGER }
+        - { name: ol_number, type: INTEGER }
+        - { name: ol_i_id, type: INTEGER }
+        - { name: ol_supply_w_id, type: INTEGER }
+        - { name: ol_delivery_d, type: TIMESTAMP }
+        - { name: ol_quantity, type: INTEGER }
+        - { name: ol_amount, type: REAL }
+        - { name: ol_dist_info, type: "VARCHAR(24)" }
+      primary_key: [ol_w_id, ol_d_id, ol_o_id, ol_number]
+
+    - name: item
+      columns:
+        - { name: i_id, type: INTEGER }
+        - { name: i_im_id, type: INTEGER }
+        - { name: i_name, type: "VARCHAR(24)" }
+        - { name: i_price, type: REAL }
+        - { name: i_data, type: "VARCHAR(50)" }
+      primary_key: [i_id]
+
+    - name: stock
+      columns:
+        - { name: s_i_id, type: INTEGER }
+        - { name: s_w_id, type: INTEGER }
+        - { name: s_quantity, type: INTEGER }
+        - { name: s_dist_01, type: "VARCHAR(24)" }
+        - { name: s_dist_02, type: "VARCHAR(24)" }
+        - { name: s_dist_03, type: "VARCHAR(24)" }
+        - { name: s_dist_04, type: "VARCHAR(24)" }
+        - { name: s_dist_05, type: "VARCHAR(24)" }
+        - { name: s_dist_06, type: "VARCHAR(24)" }
+        - { name: s_dist_07, type: "VARCHAR(24)" }
+        - { name: s_dist_08, type: "VARCHAR(24)" }
+        - { name: s_dist_09, type: "VARCHAR(24)" }
+        - { name: s_dist_10, type: "VARCHAR(24)" }
+        - { name: s_ytd, type: "NUMERIC(16, 8)" }
+        - { name: s_order_cnt, type: REAL }
+        - { name: s_remote_cnt, type: REAL }
+        - { name: s_data, type: "VARCHAR(50)" }
+      primary_key: [s_w_id, s_i_id]
+
+  foreign_keys:
+    - { name: fk_district_warehouse,  table: district,   columns: [d_w_id],                    references: { table: warehouse, columns: [w_id] } }
+    - { name: fk_customer_district,   table: customer,   columns: [c_w_id, c_d_id],             references: { table: district,  columns: [d_w_id, d_id] } }
+    - { name: fk_history_customer,    table: history,    columns: [h_c_w_id, h_c_d_id, h_c_id], references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
+    - { name: fk_history_district,    table: history,    columns: [h_w_id, h_d_id],              references: { table: district,  columns: [d_w_id, d_id] } }
+    - { name: fk_new_order_orders,    table: new_order,  columns: [no_w_id, no_d_id, no_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
+    - { name: fk_orders_customer,     table: orders,     columns: [o_w_id, o_d_id, o_c_id],      references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
+    - { name: fk_order_line_orders,   table: order_line, columns: [ol_w_id, ol_d_id, ol_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
+    - { name: fk_order_line_stock,    table: order_line, columns: [ol_supply_w_id, ol_i_id],     references: { table: stock,     columns: [s_w_id, s_i_id] } }
+    - { name: fk_stock_warehouse,     table: stock,      columns: [s_w_id],                     references: { table: warehouse, columns: [w_id] } }
+    - { name: fk_stock_item,          table: stock,      columns: [s_i_id],                     references: { table: item,      columns: [i_id] } }
+
+  indexes:
+    - { name: i_customer_last_first, table: customer, columns: [c_w_id, c_d_id, c_last, c_first, c_id], unique: true }
+    - { name: i_orders,              table: orders,    columns: [o_w_id, o_d_id, o_c_id, o_id],          unique: true }
+    - { name: i_stock_quantity,      table: stock,     columns: [s_w_id, s_i_id, s_quantity] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+pre_load_script: |
+  -- Populate item table (100K rows, shared across all warehouses)
+  local N_ITEMS = 100000
+  local BATCH_SIZE = 500
+
+  local function make_original(s)
+    if rand_int(1, 100) <= 10 and #s > 9 then
+      local pos = rand_int(1, #s - 9)
+      return string.sub(s, 1, pos - 1) .. "ORIGINAL" .. string.sub(s, pos + 9)
+    end
+    return s
+  end
+
+  for b = 1, math.ceil(N_ITEMS / BATCH_SIZE) do
+    copy_start("COPY item FROM stdin")
+    local batch_start = (b - 1) * BATCH_SIZE + 1
+    local batch_end = math.min(b * BATCH_SIZE, N_ITEMS)
+    for i_id = batch_start, batch_end do
+      copy_write(string.format("%d\t%d\t%s\t%.2f\t%s\n",
+        i_id, rand_int(1, 10000), rand_string(14, 24),
+        rand_float(1.00, 100.00), make_original(rand_string(26, 50))))
+    end
+    copy_end()
+  end
+
+load_script: |
+  -- Per-warehouse data loading
+  local DISTRICTS = 10
+  local CUST_PER_DIST = 3000
+  local N_ITEMS = 100000
+  local BATCH = 500
+
+  local syllables = {"BAR","OUGHT","ABLE","PRIS","PRES","ESE","ANTI","CALLY","ATION","EING"}
+  local function gen_last(n)
+    if n >= 1000 then n = rand_int(0, 999) end
+    local s = string.format("%03d", n)
+    return syllables[tonumber(string.sub(s,1,1))+1]
+      .. syllables[tonumber(string.sub(s,2,2))+1]
+      .. syllables[tonumber(string.sub(s,3,3))+1]
+  end
+  local function rand_state()
+    local c = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    local a = rand_int(1,26)
+    local b = rand_int(1,26)
+    return string.sub(c, a, a) .. string.sub(c, b, b)
+  end
+  local function rand_zip() return string.format("%04d11111", rand_int(1, 9999)) end
+  local function make_original(s)
+    if rand_int(1,100) <= 10 and #s > 9 then
+      local p = rand_int(1, #s - 9)
+      return string.sub(s,1,p-1) .. "ORIGINAL" .. string.sub(s,p+9)
+    end
+    return s
+  end
+  local function now_str()
+    return query_one("SELECT to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')")
+  end
+
+  for _, wh_id in ipairs(ids) do
+    local ts = now_str()
+
+    -- Warehouse
+    copy_start("COPY warehouse FROM stdin")
+    copy_write(string.format("%d\t%s\t%s\t%s\t%s\t%s\t%s\t%.4f\t300000.00\n",
+      wh_id, rand_string(6,10), rand_string(10,20), rand_string(10,20),
+      rand_string(10,20), rand_state(), rand_zip(), rand_float(0.10, 0.20)))
+    copy_end()
+
+    -- District
+    copy_start("COPY district FROM stdin")
+    for d = 1, DISTRICTS do
+      copy_write(string.format("%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%.4f\t30000.00\t3001\n",
+        d, wh_id, rand_string(6,10), rand_string(10,20), rand_string(10,20),
+        rand_string(10,20), rand_state(), rand_zip(), rand_float(0.10, 0.20)))
+    end
+    copy_end()
+
+    -- Customer (30K per warehouse)
+    local total = DISTRICTS * CUST_PER_DIST
+    local c_id, d_id = 1, 1
+    for b = 1, math.ceil(total / BATCH) do
+      copy_start("COPY customer FROM stdin")
+      for _ = 1, math.min(BATCH, total - (b-1)*BATCH) do
+        local credit = rand_int(1,10) == 1 and "BC" or "GC"
+        copy_write(string.format(
+          "%d\t%d\t%d\t%s\tOE\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t50000.00\t%.2f\t-10.00\t10.00\t1\t0\t%s\n",
+          c_id, d_id, wh_id, rand_string(8,16), gen_last(c_id),
+          rand_string(10,20), rand_string(10,20), rand_string(10,20),
+          rand_state(), rand_zip(),
+          rand_int(1000000000000000, 9999999999999999),
+          ts, credit, rand_float(0.00, 0.50), rand_string(300, 500)))
+        c_id = c_id + 1
+        if c_id > CUST_PER_DIST then d_id = d_id + 1; c_id = 1 end
+      end
+      copy_end()
+    end
+
+    -- History
+    c_id, d_id = 1, 1
+    for b = 1, math.ceil(total / BATCH) do
+      copy_start("COPY history FROM stdin")
+      for _ = 1, math.min(BATCH, total - (b-1)*BATCH) do
+        copy_write(string.format("%d\t%d\t%d\t%d\t%d\t%s\t10.0\t%s\n",
+          c_id, d_id, wh_id, d_id, wh_id, ts, rand_string(12, 24)))
+        c_id = c_id + 1
+        if c_id > CUST_PER_DIST then d_id = d_id + 1; c_id = 1 end
+      end
+      copy_end()
+    end
+
+    -- Stock (100K per warehouse)
+    for b = 1, math.ceil(N_ITEMS / BATCH) do
+      copy_start("COPY stock FROM stdin")
+      local s = (b-1)*BATCH + 1
+      local e = math.min(b*BATCH, N_ITEMS)
+      for i_id = s, e do
+        copy_write(string.format(
+          "%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t%s\n",
+          i_id, wh_id, rand_int(10,100),
+          rand_string(24,24), rand_string(24,24), rand_string(24,24),
+          rand_string(24,24), rand_string(24,24), rand_string(24,24),
+          rand_string(24,24), rand_string(24,24), rand_string(24,24),
+          rand_string(24,24), make_original(rand_string(26, 50))))
+      end
+      copy_end()
+    end
+
+    -- Orders
+    local o_id = 1
+    d_id = 1
+    c_id = 1
+    for b = 1, math.ceil(total / BATCH) do
+      copy_start("COPY orders FROM stdin NULL AS ''")
+      for _ = 1, math.min(BATCH, total - (b-1)*BATCH) do
+        local carrier = o_id < 2101 and tostring(rand_int(1,10)) or ""
+        local ol_cnt = (o_id * (o_id + d_id + wh_id)) % 11 + 5
+        copy_write(string.format("%d\t%d\t%d\t%d\t%s\t%s\t%d\t1\n",
+          o_id, d_id, wh_id, c_id, ts, carrier, ol_cnt))
+        o_id = o_id + 1; c_id = c_id + 1
+        if o_id > CUST_PER_DIST then d_id = d_id + 1; o_id = 1; c_id = 1 end
+      end
+      copy_end()
+    end
+
+    -- New-Order (orders 2101-3000 per district)
+    local no_id, d = 2101, 1
+    local total_no = DISTRICTS * 900
+    for b = 1, math.ceil(total_no / BATCH) do
+      copy_start("COPY new_order FROM stdin")
+      for _ = 1, math.min(BATCH, total_no - (b-1)*BATCH) do
+        copy_write(string.format("%d\t%d\t%d\n", no_id, d, wh_id))
+        no_id = no_id + 1
+        if no_id > 3000 then no_id = 2101; d = d + 1 end
+      end
+      copy_end()
+    end
+
+    -- Order-Line
+    o_id = 1; d_id = 1
+    local OL_BATCH = 50
+    for b = 1, math.ceil(total / OL_BATCH) do
+      copy_start("COPY order_line FROM stdin NULL AS ''")
+      for _ = 1, math.min(OL_BATCH, total - (b-1)*OL_BATCH) do
+        local ol_cnt = (o_id * (o_id + d_id + wh_id)) % 11 + 5
+        for ol = 1, ol_cnt do
+          local del_d = o_id < 2101 and ts or ""
+          local amount = o_id >= 2101 and rand_float(0.01, 9999.99) or 0.00
+          copy_write(string.format("%d\t%d\t%d\t%d\t%d\t%d\t%s\t5\t%.2f\t%s\n",
+            o_id, d_id, wh_id, ol, rand_int(1, N_ITEMS), wh_id,
+            del_d, amount, rand_string(24, 24)))
+        end
+        o_id = o_id + 1
+        if o_id > CUST_PER_DIST then d_id = d_id + 1; o_id = 1 end
+      end
+      copy_end()
+    end
+  end
+
+# ---------------------------------------------------------------------------
+# Transactions
+# ---------------------------------------------------------------------------
+
+transactions:
+  - id: 1
+    name: Delivery
+    weight: 4
+    description: The Delivery transaction
+    mode: script
+    script: |
+      local warehouse_id = rand_int(min_id, max_id)
+      local carrier_id = rand_int(1, 10)
+      begin_tx()
+      for district_id = 1, 10 do
+        local rows = query(
+          "SELECT no_o_id FROM new_order WHERE no_w_id = $1 AND no_d_id = $2 ORDER BY no_o_id ASC LIMIT 1",
+          warehouse_id, district_id)
+        if #rows > 0 then
+          local order_id = rows[1]["no_o_id"]
+          exec("DELETE FROM new_order WHERE no_o_id = $1 AND no_w_id = $2 AND no_d_id = $3",
+            order_id, warehouse_id, district_id)
+          local customer_id = query_one(
+            "UPDATE orders SET o_carrier_id = $1 WHERE o_id = $2 AND o_w_id = $3 AND o_d_id = $4 RETURNING o_c_id",
+            carrier_id, order_id, warehouse_id, district_id)
+          exec("UPDATE order_line SET ol_delivery_d = current_timestamp WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
+            order_id, warehouse_id, district_id)
+          local total = query_one(
+            "SELECT COALESCE(SUM(ol_amount * ol_quantity), 0) FROM order_line WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
+            order_id, warehouse_id, district_id)
+          exec("UPDATE customer SET c_delivery_cnt = c_delivery_cnt + 1, c_balance = c_balance + $1 WHERE c_id = $2 AND c_w_id = $3 AND c_d_id = $4",
+            total, customer_id, warehouse_id, district_id)
+        end
+      end
+      commit()
+
+  - id: 2
+    name: New-Order
+    weight: 45
+    description: The New-Order transaction
+    mode: script
+    script: |
+      local warehouse_id = rand_int(min_id, max_id)
+      local district_id = rand_int(1, 10)
+      local customer_id = rand_int(1, const.customers_per_district)
+      local ol_cnt = rand_int(5, 15)
+      local ol_all_local = 1
+      local rbk = rand_int(1, 100)
+
+      local order_lines = {}
+      local item_ids = {}
+      for ol_number = 1, ol_cnt do
+        local ol_supply_w_id = warehouse_id
+        local ol_quantity = rand_int(1, 10)
+        local ol_i_id
+        repeat ol_i_id = rand_int(1, const.items) until not item_ids[ol_i_id]
+        item_ids[ol_i_id] = true
+        if rbk == 1 and ol_number == ol_cnt then ol_i_id = 999999 end
+        if (max_id - min_id) > 0 and rand_int(1, 100) == 1 then
+          ol_all_local = 0
+          while ol_supply_w_id == warehouse_id do
+            ol_supply_w_id = rand_int(min_id, max_id)
+          end
+        end
+        table.insert(order_lines, {ol_number, ol_supply_w_id, ol_quantity, ol_i_id})
+      end
+
+      begin_tx()
+      query("SELECT w_tax FROM warehouse WHERE w_id = $1", warehouse_id)
+      local dist_rows = query(
+        "UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = $1 AND d_id = $2 RETURNING d_tax, d_next_o_id",
+        warehouse_id, district_id)
+      local o_id = dist_rows[1]["d_next_o_id"] - 1
+      query("SELECT c_discount, c_last, c_credit FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3",
+        warehouse_id, district_id, customer_id)
+      exec("INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_ol_cnt, o_all_local) VALUES ($1, $2, $3, $4, NOW(), $5, $6)",
+        o_id, district_id, warehouse_id, customer_id, ol_cnt, ol_all_local)
+      exec("INSERT INTO new_order (no_o_id, no_d_id, no_w_id) VALUES ($1, $2, $3)",
+        o_id, district_id, warehouse_id)
+
+      local stock_query = string.format(
+        "SELECT s_quantity, s_dist_%02d AS s_dist, s_data FROM stock WHERE s_i_id = $1 AND s_w_id = $2", district_id)
+      for _, ol in ipairs(order_lines) do
+        local ol_number, ol_supply_w_id, ol_quantity, ol_i_id = ol[1], ol[2], ol[3], ol[4]
+        local item_rows = query("SELECT i_price, i_name, i_data FROM item WHERE i_id = $1", ol_i_id)
+        if #item_rows == 0 then rollback(); error("New-order rollback: item not found") end
+        local i_price = item_rows[1]["i_price"]
+        local ol_amount = i_price * ol_quantity
+        local stock_rows = query(stock_query, ol_i_id, ol_supply_w_id)
+        local s_quantity = stock_rows[1]["s_quantity"]
+        local s_dist = stock_rows[1]["s_dist"]
+        s_quantity = (s_quantity - ol_quantity) > 10 and (s_quantity - ol_quantity) or (s_quantity - ol_quantity + 91)
+        local s_remote = ol_supply_w_id ~= warehouse_id and 1.0 or 0.0
+        exec("UPDATE stock SET s_quantity = $3, s_ytd = s_ytd + $4::NUMERIC, s_order_cnt = s_order_cnt + 1, s_remote_cnt = s_remote_cnt + $5 WHERE s_i_id = $1 AND s_w_id = $2",
+          ol_i_id, ol_supply_w_id, s_quantity, ol_quantity, s_remote)
+        exec("INSERT INTO order_line (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_dist_info) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+          o_id, district_id, warehouse_id, ol_number, ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, s_dist)
+      end
+      commit()
+
+  - id: 3
+    name: Payment
+    weight: 43
+    description: The Payment transaction
+    mode: script
+    script: |
+      local warehouse_id = rand_int(min_id, max_id)
+      local district_id = rand_int(1, 10)
+      local x = rand_int(1, 100)
+      local y = rand_int(1, 100)
+
+      local c_d_id, c_w_id
+      if x <= 85 then c_d_id = district_id; c_w_id = warehouse_id
+      else
+        c_d_id = rand_int(1, 10)
+        if (max_id - min_id) > 0 then
+          c_w_id = warehouse_id
+          while c_w_id == warehouse_id do c_w_id = rand_int(min_id, max_id) end
+        else c_w_id = warehouse_id end
+      end
+
+      local c_id = rand_int(1, const.customers_per_district)
+      local h_amount = rand_float(1.00, 5000.00)
+
+      local syllables = {"BAR","OUGHT","ABLE","PRIS","PRES","ESE","ANTI","CALLY","ATION","EING"}
+      local function gen_last(n)
+        if n >= 1000 then n = rand_int(0, 999) end
+        local s = string.format("%03d", n)
+        return syllables[tonumber(string.sub(s,1,1))+1]
+          .. syllables[tonumber(string.sub(s,2,2))+1]
+          .. syllables[tonumber(string.sub(s,3,3))+1]
+      end
+
+      local c_last = ""
+      if y <= 60 then c_last = gen_last(rand_int(1, 1000)) end
+
+      begin_tx()
+      local w_rows = query("UPDATE warehouse SET w_ytd = w_ytd + $1::NUMERIC WHERE w_id = $2 RETURNING w_name", h_amount, warehouse_id)
+      local w_name = w_rows[1]["w_name"]
+      local d_rows = query("UPDATE district SET d_ytd = d_ytd + $1::NUMERIC WHERE d_w_id = $2 AND d_id = $3 RETURNING d_name", h_amount, warehouse_id, district_id)
+      local d_name = d_rows[1]["d_name"]
+
+      if y <= 60 then
+        local c_rows = query("SELECT c_id FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_last = $3 ORDER BY c_first ASC", c_w_id, c_d_id, c_last)
+        if #c_rows == 0 then rollback(); error("Payment rollback: customer not found by last name") end
+        c_id = c_rows[math.floor(#c_rows / 2) + 1]["c_id"]
+      end
+
+      local cust_rows = query("SELECT c_credit FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3", c_w_id, c_d_id, c_id)
+      local c_credit = cust_rows[1]["c_credit"]
+
+      if c_credit ~= nil and string.find(c_credit, "BC") then
+        local pre = string.format("%d %d %d %d %d %.2f", c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount)
+        exec("UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+          h_amount, c_id, c_d_id, c_w_id, pre)
+      else
+        exec("UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+          h_amount, c_id, c_d_id, c_w_id)
+      end
+
+      local h_data = string.sub((w_name or "") .. "    " .. (d_name or ""), 1, 24)
+      exec("INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7)",
+        c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount, h_data)
+      commit()
+
+  - id: 4
+    name: Order-Status
+    weight: 4
+    description: The Order-Status transaction
+    mode: script
+    script: |
+      local warehouse_id = rand_int(min_id, max_id)
+      local district_id = rand_int(1, 10)
+      local y = rand_int(1, 100)
+      local c_id = rand_int(1, const.customers_per_district)
+
+      local syllables = {"BAR","OUGHT","ABLE","PRIS","PRES","ESE","ANTI","CALLY","ATION","EING"}
+      local function gen_last(n)
+        if n >= 1000 then n = rand_int(0, 999) end
+        local s = string.format("%03d", n)
+        return syllables[tonumber(string.sub(s,1,1))+1]
+          .. syllables[tonumber(string.sub(s,2,2))+1]
+          .. syllables[tonumber(string.sub(s,3,3))+1]
+      end
+
+      begin_tx()
+      if y <= 60 then
+        local c_last = gen_last(rand_int(1, 999))
+        local c_rows = query("SELECT c_id FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_last = $3 ORDER BY c_first ASC",
+          warehouse_id, district_id, c_last)
+        if #c_rows == 0 then rollback(); error("Order-Status rollback: customer not found") end
+        c_id = c_rows[math.floor(#c_rows / 2) + 1]["c_id"]
+      end
+      query("SELECT c_balance, c_first, c_middle, c_last FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_id = $3",
+        warehouse_id, district_id, c_id)
+      local o_rows = query("SELECT o_id FROM orders WHERE o_w_id = $1 AND o_d_id = $2 AND o_c_id = $3 ORDER BY o_entry_d DESC LIMIT 1",
+        warehouse_id, district_id, c_id)
+      if #o_rows > 0 then
+        query("SELECT ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_delivery_d FROM order_line WHERE ol_w_id = $1 AND ol_d_id = $2 AND ol_o_id = $3",
+          warehouse_id, district_id, o_rows[1]["o_id"])
+      end
+      commit()
+
+  - id: 5
+    name: Stock-Level
+    weight: 4
+    description: The Stock-Level transaction
+    mode: script
+    script: |
+      local warehouse_id = rand_int(min_id, max_id)
+      local district_id = rand_int(1, 10)
+      local threshold = rand_int(10, 20)
+      begin_tx()
+      local next_o_id = query_one("SELECT d_next_o_id FROM district WHERE d_w_id = $1 AND d_id = $2",
+        warehouse_id, district_id)
+      query("SELECT COUNT(DISTINCT s_i_id) FROM order_line JOIN stock ON s_i_id = ol_i_id AND s_w_id = $1 WHERE ol_w_id = $1 AND ol_d_id = $2 AND ol_o_id BETWEEN $3 - 20 AND $3 - 1 AND s_quantity < $4",
+        warehouse_id, district_id, next_o_id, threshold)
+      commit()

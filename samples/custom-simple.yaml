@@ -1,0 +1,107 @@
+# Example: Custom user-defined benchmark
+# This is what YAML-driven benchmarks are great for: simple, user-defined
+# workloads where users want to test their own schema and queries without
+# writing Rust code.
+
+name: my-app-benchmark
+description: Benchmark for my application's hot path
+
+scaling:
+  unit: tenant
+  max_id_query: "SELECT MAX(id) FROM tenant"
+
+schema:
+  tables:
+    - name: tenant
+      columns:
+        - { name: id, type: "INTEGER NOT NULL" }
+        - { name: name, type: "VARCHAR(100)" }
+        - { name: created_at, type: "TIMESTAMP DEFAULT NOW()" }
+      primary_key: [id]
+
+    - name: product
+      columns:
+        - { name: id, type: "INTEGER NOT NULL" }
+        - { name: tenant_id, type: INTEGER }
+        - { name: name, type: "VARCHAR(200)" }
+        - { name: price, type: "NUMERIC(10,2)" }
+        - { name: stock, type: "INTEGER DEFAULT 0" }
+      primary_key: [id]
+
+    - name: orders
+      columns:
+        - { name: id, type: "SERIAL" }
+        - { name: tenant_id, type: INTEGER }
+        - { name: product_id, type: INTEGER }
+        - { name: quantity, type: INTEGER }
+        - { name: total, type: "NUMERIC(10,2)" }
+        - { name: created_at, type: "TIMESTAMP DEFAULT NOW()" }
+      primary_key: [id]
+
+  foreign_keys:
+    - { name: fk_product_tenant, table: product, columns: [tenant_id], references: { table: tenant, columns: [id] } }
+    - { name: fk_order_tenant,   table: orders,  columns: [tenant_id], references: { table: tenant, columns: [id] } }
+    - { name: fk_order_product,  table: orders,  columns: [product_id], references: { table: product, columns: [id] } }
+
+  indexes:
+    - { name: idx_product_tenant, table: product, columns: [tenant_id] }
+    - { name: idx_orders_tenant,  table: orders,  columns: [tenant_id, created_at] }
+
+load:
+  - table: tenant
+    method: copy
+    copy_columns: [id, name]
+    rows_per_id: 1
+    row: "{{id}}\tTenant-{{id}}\n"
+
+  - table: product
+    method: copy
+    copy_columns: [id, tenant_id, name, price, stock]
+    rows_per_id: 100
+    batch_size: 100
+    row: "{{(id - 1) * 100 + i}}\t{{id}}\tProduct-{{i}}\t{{rand_float(1.0, 999.99)}}\t{{rand_int(0, 10000)}}\n"
+
+transactions:
+  - id: 1
+    name: read-product
+    description: Look up a product by ID
+    weight: 50
+    bindings:
+      tenant_id: "rand_int(min_id, max_id)"
+      product_id: "rand_int((tenant_id - 1) * 100 + 1, tenant_id * 100)"
+    mode: simple
+    sql: |
+      SELECT id, name, price, stock
+      FROM product
+      WHERE id = {{product_id}} AND tenant_id = {{tenant_id}};
+
+  - id: 2
+    name: place-order
+    description: Insert an order and decrement stock
+    weight: 30
+    bindings:
+      tenant_id: "rand_int(min_id, max_id)"
+      product_id: "rand_int((tenant_id - 1) * 100 + 1, tenant_id * 100)"
+      quantity: "rand_int(1, 10)"
+    mode: simple
+    sql: |
+      BEGIN;
+      UPDATE product SET stock = stock - {{quantity}} WHERE id = {{product_id}} AND tenant_id = {{tenant_id}};
+      INSERT INTO orders (tenant_id, product_id, quantity, total)
+        SELECT {{tenant_id}}, {{product_id}}, {{quantity}}, price * {{quantity}}
+        FROM product WHERE id = {{product_id}};
+      COMMIT;
+
+  - id: 3
+    name: list-recent-orders
+    description: Fetch the 20 most recent orders for a tenant
+    weight: 20
+    bindings:
+      tenant_id: "rand_int(min_id, max_id)"
+    mode: simple
+    sql: |
+      SELECT o.id, p.name, o.quantity, o.total, o.created_at
+      FROM orders o JOIN product p ON o.product_id = p.id
+      WHERE o.tenant_id = {{tenant_id}}
+      ORDER BY o.created_at DESC
+      LIMIT 20;

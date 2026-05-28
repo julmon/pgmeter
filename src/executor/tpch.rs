@@ -26,6 +26,7 @@ use super::benchmark::{
 /// - 2 refresh functions (RF1: insert, RF2: delete) - optional
 ///
 /// This implementation focuses on the 22 queries for measuring analytical query performance.
+#[allow(dead_code)]
 pub struct TPCH {
     pub name: String,
     pub description: String,

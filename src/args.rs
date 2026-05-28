@@ -31,6 +31,8 @@ pub struct InitArgs {
     pub jobs: u32,
     // Do not create foreign keys
     pub no_fkey: bool,
+    // Path to SQL script to execute after table creation
+    pub post_create_table: Option<String>,
 }
 
 // CLI arguments
@@ -53,6 +55,8 @@ pub struct PgMtrArgs {
     pub run_args: RunArgs,
     // init arguments
     pub init_args: InitArgs,
+    // Path to YAML benchmark specification file
+    pub spec_file: Option<String>,
 }
 
 // Implementation of RunArgs::empty()
@@ -65,7 +69,7 @@ impl RunArgs {
 // Implementation of InitArgs::empty()
 impl InitArgs {
     fn empty() -> Self {
-        InitArgs {scalefactor: 0, jobs: 0, no_fkey: false}
+        InitArgs {scalefactor: 0, jobs: 0, no_fkey: false, post_create_table: None}
     }
 }
 
@@ -234,6 +238,22 @@ impl PgMtrArgs {
             .action(ArgAction::SetTrue)
             .help("Do not create foreign keys");
 
+        // init: Define the --post-create-table command line option
+        let post_create_table_option = Arg::new("post_create_table")
+            .long("post-create-table")
+            .action(ArgAction::Set)
+            .help("Path to SQL script to execute after table creation")
+            .required(false)
+            .value_name("FILE");
+
+        // yaml: Define the --spec command line option
+        let spec_option = Arg::new("spec")
+            .long("spec")
+            .action(ArgAction::Set)
+            .help("Path to YAML benchmark specification file")
+            .required(true)
+            .value_name("FILE");
+
         // Sub-commands
         // run tpcc <OPTIONS>
         let run_tpcc = Command::new("tpcc")
@@ -265,40 +285,63 @@ impl PgMtrArgs {
         // run tpch <OPTIONS>
         let run_tpch = Command::new("tpch")
             .about("Run TPC-H benchmark (decision support queries)")
-            .arg(client_option)
-            .arg(time_option)
-            .arg(rampup_option)
-            .arg(min_id_option)
-            .arg(max_id_option);
+            .arg(client_option.clone())
+            .arg(time_option.clone())
+            .arg(rampup_option.clone())
+            .arg(min_id_option.clone())
+            .arg(max_id_option.clone());
 
         // init tpcc <OPTIONS>
         let init_tpcc = Command::new("tpcc")
             .about("Initialize TPC-C-like benchmark data")
             .arg(scalefactor_option.clone())
             .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone());
+            .arg(no_fkey_option.clone())
+            .arg(post_create_table_option.clone());
 
         // init tpcb <OPTIONS>
         let init_tpcb = Command::new("tpcb")
             .about("Initialize TPC-B benchmark data (banking debit/credit)")
             .arg(scalefactor_option.clone())
             .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone());
+            .arg(no_fkey_option.clone())
+            .arg(post_create_table_option.clone());
 
         // init tpciot <OPTIONS>
         let init_tpciot = Command::new("tpciot")
             .about("Initialize TPCx-IoT-like benchmark data")
             .arg(scalefactor_option.clone())
             .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone());
+            .arg(no_fkey_option.clone())
+            .arg(post_create_table_option.clone());
 
         // init tpch <OPTIONS>
         // Note: TPC-H doesn't support parallel data loading (-j) because
         // the data isn't partitioned by warehouse like TPC-C
         let init_tpch = Command::new("tpch")
             .about("Initialize TPC-H benchmark data (decision support queries)")
+            .arg(scalefactor_option.clone())
+            .arg(no_fkey_option.clone())
+            .arg(post_create_table_option.clone());
+
+        // run yaml --spec <FILE> <OPTIONS>
+        let run_yaml = Command::new("yaml")
+            .about("Run benchmark from YAML specification file")
+            .arg(spec_option.clone())
+            .arg(client_option)
+            .arg(time_option)
+            .arg(rampup_option)
+            .arg(min_id_option)
+            .arg(max_id_option);
+
+        // init yaml --spec <FILE> <OPTIONS>
+        let init_yaml = Command::new("yaml")
+            .about("Initialize benchmark from YAML specification file")
+            .arg(spec_option)
             .arg(scalefactor_option)
-            .arg(no_fkey_option);
+            .arg(jobs_option)
+            .arg(no_fkey_option)
+            .arg(post_create_table_option);
 
         // init <SUBCOMMAND> <OPTIONS>
         let init = Command::new("init")
@@ -308,7 +351,8 @@ impl PgMtrArgs {
             .subcommand(init_tpcc)
             .subcommand(init_tpcb)
             .subcommand(init_tpciot)
-            .subcommand(init_tpch);
+            .subcommand(init_tpch)
+            .subcommand(init_yaml);
 
         // run <SUBCOMMAND> <OPTIONS>
         let run = Command::new("run")
@@ -318,7 +362,8 @@ impl PgMtrArgs {
             .subcommand(run_tpcc)
             .subcommand(run_tpcb)
             .subcommand(run_tpciot)
-            .subcommand(run_tpch);
+            .subcommand(run_tpch)
+            .subcommand(run_yaml);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -359,7 +404,7 @@ impl PgMtrArgs {
 
         // Helper function to parse init subcommand arguments
         fn parse_init_args(init_m: &clap::ArgMatches, benchmark_name: &str) -> Result<(RunArgs, InitArgs, String), clap::Error> {
-            let (scalefactor, jobs, no_fkey) = match init_m.subcommand_matches(benchmark_name) {
+            let (scalefactor, jobs, no_fkey, post_create_table) = match init_m.subcommand_matches(benchmark_name) {
                 Some(bm_m) => {
                     let scalefactor_str = bm_m
                         .get_one::<String>("scalefactor")
@@ -370,16 +415,19 @@ impl PgMtrArgs {
                         .map(|s| s.as_str())
                         .unwrap_or("1");
                     let no_fkey = bm_m.get_flag("no_fkey");
+                    let post_create_table = bm_m
+                        .get_one::<String>("post_create_table")
+                        .cloned();
 
                     let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
                     let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
 
-                    (scalefactor, jobs, no_fkey)
+                    (scalefactor, jobs, no_fkey, post_create_table)
                 },
-                _ => (0, 0, false)
+                _ => (0, 0, false, None)
             };
 
-            Ok((RunArgs::empty(), InitArgs {scalefactor, jobs, no_fkey}, benchmark_name.to_string()))
+            Ok((RunArgs::empty(), InitArgs {scalefactor, jobs, no_fkey, post_create_table}, benchmark_name.to_string()))
         }
 
         // Helper function to parse run subcommand arguments
@@ -407,32 +455,44 @@ impl PgMtrArgs {
         }
 
         // Extract subcommand options
-        let (run_args, init_args, action, benchmark_type) = match matches.subcommand_name() {
+        let (run_args, init_args, action, benchmark_type, spec_file) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
-                let (run_args, init_args, benchmark_type) = match init_m.subcommand_name() {
-                    Some("tpcc") => parse_init_args(init_m, "tpcc")?,
-                    Some("tpcb") => parse_init_args(init_m, "tpcb")?,
-                    Some("tpciot") => parse_init_args(init_m, "tpciot")?,
-                    Some("tpch") => parse_init_args(init_m, "tpch")?,
-                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
+                let (run_args, init_args, benchmark_type, spec) = match init_m.subcommand_name() {
+                    Some("tpcc") => { let (r, i, b) = parse_init_args(init_m, "tpcc")?; (r, i, b, None) },
+                    Some("tpcb") => { let (r, i, b) = parse_init_args(init_m, "tpcb")?; (r, i, b, None) },
+                    Some("tpciot") => { let (r, i, b) = parse_init_args(init_m, "tpciot")?; (r, i, b, None) },
+                    Some("tpch") => { let (r, i, b) = parse_init_args(init_m, "tpch")?; (r, i, b, None) },
+                    Some("yaml") => {
+                        let (r, i, b) = parse_init_args(init_m, "yaml")?;
+                        let spec = init_m.subcommand_matches("yaml")
+                            .and_then(|m| m.get_one::<String>("spec").cloned());
+                        (r, i, b, spec)
+                    },
+                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
                 };
 
-                (run_args, init_args, "init".to_string(), benchmark_type)
+                (run_args, init_args, "init".to_string(), benchmark_type, spec)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
-                let (run_args, init_args, benchmark_type) = match run_m.subcommand_name() {
-                    Some("tpcc") => parse_run_args(run_m, "tpcc")?,
-                    Some("tpcb") => parse_run_args(run_m, "tpcb")?,
-                    Some("tpciot") => parse_run_args(run_m, "tpciot")?,
-                    Some("tpch") => parse_run_args(run_m, "tpch")?,
-                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string()),
+                let (run_args, init_args, benchmark_type, spec) = match run_m.subcommand_name() {
+                    Some("tpcc") => { let (r, i, b) = parse_run_args(run_m, "tpcc")?; (r, i, b, None) },
+                    Some("tpcb") => { let (r, i, b) = parse_run_args(run_m, "tpcb")?; (r, i, b, None) },
+                    Some("tpciot") => { let (r, i, b) = parse_run_args(run_m, "tpciot")?; (r, i, b, None) },
+                    Some("tpch") => { let (r, i, b) = parse_run_args(run_m, "tpch")?; (r, i, b, None) },
+                    Some("yaml") => {
+                        let (r, i, b) = parse_run_args(run_m, "yaml")?;
+                        let spec = run_m.subcommand_matches("yaml")
+                            .and_then(|m| m.get_one::<String>("spec").cloned());
+                        (r, i, b, spec)
+                    },
+                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
                 };
 
-                (run_args, init_args, "run".to_string(), benchmark_type)
+                (run_args, init_args, "run".to_string(), benchmark_type, spec)
             },
-            _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), "undefined".to_string()),
+            _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), "undefined".to_string(), None),
         };
 
         Ok(
@@ -446,6 +506,7 @@ impl PgMtrArgs {
                 benchmark_type: benchmark_type,
                 run_args: run_args,
                 init_args: init_args,
+                spec_file: spec_file,
             }
         )
     }

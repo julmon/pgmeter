@@ -37,6 +37,7 @@ use super::benchmark::{
 /// - Device Query (10%): Single sensor data retrieval
 /// - Alert Query (5%): Alert status queries
 /// - Threshold Update (5%): Sensor threshold configuration updates
+#[allow(dead_code)]
 pub struct TPCIoT {
     pub name: String,
     pub description: String,

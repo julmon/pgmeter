@@ -1,0 +1,140 @@
+# TPC-B Benchmark Specification
+# Banking debit/credit benchmark per official TPC-B specification.
+
+name: TPC-B
+description: >
+  TPC-B benchmark implementation for PostgreSQL per official TPC-B specification.
+  Simulates a banking system with branches, tellers, and accounts performing
+  debit/credit transactions.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+scaling:
+  # The entity used as the scale-factor unit (1 SF = 1 branch)
+  unit: branch
+  # How to discover the current max ID at run time
+  max_id_query: "SELECT MAX(branch_id) AS max_id FROM branch"
+  # Constants available in expressions as {{const.<name>}}
+  constants:
+    tellers_per_branch: 10
+    accounts_per_branch: 100000
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  tables:
+    - name: branch
+      columns:
+        - { name: branch_id, type: "INTEGER NOT NULL" }
+        - { name: branch_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(88)" }
+      primary_key: [branch_id]
+
+    - name: teller
+      columns:
+        - { name: teller_id, type: "INTEGER NOT NULL" }
+        - { name: branch_id, type: INTEGER }
+        - { name: teller_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(84)" }
+      primary_key: [teller_id]
+
+    - name: account
+      columns:
+        - { name: account_id, type: "INTEGER NOT NULL" }
+        - { name: branch_id, type: INTEGER }
+        - { name: account_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(84)" }
+      primary_key: [account_id]
+      # access_method: heap            # optional: table access method (e.g. heap, columnar)
+      # storage:                       # optional: WITH (...) storage parameters
+      #   fillfactor: 90
+      #   autovacuum_enabled: false
+
+    - name: history
+      columns:
+        - { name: account_id, type: INTEGER }
+        - { name: teller_id, type: INTEGER }
+        - { name: branch_id, type: INTEGER }
+        - { name: delta, type: INTEGER }
+        - { name: timestamp, type: TIMESTAMP }
+        - { name: filler, type: "CHAR(22)" }
+      # storage:
+      #   fillfactor: 100
+
+  foreign_keys:
+    - name: fk_teller_branch
+      table: teller
+      columns: [branch_id]
+      references: { table: branch, columns: [branch_id] }
+
+    - name: fk_account_branch
+      table: account
+      columns: [branch_id]
+      references: { table: branch, columns: [branch_id] }
+
+  indexes:
+    - { name: idx_teller_branch, table: teller, columns: [branch_id] }
+    - { name: idx_account_branch, table: account, columns: [branch_id] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+# Each "loader" is executed once per scale-factor unit (branch_id = 1..SF).
+# The tool iterates {{id}} over the assigned IDs for each parallel job.
+load:
+  - table: branch
+    method: copy
+    copy_columns: [branch_id, branch_balance, filler]
+    rows_per_id: 1
+    row: "{{id}}\t0\t\n"
+
+  - table: teller
+    method: copy
+    copy_columns: [teller_id, branch_id, teller_balance, filler]
+    rows_per_id: "{{const.tellers_per_branch}}"
+    row: "{{(id - 1) * const.tellers_per_branch + i}}\t{{id}}\t0\t\n"
+    # 'i' iterates from 1..rows_per_id
+
+  - table: account
+    method: copy
+    copy_columns: [account_id, branch_id, account_balance, filler]
+    rows_per_id: "{{const.accounts_per_branch}}"
+    batch_size: 10000
+    row: "{{(id - 1) * const.accounts_per_branch + i}}\t{{id}}\t0\t\n"
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+transactions:
+  - id: 1
+    name: TPC-B
+    description: TPC-B debit/credit transaction
+    weight: 100
+
+    # Variable bindings evaluated before the SQL block.
+    # Available functions: rand_int(min, max), rand_float(min, max)
+    # Available context: min_id, max_id, const.*
+    bindings:
+      branch_id: "rand_int(min_id, max_id)"
+      account_id: "rand_int((min_id - 1) * const.accounts_per_branch + 1, max_id * const.accounts_per_branch)"
+      teller_id: "rand_int((min_id - 1) * const.tellers_per_branch + 1, max_id * const.tellers_per_branch)"
+      delta: "rand_int(-5000, 5000)"
+
+    # Execution mode:
+    #   "simple" = send as one batch_execute string (1 round-trip, like pgbench simple protocol)
+    #   "extended" = use parameterised queries ($1, $2, ...) with individual execute calls
+    mode: simple
+
+    # SQL executed inside a single transaction.
+    # {{var}} references are substituted from bindings above.
+    sql: |
+      BEGIN;
+      UPDATE account SET account_balance = account_balance + {{delta}} WHERE account_id = {{account_id}};
+      SELECT account_balance FROM account WHERE account_id = {{account_id}};
+      UPDATE teller SET teller_balance = teller_balance + {{delta}} WHERE teller_id = {{teller_id}};
+      UPDATE branch SET branch_balance = branch_balance + {{delta}} WHERE branch_id = {{branch_id}};
+      INSERT INTO history (account_id, teller_id, branch_id, delta, timestamp)
+        VALUES ({{account_id}}, {{teller_id}}, {{branch_id}}, {{delta}}, CURRENT_TIMESTAMP);
+      COMMIT;

@@ -1,0 +1,142 @@
+# TPCx-IoT Benchmark Specification
+# IoT gateway simulation with sensor data ingestion and queries.
+# Transaction logic is implemented in Lua scripts (samples/lua/).
+
+name: TPCx-IoT
+description: >
+  TPCx-IoT-like benchmark for PostgreSQL. Simulates an electric utility
+  operational scenario with power substations containing multiple sensors
+  that generate time-series data.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+scaling:
+  unit: substation
+  max_id_query: "SELECT MAX(ss_id) AS max_id FROM substation"
+  constants:
+    sensors_per_substation: 100
+    initial_measurements_per_sensor: 1000
+    measurement_batch_size: 100
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  pre_ddls:
+    - "DROP SEQUENCE IF EXISTS measurement_id_seq CASCADE"
+    - "DROP SEQUENCE IF EXISTS alert_id_seq CASCADE"
+    - "CREATE SEQUENCE measurement_id_seq"
+    - "CREATE SEQUENCE alert_id_seq"
+
+  post_ddls:
+    - "SELECT setval('measurement_id_seq', COALESCE((SELECT MAX(m_id) FROM measurement), 1))"
+    - "SELECT setval('alert_id_seq', COALESCE((SELECT MAX(a_id) FROM alert), 1))"
+
+  tables:
+    - name: substation
+      columns:
+        - { name: ss_id, type: INTEGER }
+        - { name: ss_name, type: "VARCHAR(64)" }
+        - { name: ss_location, type: "VARCHAR(128)" }
+        - { name: ss_latitude, type: "DOUBLE PRECISION" }
+        - { name: ss_longitude, type: "DOUBLE PRECISION" }
+        - { name: ss_capacity, type: INTEGER }
+        - { name: ss_status, type: "VARCHAR(16)" }
+        - { name: ss_created_at, type: TIMESTAMP }
+      primary_key: [ss_id]
+
+    - name: sensor
+      columns:
+        - { name: sn_id, type: BIGINT }
+        - { name: sn_ss_id, type: INTEGER }
+        - { name: sn_type, type: "VARCHAR(32)" }
+        - { name: sn_unit, type: "VARCHAR(16)" }
+        - { name: sn_min_threshold, type: "DOUBLE PRECISION" }
+        - { name: sn_max_threshold, type: "DOUBLE PRECISION" }
+        - { name: sn_status, type: "VARCHAR(16)" }
+        - { name: sn_last_reading, type: "DOUBLE PRECISION" }
+        - { name: sn_last_reading_at, type: TIMESTAMP }
+        - { name: sn_created_at, type: TIMESTAMP }
+      primary_key: [sn_id]
+
+    - name: measurement
+      columns:
+        - { name: m_id, type: BIGINT }
+        - { name: m_sn_id, type: BIGINT }
+        - { name: m_ss_id, type: INTEGER }
+        - { name: m_timestamp, type: TIMESTAMP }
+        - { name: m_value, type: "DOUBLE PRECISION" }
+        - { name: m_quality, type: INTEGER }
+      primary_key: [m_id]
+
+    - name: alert
+      columns:
+        - { name: a_id, type: BIGINT }
+        - { name: a_sn_id, type: BIGINT }
+        - { name: a_ss_id, type: INTEGER }
+        - { name: a_timestamp, type: TIMESTAMP }
+        - { name: a_type, type: "VARCHAR(16)" }
+        - { name: a_value, type: "DOUBLE PRECISION" }
+        - { name: a_threshold, type: "DOUBLE PRECISION" }
+        - { name: a_acknowledged, type: BOOLEAN }
+        - { name: a_acknowledged_at, type: TIMESTAMP }
+      primary_key: [a_id]
+
+  foreign_keys:
+    - { name: fk_sensor_substation,       table: sensor,      columns: [sn_ss_id], references: { table: substation, columns: [ss_id] } }
+    - { name: fk_measurement_sensor,      table: measurement, columns: [m_sn_id],  references: { table: sensor,     columns: [sn_id] } }
+    - { name: fk_measurement_substation,  table: measurement, columns: [m_ss_id],  references: { table: substation, columns: [ss_id] } }
+    - { name: fk_alert_sensor,            table: alert,       columns: [a_sn_id],  references: { table: sensor,     columns: [sn_id] } }
+    - { name: fk_alert_substation,        table: alert,       columns: [a_ss_id],  references: { table: substation, columns: [ss_id] } }
+
+  indexes:
+    - { name: i_measurement_timestamp,  table: measurement, columns: [m_timestamp] }
+    - { name: i_measurement_sensor,     table: measurement, columns: [m_sn_id, m_timestamp] }
+    - { name: i_measurement_substation, table: measurement, columns: [m_ss_id, m_timestamp], include: [m_sn_id, m_value] }
+    - { name: i_alert_unack,            table: alert,       columns: [a_ss_id, a_acknowledged], where: "NOT a_acknowledged" }
+    - { name: i_sensor_substation,      table: sensor,      columns: [sn_ss_id] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+load_script: lua/tpciot_load.lua
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+transactions:
+  - id: 1
+    name: Data-Ingestion
+    weight: 70
+    description: Bulk insert of sensor measurements
+    mode: script
+    script_file: lua/tpciot_data_ingestion.lua
+
+  - id: 2
+    name: Scan-Query
+    weight: 10
+    description: Time-range aggregation query
+    mode: script
+    script_file: lua/tpciot_scan_query.lua
+
+  - id: 3
+    name: Device-Query
+    weight: 10
+    description: Single sensor data retrieval
+    mode: script
+    script_file: lua/tpciot_device_query.lua
+
+  - id: 4
+    name: Alert-Query
+    weight: 5
+    description: Alert status query
+    mode: script
+    script_file: lua/tpciot_alert_query.lua
+
+  - id: 5
+    name: Threshold-Update
+    weight: 5
+    description: Sensor threshold configuration update
+    mode: script
+    script_file: lua/tpciot_threshold_update.lua

@@ -1,0 +1,809 @@
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
+
+use mlua::prelude::*;
+use postgres::Client;
+use rand::Rng;
+use rand::distributions::Alphanumeric;
+
+/// Raw pointer wrapper for postgres::Client.
+/// SAFETY: This is only used within a single thread. The pointer is set before
+/// Lua execution and cleared immediately after. The Lua VM is thread-local.
+struct PgClientPtr(*mut Client);
+
+// SAFETY: PgClientPtr is confined to a single thread via thread_local! storage.
+// It is never sent across threads or shared between threads.
+unsafe impl Send for PgClientPtr {}
+unsafe impl Sync for PgClientPtr {}
+
+/// Wrapper for an active COPY writer. Stored in thread-local during copy_start/copy_end.
+struct CopyWriterHolder(Option<postgres::CopyInWriter<'static>>);
+
+// SAFETY: Same as PgClientPtr -- single-threaded, never shared.
+unsafe impl Send for CopyWriterHolder {}
+unsafe impl Sync for CopyWriterHolder {}
+
+thread_local! {
+    /// Thread-local Lua VM for script-mode transactions (has DB bridge functions).
+    static LUA_VM: RefCell<Option<Lua>> = RefCell::new(None);
+
+    /// Thread-local Lua VM for simple-mode binding evaluation (lightweight, no DB functions).
+    static EVAL_VM: RefCell<Option<Lua>> = RefCell::new(None);
+
+    /// Transaction ids whose binding function has been compiled into EVAL_VM.
+    static EVAL_FUNCS: RefCell<HashSet<u16>> = RefCell::new(HashSet::new());
+
+    /// Thread-local pointer to the current postgres client.
+    static PG_CLIENT: RefCell<PgClientPtr> = RefCell::new(PgClientPtr(std::ptr::null_mut()));
+
+    /// Thread-local active COPY writer (only one at a time).
+    static COPY_WRITER: RefCell<CopyWriterHolder> = RefCell::new(CopyWriterHolder(None));
+}
+
+/// Set the postgres client pointer for the current thread.
+/// Must be called before executing any Lua script.
+pub fn set_client(client: &mut Client) {
+    PG_CLIENT.with(|cell| {
+        cell.borrow_mut().0 = client as *mut Client;
+    });
+}
+
+/// Clear the postgres client pointer. Call after Lua script execution.
+pub fn clear_client() {
+    PG_CLIENT.with(|cell| {
+        cell.borrow_mut().0 = std::ptr::null_mut();
+    });
+}
+
+/// Get a mutable reference to the postgres client from the thread-local pointer.
+/// SAFETY: The pointer was set via `set_client` and is valid for the duration of
+/// the Lua script execution. This is only called from within registered Lua functions,
+/// which run synchronously on the same thread.
+fn with_client<F, R>(f: F) -> LuaResult<R>
+where
+    F: FnOnce(&mut Client) -> LuaResult<R>,
+{
+    PG_CLIENT.with(|cell| {
+        let ptr = cell.borrow().0;
+        if ptr.is_null() {
+            return Err(LuaError::RuntimeError(
+                "No database connection available".to_string(),
+            ));
+        }
+        // SAFETY: pointer is valid, single-threaded access, set before Lua execution
+        let client = unsafe { &mut *ptr };
+        f(client)
+    })
+}
+
+/// Create and configure a new Lua VM with all registered functions.
+pub fn create_lua_vm() -> LuaResult<Lua> {
+    let lua = Lua::new();
+
+    // Register rand_int(min, max) -> integer
+    let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
+        let val: i64 = rand::thread_rng().gen_range(min..=max);
+        Ok(val)
+    })?;
+    lua.globals().set("rand_int", rand_int)?;
+
+    // Register rand_float(min, max) -> number
+    let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
+        let val: f64 = rand::thread_rng().gen_range(min..max);
+        Ok(val)
+    })?;
+    lua.globals().set("rand_float", rand_float)?;
+
+    // Register begin_tx()
+    let begin_tx = lua.create_function(|_, ()| {
+        with_client(|client| {
+            client
+                .batch_execute("BEGIN")
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+        })
+    })?;
+    lua.globals().set("begin_tx", begin_tx)?;
+
+    // Register commit()
+    let commit = lua.create_function(|_, ()| {
+        with_client(|client| {
+            client
+                .batch_execute("COMMIT")
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+        })
+    })?;
+    lua.globals().set("commit", commit)?;
+
+    // Register rollback()
+    let rollback = lua.create_function(|_, ()| {
+        with_client(|client| {
+            client
+                .batch_execute("ROLLBACK")
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+        })
+    })?;
+    lua.globals().set("rollback", rollback)?;
+
+    // Register exec(sql, ...) -- execute a statement, no return value
+    let exec_fn = lua.create_function(|_, args: LuaMultiValue| {
+        let mut args_iter = args.into_iter();
+        let sql: String = match args_iter.next() {
+            Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+            _ => return Err(LuaError::RuntimeError("exec: first argument must be a SQL string".to_string())),
+        };
+
+        let params = collect_params_as_literals(args_iter)?;
+
+        with_client(|client| {
+            execute_simple(client, &sql, &params)
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+        })
+    })?;
+    lua.globals().set("exec", exec_fn)?;
+
+    // Register query(sql, ...) -> array of tables
+    let query_fn = lua.create_function(|lua, args: LuaMultiValue| {
+        let mut args_iter = args.into_iter();
+        let sql: String = match args_iter.next() {
+            Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+            _ => return Err(LuaError::RuntimeError("query: first argument must be a SQL string".to_string())),
+        };
+
+        let params = collect_params_as_literals(args_iter)?;
+
+        with_client(|client| {
+            let rows = query_simple(client, &sql, &params)
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            simple_rows_to_lua(lua, &rows)
+        })
+    })?;
+    lua.globals().set("query", query_fn)?;
+
+    // Register query_one(sql, ...) -> first column of first row
+    let query_one_fn = lua.create_function(|lua, args: LuaMultiValue| {
+        let mut args_iter = args.into_iter();
+        let sql: String = match args_iter.next() {
+            Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+            _ => return Err(LuaError::RuntimeError("query_one: first argument must be a SQL string".to_string())),
+        };
+
+        let params = collect_params_as_literals(args_iter)?;
+
+        with_client(|client| {
+            let rows = query_simple(client, &sql, &params)
+                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+
+            if rows.is_empty() {
+                return Ok(LuaValue::Nil);
+            }
+
+            // SimpleQueryRow returns all values as Option<&str>
+            // Try to parse as number, otherwise return as string
+            match rows[0].get(0) {
+                Some(val) => str_to_lua_value(lua, val),
+                None => Ok(LuaValue::Nil),
+            }
+        })
+    })?;
+    lua.globals().set("query_one", query_one_fn)?;
+
+    // Register copy_start(sql) -- begin a COPY FROM stdin stream
+    let copy_start_fn = lua.create_function(|_, sql: LuaString| {
+        let sql_str = sql.to_str()?.to_string();
+        with_client(|client| {
+            let writer = client
+                .copy_in(&sql_str)
+                .map_err(|e| LuaError::RuntimeError(format!("copy_start: {}", e)))?;
+            // SAFETY: The writer borrows client, but we know client lives for the
+            // duration of the Lua script execution. We transmute the lifetime to 'static
+            // and store in thread-local. The writer is finished (copy_end) or dropped
+            // before the client pointer is cleared.
+            let writer: postgres::CopyInWriter<'static> = unsafe { std::mem::transmute(writer) };
+            COPY_WRITER.with(|cell| {
+                cell.borrow_mut().0 = Some(writer);
+            });
+            Ok(())
+        })
+    })?;
+    lua.globals().set("copy_start", copy_start_fn)?;
+
+    // Register copy_write(data) -- write a row/string to the active COPY stream
+    let copy_write_fn = lua.create_function(|_, data: LuaString| {
+        let bytes = data.as_bytes().to_vec();
+        COPY_WRITER.with(|cell| {
+            let mut holder = cell.borrow_mut();
+            match holder.0.as_mut() {
+                Some(writer) => {
+                    writer.write_all(&bytes)
+                        .map_err(|e| LuaError::RuntimeError(format!("copy_write: {}", e)))?;
+                    Ok(())
+                }
+                None => Err(LuaError::RuntimeError("copy_write: no active COPY stream (call copy_start first)".to_string())),
+            }
+        })
+    })?;
+    lua.globals().set("copy_write", copy_write_fn)?;
+
+    // Register copy_end() -- finish the COPY stream
+    let copy_end_fn = lua.create_function(|_, ()| {
+        COPY_WRITER.with(|cell| {
+            let mut holder = cell.borrow_mut();
+            match holder.0.take() {
+                Some(writer) => {
+                    writer.finish()
+                        .map_err(|e| LuaError::RuntimeError(format!("copy_end: {}", e)))?;
+                    Ok(())
+                }
+                None => Err(LuaError::RuntimeError("copy_end: no active COPY stream".to_string())),
+            }
+        })
+    })?;
+    lua.globals().set("copy_end", copy_end_fn)?;
+
+    // Register rand_string(min_len, max_len) -- random alphanumeric string
+    let rand_string_fn = lua.create_function(|_, (min_len, max_len): (usize, usize)| {
+        let len = if min_len < max_len {
+            rand::thread_rng().gen_range(min_len..=max_len)
+        } else {
+            max_len
+        };
+        let s: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(len)
+            .map(char::from)
+            .collect();
+        Ok(s)
+    })?;
+    lua.globals().set("rand_string", rand_string_fn)?;
+
+    // Register rand_strings(count, min_len, max_len) -> table of random strings
+    // Batched version to reduce Lua↔Rust boundary crossings for bulk data loading.
+    let rand_strings_fn = lua.create_function(|lua, (count, min_len, max_len): (usize, usize, usize)| {
+        let table = lua.create_table_with_capacity(count, 0)?;
+        let mut rng = rand::thread_rng();
+        for i in 1..=count {
+            let len = if min_len < max_len {
+                rng.gen_range(min_len..=max_len)
+            } else {
+                max_len
+            };
+            let s: String = (&mut rng)
+                .sample_iter(&Alphanumeric)
+                .take(len)
+                .map(char::from)
+                .collect();
+            table.set(i, s)?;
+        }
+        Ok(table)
+    })?;
+    lua.globals().set("rand_strings", rand_strings_fn)?;
+
+    Ok(lua)
+}
+
+/// Inject context variables (min_id, max_id, scalefactor, constants) into the Lua VM.
+pub fn inject_context(
+    lua: &Lua,
+    min_id: u32,
+    max_id: u32,
+    scalefactor: u32,
+    constants: &HashMap<String, serde_yaml::Value>,
+) -> LuaResult<()> {
+    lua.globals().set("min_id", min_id)?;
+    lua.globals().set("max_id", max_id)?;
+    lua.globals().set("scalefactor", scalefactor)?;
+
+    let const_table = lua.create_table()?;
+    for (key, value) in constants {
+        match value {
+            serde_yaml::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    const_table.set(key.as_str(), i)?;
+                } else if let Some(f) = n.as_f64() {
+                    const_table.set(key.as_str(), f)?;
+                }
+            }
+            serde_yaml::Value::String(s) => {
+                const_table.set(key.as_str(), s.as_str())?;
+            }
+            serde_yaml::Value::Bool(b) => {
+                const_table.set(key.as_str(), *b)?;
+            }
+            _ => {}
+        }
+    }
+    lua.globals().set("const", const_table)?;
+
+    Ok(())
+}
+
+/// Execute a Lua script on the current thread's VM, using the given client.
+/// Creates the VM lazily if it doesn't exist yet.
+pub fn execute_script(
+    client: &mut Client,
+    script: &str,
+    min_id: u32,
+    max_id: u32,
+    scalefactor: u32,
+    constants: &HashMap<String, serde_yaml::Value>,
+    scripts: &HashMap<u16, String>,
+    modules: &[String],
+    tx_id: u16,
+) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+    set_client(client);
+
+    let result = LUA_VM.with(|cell| {
+        let mut vm_opt = cell.borrow_mut();
+
+        // Lazily initialize the Lua VM
+        if vm_opt.is_none() {
+            let lua = create_lua_vm().map_err(lua_to_sync_err)?;
+
+            inject_context(&lua, min_id, max_id, scalefactor, constants)
+                .map_err(lua_to_sync_err)?;
+
+            // Pre-load shared modules (runs at global scope before any transactions)
+            for (i, module_src) in modules.iter().enumerate() {
+                lua.load(module_src).exec().map_err(
+                    |e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to load module {}: {}", i, e),
+                        ))
+                    },
+                )?;
+            }
+
+            // Pre-load all transaction scripts as named functions
+            for (id, script_src) in scripts {
+                let func_name = format!("__tx_{}", id);
+                let chunk = format!("function {}()\n{}\nend", func_name, script_src);
+                lua.load(&chunk).exec().map_err(
+                    |e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to load script for tx {}: {}", id, e),
+                        ))
+                    },
+                )?;
+            }
+
+            *vm_opt = Some(lua);
+        }
+
+        let lua = vm_opt.as_ref().unwrap();
+
+        // Execute the transaction script
+        let start = std::time::Instant::now();
+
+        let func_name = format!("__tx_{}", tx_id);
+
+        // Check if we have a preloaded function
+        let globals = lua.globals();
+        let func: LuaResult<LuaFunction> = globals.get(&*func_name);
+
+        match func {
+            Ok(f) => {
+                f.call::<()>(()).map_err(
+                    |e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    },
+                )?;
+            }
+            Err(_) => {
+                // Fallback: execute inline script directly
+                lua.load(script).exec().map_err(
+                    |e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    },
+                )?;
+            }
+        }
+
+        Ok(start.elapsed().as_micros())
+    });
+
+    clear_client();
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+/// Execute a Lua data-loading script with database access (COPY, exec, query).
+/// Creates a fresh Lua VM per call (data loading is infrequent).
+pub fn execute_load_script(
+    client: &mut Client,
+    script: &str,
+    scalefactor: u32,
+    constants: &HashMap<String, serde_yaml::Value>,
+    ids: &[u32],
+) -> Result<u128, String> {
+    set_client(client);
+
+    let result = (|| -> Result<u128, String> {
+        let lua = create_lua_vm().map_err(|e| format!("Failed to create Lua VM: {}", e))?;
+
+        lua.globals().set("scalefactor", scalefactor).map_err(|e| e.to_string())?;
+        inject_constants(&lua, constants).map_err(|e| e.to_string())?;
+
+        // Pass the list of IDs to load as a Lua table
+        let ids_table = lua.create_table().map_err(|e| e.to_string())?;
+        for (i, &id) in ids.iter().enumerate() {
+            ids_table.set(i + 1, id).map_err(|e| e.to_string())?;
+        }
+        lua.globals().set("ids", ids_table).map_err(|e| e.to_string())?;
+
+        let start = std::time::Instant::now();
+        lua.load(script)
+            .exec()
+            .map_err(|e| format!("Load script failed: {}", e))?;
+
+        // Ensure any open COPY stream is cleaned up
+        COPY_WRITER.with(|cell| {
+            let mut holder = cell.borrow_mut();
+            if let Some(writer) = holder.0.take() {
+                let _ = writer.finish();
+            }
+        });
+
+        Ok(start.elapsed().as_micros())
+    })();
+
+    clear_client();
+    result
+}
+
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Collect Lua variadic arguments as SQL literal strings.
+fn collect_params_as_literals(args: impl Iterator<Item = LuaValue>) -> LuaResult<Vec<String>> {
+    let mut params = Vec::new();
+    for arg in args {
+        match arg {
+            LuaValue::Integer(i) => params.push(i.to_string()),
+            LuaValue::Number(f) => params.push(format!("{}", f)),
+            LuaValue::String(s) => {
+                let s = s.to_str()?.to_string();
+                // Escape single quotes for SQL safety
+                params.push(format!("'{}'", s.replace('\'', "''")));
+            }
+            LuaValue::Boolean(b) => params.push(if b { "true".to_string() } else { "false".to_string() }),
+            LuaValue::Nil => params.push("NULL".to_string()),
+            _ => {
+                return Err(LuaError::RuntimeError(format!(
+                    "Unsupported parameter type: {:?}",
+                    arg
+                )))
+            }
+        }
+    }
+    Ok(params)
+}
+
+/// Substitute $1, $2, ... placeholders with literal values in SQL.
+/// Uses simple protocol (like pgbench) to avoid type mismatch issues.
+fn interpolate_params(sql: &str, params: &[String]) -> String {
+    let mut result = sql.to_string();
+    // Replace in reverse order so $10 doesn't match before $1
+    for (i, val) in params.iter().enumerate().rev() {
+        let placeholder = format!("${}", i + 1);
+        result = result.replace(&placeholder, val);
+    }
+    result
+}
+
+/// Execute a SQL statement with interpolated parameters (no results).
+fn execute_simple(
+    client: &mut Client,
+    sql: &str,
+    params: &[String],
+) -> Result<(), postgres::Error> {
+    let final_sql = interpolate_params(sql, params);
+    client.batch_execute(&final_sql)
+}
+
+/// Execute a SQL query with interpolated parameters, returning rows.
+/// Uses simple_query to get results via the simple protocol.
+fn query_simple(
+    client: &mut Client,
+    sql: &str,
+    params: &[String],
+) -> Result<Vec<postgres::SimpleQueryRow>, postgres::Error> {
+    let final_sql = interpolate_params(sql, params);
+    let messages = client.simple_query(&final_sql)?;
+    let mut rows = Vec::new();
+    for msg in messages {
+        if let postgres::SimpleQueryMessage::Row(row) = msg {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+
+/// Parse a string value into the best-matching Lua type.
+fn str_to_lua_value(lua: &Lua, val: &str) -> LuaResult<LuaValue> {
+    // Try integer (i32 for Luau compat, fall through to f64 for larger values)
+    if let Ok(i) = val.parse::<i32>() {
+        return Ok(LuaValue::Integer(i));
+    }
+    if let Ok(f) = val.parse::<f64>() {
+        return Ok(LuaValue::Number(f));
+    }
+    if val == "t" || val == "true" {
+        return Ok(LuaValue::Boolean(true));
+    }
+    if val == "f" || val == "false" {
+        return Ok(LuaValue::Boolean(false));
+    }
+    Ok(LuaValue::String(lua.create_string(val)?))
+}
+
+/// Convert simple query rows to a Lua table of tables.
+/// SimpleQueryRow returns all values as Option<&str>, so we auto-detect types.
+fn simple_rows_to_lua(lua: &Lua, rows: &[postgres::SimpleQueryRow]) -> LuaResult<LuaValue> {
+    let result = lua.create_table()?;
+
+    for (row_idx, row) in rows.iter().enumerate() {
+        let row_table = lua.create_table()?;
+
+        for col_idx in 0..row.columns().len() {
+            let col_name = row.columns()[col_idx].name();
+
+            if let Some(val) = row.get(col_idx) {
+                let lua_val = str_to_lua_value(lua, val)?;
+                row_table.set(col_name, lua_val)?;
+            }
+        }
+
+        result.set(row_idx + 1, row_table)?; // Lua arrays are 1-indexed
+    }
+
+    Ok(LuaValue::Table(result))
+}
+
+/// Create a lightweight Lua VM with only rand_int/rand_float (no DB functions).
+fn create_eval_vm() -> LuaResult<Lua> {
+    let lua = Lua::new();
+    register_rand_functions(&lua)?;
+    Ok(lua)
+}
+
+/// Create a Lua VM with rand functions and context already injected.
+/// Used by data loading where a fresh VM per load spec is acceptable.
+pub fn create_eval_vm_with_context(
+    min_id: u32,
+    max_id: u32,
+    scalefactor: u32,
+    constants: &HashMap<String, serde_yaml::Value>,
+) -> LuaResult<Lua> {
+    let lua = Lua::new();
+    register_rand_functions(&lua)?;
+    lua.globals().set("min_id", min_id)?;
+    lua.globals().set("max_id", max_id)?;
+    lua.globals().set("scalefactor", scalefactor)?;
+    inject_constants(&lua, constants)?;
+    Ok(lua)
+}
+
+fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
+    let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
+        let val: i64 = rand::thread_rng().gen_range(min..=max);
+        Ok(val)
+    })?;
+    lua.globals().set("rand_int", rand_int)?;
+
+    let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
+        let val: f64 = rand::thread_rng().gen_range(min..max);
+        Ok(val)
+    })?;
+    lua.globals().set("rand_float", rand_float)?;
+    Ok(())
+}
+
+/// Pre-compile a row template into a Lua function.
+///
+/// Template: `"{{(id - 1) * 100 + i}}\t{{id}}\t0\t\n"`
+/// Compiled Lua:
+/// ```lua
+/// function(id, i)
+///   return tostring((id - 1) * 100 + i) .. "\t" .. tostring(id) .. "\t0\t\n"
+/// end
+/// ```
+/// Pre-compile a row template into a batched Lua function.
+/// Returns a function(id, i_start, i_end) that generates all rows for the range
+/// as a single concatenated string, using table.concat for efficiency.
+///
+/// Template: `"{{(id - 1) * 100 + i}}\t{{id}}\t0\t\n"`
+/// Compiled Lua:
+/// ```lua
+/// return function(id, i_start, i_end)
+///   local t = {}
+///   for i = i_start, i_end do
+///     t[#t+1] = tostring((id - 1) * 100 + i) .. "\t" .. tostring(id) .. "\t0\t\n"
+///   end
+///   return table.concat(t)
+/// end
+/// ```
+pub fn compile_batch_row_template(lua: &Lua, template: &str) -> LuaResult<LuaFunction> {
+    let row_expr = parse_template_to_lua_expr(template)?;
+
+    let code = format!(
+        "return function(id, i_start, i_end)\n\
+         local t = {{}}\n\
+         for i = i_start, i_end do\n\
+         t[#t+1] = {}\n\
+         end\n\
+         return table.concat(t)\n\
+         end",
+        row_expr
+    );
+    lua.load(&code).eval()
+}
+
+/// Parse a `{{expr}}` template string into a Lua concatenation expression.
+/// E.g. `"{{id}}\t0\t\n"` -> `tostring(id) .. "\t0\t\n"`
+fn parse_template_to_lua_expr(template: &str) -> LuaResult<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut chars = template.chars().peekable();
+    let mut literal = String::new();
+
+    while let Some(c) = chars.next() {
+        if c == '{' && chars.peek() == Some(&'{') {
+            chars.next(); // consume second {
+
+            if !literal.is_empty() {
+                parts.push(format!("\"{}\"", literal));
+                literal.clear();
+            }
+
+            let mut expr = String::new();
+            loop {
+                match chars.next() {
+                    Some('}') if chars.peek() == Some(&'}') => {
+                        chars.next();
+                        break;
+                    }
+                    Some(ch) => expr.push(ch),
+                    None => {
+                        return Err(LuaError::RuntimeError(
+                            "Unterminated {{ expression in row template".to_string(),
+                        ));
+                    }
+                }
+            }
+            parts.push(format!("tostring({})", expr.trim()));
+        } else {
+            match c {
+                '\n' => literal.push_str("\\n"),
+                '\t' => literal.push_str("\\t"),
+                '\r' => literal.push_str("\\r"),
+                '\\' => literal.push_str("\\\\"),
+                '"' => literal.push_str("\\\""),
+                _ => literal.push(c),
+            }
+        }
+    }
+
+    if !literal.is_empty() {
+        parts.push(format!("\"{}\"", literal));
+    }
+
+    Ok(if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        parts.join(" .. ")
+    })
+}
+
+/// Evaluate binding expressions using a thread-local lightweight VM.
+/// Binding expressions are compiled into a single Lua function on first call,
+/// then only the pre-compiled function is called on subsequent invocations.
+pub fn eval_bindings_simple(
+    tx_id: u16,
+    bindings: &[(String, String)],
+    min_id: u32,
+    max_id: u32,
+    scalefactor: u32,
+    constants: &HashMap<String, serde_yaml::Value>,
+) -> Result<HashMap<String, String>, Box<dyn std::error::Error + Send + Sync>> {
+    // One binding function per transaction id, so distinct simple transactions
+    // don't clobber each other's compiled bindings.
+    let func_name = format!("__eval_bindings_{}", tx_id);
+
+    EVAL_VM.with(|cell| {
+        let mut vm_opt = cell.borrow_mut();
+
+        if vm_opt.is_none() {
+            let lua = create_eval_vm().map_err(lua_to_sync_err)?;
+            inject_constants(&lua, constants).map_err(lua_to_sync_err)?;
+            *vm_opt = Some(lua);
+        }
+
+        let lua = vm_opt.as_ref().unwrap();
+
+        // Set context globals (cheap: just integer assignments)
+        lua.globals().set("min_id", min_id).map_err(lua_to_sync_err)?;
+        lua.globals().set("max_id", max_id).map_err(lua_to_sync_err)?;
+        lua.globals().set("scalefactor", scalefactor).map_err(lua_to_sync_err)?;
+
+        // Compile this transaction's binding function once per thread
+        EVAL_FUNCS.with(|set_cell| {
+            let mut compiled = set_cell.borrow_mut();
+
+            if !compiled.contains(&tx_id) {
+                // Build a Lua function that evaluates all bindings and returns them:
+                //   function __eval_bindings_1()
+                //     local branch_id = rand_int(min_id, max_id)
+                //     local account_id = rand_int(...)
+                //     ...
+                //     return branch_id, account_id, ...
+                //   end
+                let mut body = String::new();
+                for (key, expr) in bindings {
+                    body.push_str(&format!("  local {} = {}\n", key, expr));
+                }
+                let return_keys: Vec<&str> = bindings.iter().map(|(k, _)| k.as_str()).collect();
+                body.push_str(&format!("  return {}\n", return_keys.join(", ")));
+
+                let chunk = format!("function {}()\n{}end", func_name, body);
+                lua.load(&chunk).exec().map_err(lua_to_sync_err)?;
+
+                compiled.insert(tx_id);
+            }
+
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
+
+        // Call the pre-compiled function (single bytecode dispatch, no parsing)
+        let func: LuaFunction = lua.globals().get(func_name.as_str()).map_err(lua_to_sync_err)?;
+        let results: LuaMultiValue = func.call(()).map_err(lua_to_sync_err)?;
+
+        // Map returned values back to binding names
+        let mut resolved = HashMap::new();
+        for (i, (key, _)) in bindings.iter().enumerate() {
+            let val = results.get(i).cloned().unwrap_or(LuaValue::Nil);
+            let literal = match &val {
+                LuaValue::Integer(n) => n.to_string(),
+                LuaValue::Number(f) => format!("{}", f),
+                LuaValue::String(s) => s.to_string_lossy().to_string(),
+                LuaValue::Boolean(b) => b.to_string(),
+                _ => "NULL".to_string(),
+            };
+            resolved.insert(key.clone(), literal);
+        }
+
+        Ok(resolved)
+    })
+}
+
+/// Inject only the constants table into a Lua VM.
+fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -> LuaResult<()> {
+    let const_table = lua.create_table()?;
+    for (key, value) in constants {
+        match value {
+            serde_yaml::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    const_table.set(key.as_str(), i)?;
+                } else if let Some(f) = n.as_f64() {
+                    const_table.set(key.as_str(), f)?;
+                }
+            }
+            serde_yaml::Value::String(s) => {
+                const_table.set(key.as_str(), s.as_str())?;
+            }
+            serde_yaml::Value::Bool(b) => {
+                const_table.set(key.as_str(), *b)?;
+            }
+            _ => {}
+        }
+    }
+    lua.globals().set("const", const_table)?;
+    Ok(())
+}
+
+fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+}

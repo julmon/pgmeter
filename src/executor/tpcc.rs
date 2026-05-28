@@ -20,6 +20,7 @@ use super::benchmark::{
 };
 
 // TPC-C like benchmark
+#[allow(dead_code)]
 pub struct TPCC {
     pub name: String,
     pub description: String,

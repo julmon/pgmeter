@@ -27,6 +27,9 @@ mod tpciot;
 mod tpch;
 mod terminal;
 mod data_agg;
+mod yaml_types;
+mod yaml_benchmark;
+mod yaml_lua;
 
 use benchmark::{
     Benchmark,
@@ -43,6 +46,7 @@ use super::args::{RunArgs};
 pub struct Executor {
     dsn: String,
     benchmark_type: String,
+    spec_file: Option<String>,
     counters: HashMap<u16, Counter>,
     rampup_time_ms: u128,
     total_time_ms: u128,
@@ -68,10 +72,11 @@ pub fn get_target_dir_path() -> PathBuf {
 }
 
 impl Executor {
-    pub fn new(dsn: String, benchmark_type: String) -> Executor {
+    pub fn new(dsn: String, benchmark_type: String, spec_file: Option<String>) -> Executor {
         Executor {
             dsn: dsn,
             benchmark_type: benchmark_type,
+            spec_file: spec_file,
             counters: HashMap::new(),
             total_time_ms: 0,
             rampup_time_ms: 0,
@@ -189,6 +194,7 @@ impl Executor {
 
             let dsn = self.dsn.clone();
             let benchmark_type = self.benchmark_type.clone();
+            let spec_file = self.spec_file.clone();
             let tx_clone = tx.clone();
 
             let handle = thread::spawn(move || {
@@ -199,7 +205,11 @@ impl Executor {
                 });
 
                 // Get benchmark and prepare statements
-                let benchmark = benchmark_wrapper::BenchmarkWrapper::new(&benchmark_type, 0, min_id, max_id);
+                let benchmark = if let Some(ref spec) = spec_file {
+                    benchmark_wrapper::BenchmarkWrapper::from_yaml(spec, 0, min_id, max_id)
+                } else {
+                    benchmark_wrapper::BenchmarkWrapper::new(&benchmark_type, 0, min_id, max_id)
+                };
                 let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
                     eprintln!("ERROR: Failed to prepare statements: {}", err);
                     std::process::exit(1);
@@ -563,6 +573,43 @@ impl Executor {
         self
     }
 
+    // Execute a post-create-table SQL script if provided
+    pub fn exec_post_create_table_script(&mut self, script_path: Option<String>) -> &mut Self {
+        let path = match script_path {
+            Some(p) => p,
+            None => return self,
+        };
+
+        let command = "INIT";
+        let message = format!("Executing post-create-table script: {}", path);
+
+        terminal::start_msg(command, message.as_str());
+        let start = std::time::Instant::now();
+
+        // Read the SQL script file
+        let sql = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) => {
+                terminal::err_msg(format!("Failed to read script file: {}", error).as_str());
+                std::process::exit(1);
+            }
+        };
+
+        // Execute the script
+        let mut client = Executor::connect(self.dsn.clone());
+        match client.batch_execute(&sql) {
+            Ok(_) => (),
+            Err(error) => {
+                terminal::err_msg(format!("{}", error).as_str());
+                std::process::exit(1);
+            }
+        }
+
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
+
+        self
+    }
+
     // Generate benchmark data
     pub fn load_data(&mut self, scalefactor: u32, n_jobs: u32) -> &mut Self {
         // Load the corresponding benchmark client
@@ -715,7 +762,11 @@ impl Executor {
     }
 
     fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> benchmark_wrapper::BenchmarkWrapper {
-        benchmark_wrapper::BenchmarkWrapper::new(&self.benchmark_type, scalefactor, min_id, max_id)
+        if let Some(ref spec_file) = self.spec_file {
+            benchmark_wrapper::BenchmarkWrapper::from_yaml(spec_file, scalefactor, min_id, max_id)
+        } else {
+            benchmark_wrapper::BenchmarkWrapper::new(&self.benchmark_type, scalefactor, min_id, max_id)
+        }
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs
@@ -835,20 +886,14 @@ impl Executor {
         let mut data_summary: Vec<TransactionSummary>  = Vec::new();
 
         for transaction in transactions {
-            let stats = match stats_map.get(&transaction.id) {
-                Some(stats) => stats,
-                None => {
-                    eprintln!("ERROR: no statistics found for the transaction: {} ", transaction.name);
-                    std::process::exit(1);
-                }
+            let default_stats = ResponseTimeStatistics {
+                name: transaction.name.clone(),
+                mean: 0.0, min: 0.0, max: 0.0, std: 0.0,
+                percentile_95: 0.0, percentile_99: 0.0,
             };
-            let counters = match self.counters.get(&transaction.id) {
-                Some(counters) => counters,
-                None => {
-                    eprintln!("ERROR: no counters found for the transaction: {} ", transaction.name);
-                    std::process::exit(1);
-                }
-            };
+            let stats = stats_map.get(&transaction.id).unwrap_or(&default_stats);
+            let default_counters = Counter { n_commits: 0, n_total: 0, total_duration_ms: 0.0 };
+            let counters = self.counters.get(&transaction.id).unwrap_or(&default_counters);
 
             data_stats.push(stats.clone());
             data_summary.push(
@@ -859,7 +904,7 @@ impl Executor {
                     // Number of errors
                     counters.n_total - counters.n_commits,
                     // Error rate
-                    (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0,
+                    if counters.n_total > 0 { (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0 } else { 0.0 },
                     // Transactions per minute
                     (counters.n_commits as f64 / duration_ms.as_secs() as f64 * 60.0) as u32,
                     // Transactions per second

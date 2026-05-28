@@ -13,12 +13,14 @@ pub struct BenchmarkTransaction {
     // Probability of the transaction to be executed. From 0 (never) to 100 (alaways executed).
     pub weight: u16,
     // Description of the transaction, useful for the report
+    #[allow(dead_code)]
     pub description: String,
 }
 
 /// Prepared statements holder for synchronous benchmark execution
 /// This allows reusing prepared statements across multiple transactions
 pub struct PreparedStatements {
+    #[allow(dead_code)]
     pub statements: Vec<postgres::Statement>,
 }
 
