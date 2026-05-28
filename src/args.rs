@@ -192,24 +192,6 @@ impl PgMtrArgs {
             .value_name("NUM")
             .default_value("0");
 
-        // run: Define the --min-id command line option
-        let min_id_option = Arg::new("min_id")
-            .long("min-id") // allow --min-id
-            .action(ArgAction::Set)
-            .help("Interval's minimum ID value")
-            .required(false)
-            .value_name("NUM")
-            .default_value("1");
-
-        // run: Define the --max-id command line option
-        let max_id_option = Arg::new("max_id")
-            .long("max-id") // allow --max-id
-            .action(ArgAction::Set)
-            .help("Interval's maximum ID value. If set to 0, the value is automatically based on the scalefactor.")
-            .required(false)
-            .value_name("NUM")
-            .default_value("0");
-
         // init: Define the --scalefactor/-s command line option
         let scalefactor_option = Arg::new("scalefactor")
             .long("scalefactor") // allow --scalefactor
@@ -270,9 +252,7 @@ impl PgMtrArgs {
             .arg(spec_option)
             .arg(client_option)
             .arg(time_option)
-            .arg(rampup_option)
-            .arg(min_id_option)
-            .arg(max_id_option);
+            .arg(rampup_option);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -336,14 +316,13 @@ impl PgMtrArgs {
             let client_str = bm_m.get_one::<String>("client").unwrap();
             let time_str = bm_m.get_one::<String>("time").unwrap();
             let rampup_str = bm_m.get_one::<String>("rampup").unwrap();
-            let min_id_str = bm_m.get_one::<String>("min_id").unwrap();
-            let max_id_str = bm_m.get_one::<String>("max_id").unwrap();
 
             let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
             let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
             let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
-            let min_id = parse_string_arg_to_u32(min_id_str, "invalid min ID value".to_string())?;
-            let max_id = parse_string_arg_to_u32(max_id_str, "invalid end id value".to_string())?;
+            // Target the full scale range: min defaults to 1, max to 0 (auto-detected at run time).
+            let min_id = 1;
+            let max_id = 0;
 
             Ok(RunArgs {client, time, rampup, min_id, max_id})
         }

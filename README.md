@@ -109,8 +109,6 @@ It includes a worked from-scratch example.
 | `-c, --client` | 1 | Number of concurrent database clients |
 | `-T, --time` | 1 | Duration of benchmark in seconds |
 | `-r, --rampup` | 0 | Ramp-up period in seconds (clients start gradually) |
-| `--min-id` | 1 | Minimum scale-unit ID to target |
-| `--max-id` | 0 | Maximum scale-unit ID (0 = auto-detect from data) |
 
 ## Example Workflow
 
