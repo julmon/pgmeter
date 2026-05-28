@@ -49,8 +49,6 @@ pub struct PgMtrArgs {
     pub dbname: String,
     // Action: run, init, etc...
     pub action: String,
-    // Benchmark type: tpcc
-    pub benchmark_type: String,
     // run arguments
     pub run_args: RunArgs,
     // init arguments
@@ -255,75 +253,6 @@ impl PgMtrArgs {
             .value_name("FILE");
 
         // Sub-commands
-        // run tpcc <OPTIONS>
-        let run_tpcc = Command::new("tpcc")
-            .about("Run TPC-C-like benchmark")
-            .arg(client_option.clone())
-            .arg(time_option.clone())
-            .arg(rampup_option.clone())
-            .arg(min_id_option.clone())
-            .arg(max_id_option.clone());
-
-        // run tpcb <OPTIONS>
-        let run_tpcb = Command::new("tpcb")
-            .about("Run TPC-B benchmark (banking debit/credit)")
-            .arg(client_option.clone())
-            .arg(time_option.clone())
-            .arg(rampup_option.clone())
-            .arg(min_id_option.clone())
-            .arg(max_id_option.clone());
-
-        // run tpciot <OPTIONS>
-        let run_tpciot = Command::new("tpciot")
-            .about("Run TPCx-IoT-like benchmark")
-            .arg(client_option.clone())
-            .arg(time_option.clone())
-            .arg(rampup_option.clone())
-            .arg(min_id_option.clone())
-            .arg(max_id_option.clone());
-
-        // run tpch <OPTIONS>
-        let run_tpch = Command::new("tpch")
-            .about("Run TPC-H benchmark (decision support queries)")
-            .arg(client_option.clone())
-            .arg(time_option.clone())
-            .arg(rampup_option.clone())
-            .arg(min_id_option.clone())
-            .arg(max_id_option.clone());
-
-        // init tpcc <OPTIONS>
-        let init_tpcc = Command::new("tpcc")
-            .about("Initialize TPC-C-like benchmark data")
-            .arg(scalefactor_option.clone())
-            .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone())
-            .arg(post_create_table_option.clone());
-
-        // init tpcb <OPTIONS>
-        let init_tpcb = Command::new("tpcb")
-            .about("Initialize TPC-B benchmark data (banking debit/credit)")
-            .arg(scalefactor_option.clone())
-            .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone())
-            .arg(post_create_table_option.clone());
-
-        // init tpciot <OPTIONS>
-        let init_tpciot = Command::new("tpciot")
-            .about("Initialize TPCx-IoT-like benchmark data")
-            .arg(scalefactor_option.clone())
-            .arg(jobs_option.clone())
-            .arg(no_fkey_option.clone())
-            .arg(post_create_table_option.clone());
-
-        // init tpch <OPTIONS>
-        // Note: TPC-H doesn't support parallel data loading (-j) because
-        // the data isn't partitioned by warehouse like TPC-C
-        let init_tpch = Command::new("tpch")
-            .about("Initialize TPC-H benchmark data (decision support queries)")
-            .arg(scalefactor_option.clone())
-            .arg(no_fkey_option.clone())
-            .arg(post_create_table_option.clone());
-
         // run yaml --spec <FILE> <OPTIONS>
         let run_yaml = Command::new("yaml")
             .about("Run benchmark from YAML specification file")
@@ -348,10 +277,6 @@ impl PgMtrArgs {
             .about("Initialize benchmark data")
             .arg_required_else_help(true)
             .subcommand_required(true)
-            .subcommand(init_tpcc)
-            .subcommand(init_tpcb)
-            .subcommand(init_tpciot)
-            .subcommand(init_tpch)
             .subcommand(init_yaml);
 
         // run <SUBCOMMAND> <OPTIONS>
@@ -359,10 +284,6 @@ impl PgMtrArgs {
             .about("Run benchmark")
             .arg_required_else_help(true)
             .subcommand_required(true)
-            .subcommand(run_tpcc)
-            .subcommand(run_tpcb)
-            .subcommand(run_tpciot)
-            .subcommand(run_tpch)
             .subcommand(run_yaml);
 
         // Basic app information
@@ -455,44 +376,36 @@ impl PgMtrArgs {
         }
 
         // Extract subcommand options
-        let (run_args, init_args, action, benchmark_type, spec_file) = match matches.subcommand_name() {
+        let (run_args, init_args, action, spec_file) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
-                let (run_args, init_args, benchmark_type, spec) = match init_m.subcommand_name() {
-                    Some("tpcc") => { let (r, i, b) = parse_init_args(init_m, "tpcc")?; (r, i, b, None) },
-                    Some("tpcb") => { let (r, i, b) = parse_init_args(init_m, "tpcb")?; (r, i, b, None) },
-                    Some("tpciot") => { let (r, i, b) = parse_init_args(init_m, "tpciot")?; (r, i, b, None) },
-                    Some("tpch") => { let (r, i, b) = parse_init_args(init_m, "tpch")?; (r, i, b, None) },
+                let (run_args, init_args, spec) = match init_m.subcommand_name() {
                     Some("yaml") => {
-                        let (r, i, b) = parse_init_args(init_m, "yaml")?;
+                        let (r, i, _b) = parse_init_args(init_m, "yaml")?;
                         let spec = init_m.subcommand_matches("yaml")
                             .and_then(|m| m.get_one::<String>("spec").cloned());
-                        (r, i, b, spec)
+                        (r, i, spec)
                     },
-                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
+                    _ => (RunArgs::empty(), InitArgs::empty(), None),
                 };
 
-                (run_args, init_args, "init".to_string(), benchmark_type, spec)
+                (run_args, init_args, "init".to_string(), spec)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
-                let (run_args, init_args, benchmark_type, spec) = match run_m.subcommand_name() {
-                    Some("tpcc") => { let (r, i, b) = parse_run_args(run_m, "tpcc")?; (r, i, b, None) },
-                    Some("tpcb") => { let (r, i, b) = parse_run_args(run_m, "tpcb")?; (r, i, b, None) },
-                    Some("tpciot") => { let (r, i, b) = parse_run_args(run_m, "tpciot")?; (r, i, b, None) },
-                    Some("tpch") => { let (r, i, b) = parse_run_args(run_m, "tpch")?; (r, i, b, None) },
+                let (run_args, init_args, spec) = match run_m.subcommand_name() {
                     Some("yaml") => {
-                        let (r, i, b) = parse_run_args(run_m, "yaml")?;
+                        let (r, i, _b) = parse_run_args(run_m, "yaml")?;
                         let spec = run_m.subcommand_matches("yaml")
                             .and_then(|m| m.get_one::<String>("spec").cloned());
-                        (r, i, b, spec)
+                        (r, i, spec)
                     },
-                    _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
+                    _ => (RunArgs::empty(), InitArgs::empty(), None),
                 };
 
-                (run_args, init_args, "run".to_string(), benchmark_type, spec)
+                (run_args, init_args, "run".to_string(), spec)
             },
-            _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), "undefined".to_string(), None),
+            _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
         };
 
         Ok(
@@ -503,7 +416,6 @@ impl PgMtrArgs {
                 password: password,
                 dbname: dbname.to_string(),
                 action: action,
-                benchmark_type: benchmark_type,
                 run_args: run_args,
                 init_args: init_args,
                 spec_file: spec_file,

@@ -19,12 +19,7 @@ use itoa;
 use ryu;
 
 mod benchmark;
-mod benchmark_wrapper;
 mod txmessage;
-mod tpcc;
-mod tpcb;
-mod tpciot;
-mod tpch;
 mod terminal;
 mod data_agg;
 mod yaml_types;
@@ -40,13 +35,13 @@ use benchmark::{
     ResponseTimeStatistics,
     TransactionSummary,
 };
+use yaml_benchmark::YamlBenchmark;
 use txmessage::{TXMessage, TXMessageKind};
 use super::args::{RunArgs};
 
 pub struct Executor {
     dsn: String,
-    benchmark_type: String,
-    spec_file: Option<String>,
+    spec_file: String,
     counters: HashMap<u16, Counter>,
     rampup_time_ms: u128,
     total_time_ms: u128,
@@ -72,10 +67,9 @@ pub fn get_target_dir_path() -> PathBuf {
 }
 
 impl Executor {
-    pub fn new(dsn: String, benchmark_type: String, spec_file: Option<String>) -> Executor {
+    pub fn new(dsn: String, spec_file: String) -> Executor {
         Executor {
             dsn: dsn,
-            benchmark_type: benchmark_type,
             spec_file: spec_file,
             counters: HashMap::new(),
             total_time_ms: 0,
@@ -193,7 +187,6 @@ impl Executor {
             sleep(Duration::from_millis(sleep_ms));
 
             let dsn = self.dsn.clone();
-            let benchmark_type = self.benchmark_type.clone();
             let spec_file = self.spec_file.clone();
             let tx_clone = tx.clone();
 
@@ -205,11 +198,7 @@ impl Executor {
                 });
 
                 // Get benchmark and prepare statements
-                let benchmark = if let Some(ref spec) = spec_file {
-                    benchmark_wrapper::BenchmarkWrapper::from_yaml(spec, 0, min_id, max_id)
-                } else {
-                    benchmark_wrapper::BenchmarkWrapper::new(&benchmark_type, 0, min_id, max_id)
-                };
+                let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id);
                 let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
                     eprintln!("ERROR: Failed to prepare statements: {}", err);
                     std::process::exit(1);
@@ -761,12 +750,8 @@ impl Executor {
         }
     }
 
-    fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> benchmark_wrapper::BenchmarkWrapper {
-        if let Some(ref spec_file) = self.spec_file {
-            benchmark_wrapper::BenchmarkWrapper::from_yaml(spec_file, scalefactor, min_id, max_id)
-        } else {
-            benchmark_wrapper::BenchmarkWrapper::new(&self.benchmark_type, scalefactor, min_id, max_id)
-        }
+    fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
+        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id)
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs

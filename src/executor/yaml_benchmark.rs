@@ -547,10 +547,6 @@ impl Benchmark for YamlBenchmark {
         self.transactions_rw.clone()
     }
 
-    fn get_table_ddls(&self) -> Vec<BenchmarkStmt> {
-        self.table_ddls.clone()
-    }
-
     fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt> {
         self.pkey_ddls.clone()
     }

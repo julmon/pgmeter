@@ -123,7 +123,6 @@ pub trait Benchmark:ReadWrite {
     fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, String>;
     fn get_default_max_id(&self, client: &mut Client) -> Result<u32, postgres::Error>;
     fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction>;
-    fn get_table_ddls(&self) -> Vec<BenchmarkStmt>;
     fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt>;
     fn get_fkey_ddls(&self) -> Vec<BenchmarkStmt>;
     fn get_index_ddls(&self) -> Vec<BenchmarkStmt>;
