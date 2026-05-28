@@ -169,20 +169,14 @@ cargo build
 cargo build --release
 ```
 
-### Running Tests
-
-```bash
-cargo test
-```
-
 ### Project Structure
 
 ```
 src/
 ├── main.rs                    # Application entry point
 ├── args.rs                    # CLI argument parsing
+├── executor.rs                # Benchmark executor (module root)
 └── executor/
-    ├── mod.rs                 # Benchmark executor
     ├── benchmark.rs           # Benchmark traits and types
     ├── yaml_types.rs          # Serde structs for the YAML spec
     ├── yaml_benchmark.rs      # YAML-driven Benchmark implementation
