@@ -865,9 +865,11 @@ impl Executor {
 
     pub fn print_results(&mut self) -> &mut Self {
         let duration_ms = Duration::from_millis(self.total_time_ms as u64);
-        // Get transactions details
-        let transactions = self.get_benchmark(0, 0, 0)
-            .get_transactions_rw();
+        // Get transactions details and the headline throughput metric from the spec.
+        let benchmark = self.get_benchmark(0, 0, 0);
+        let transactions = benchmark.get_transactions_rw();
+        let throughput_unit = benchmark.spec.metrics.throughput_unit.clone();
+        let throughput_factor = benchmark.spec.metrics.per.factor();
         // Read statistics from the generated local files
         let stats_map = match data_agg::get_stats(&self.target_dir, &transactions) {
             Ok(stats_map) => stats_map,
@@ -900,10 +902,8 @@ impl Executor {
                     counters.n_total - counters.n_commits,
                     // Error rate
                     if counters.n_total > 0 { (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0 } else { 0.0 },
-                    // Transactions per minute
-                    (counters.n_commits as f64 / duration_ms.as_secs() as f64 * 60.0) as u32,
-                    // Transactions per second
-                    (counters.n_commits as f64 / duration_ms.as_secs() as f64) as u32,
+                    // Throughput in the spec's configured unit (commits/sec * time-base factor)
+                    (counters.n_commits as f64 / duration_ms.as_secs() as f64 * throughput_factor) as u32,
                 )
             );
         }
@@ -911,7 +911,7 @@ impl Executor {
         println!("");
         // Print summary
         println!("Results:");
-        data_agg::print_transactions_summary(&data_summary);
+        data_agg::print_transactions_summary(&data_summary, &throughput_unit);
         // Print stats
         println!("Response times:");
         data_agg::print_transactions_stats(&data_stats);

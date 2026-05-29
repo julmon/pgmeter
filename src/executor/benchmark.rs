@@ -88,31 +88,25 @@ pub trait ReadWriteSync: Send + Sync {
     }
 }
 
-#[derive(Tabled)]
+// Per-transaction headline results. The throughput is expressed in the unit
+// configured by the spec's `metrics` block (e.g. TPS, tpmC, QphH); the column
+// is rendered with a dynamic header rather than the tabled derive.
 pub struct TransactionSummary {
-    #[tabled(rename = "Transaction")]
-    name: String,
-    #[tabled(rename = "Committed")]
-    n_commits: u64,
-    #[tabled(rename = "Errors")]
-    n_errors: u64,
-    #[tabled(rename = "Error rate (%)")]
-    error_rate: f64,
-    #[tabled(rename = "TPM")]
-    tpm: u32,
-    #[tabled(rename = "TPS")]
-    tps: u32,
+    pub name: String,
+    pub n_commits: u64,
+    pub n_errors: u64,
+    pub error_rate: f64,
+    pub throughput: u32,
 }
 
 impl TransactionSummary {
-    pub fn new(name: String, n_commits: u64, n_errors: u64, error_rate: f64, tpm: u32, tps: u32) -> TransactionSummary {
+    pub fn new(name: String, n_commits: u64, n_errors: u64, error_rate: f64, throughput: u32) -> TransactionSummary {
         TransactionSummary {
-            name: name,
-            n_commits: n_commits,
-            n_errors: n_errors,
-            error_rate: error_rate,
-            tpm: tpm,
-            tps: tps,
+            name,
+            n_commits,
+            n_errors,
+            error_rate,
+            throughput,
         }
     }
 }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use polars::prelude::*;
 use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, TransactionSummary};
 use tabled::{
+    builder::Builder,
     object::{Rows, Object, Columns},
     Alignment,
     ModifyObject,
@@ -234,52 +235,43 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
     Ok(stats_map)
 }
 
-pub fn print_transactions_summary(data: &Vec<TransactionSummary>) {
-    let mut table = Table::from_iter(data);
-    let style = Style::rounded();
+// `throughput_unit` is the headline metric label from the spec's `metrics`
+// block (e.g. TPS, tpmC, QphH); it becomes the throughput column's header.
+pub fn print_transactions_summary(data: &Vec<TransactionSummary>, throughput_unit: &str) {
+    let mut builder = Builder::default();
+    builder.set_columns([
+        "Transaction",
+        "Committed",
+        "Errors",
+        "Error rate (%)",
+        throughput_unit,
+    ]);
+    for row in data {
+        builder.add_record([
+            row.name.clone(),
+            row.n_commits.to_string(),
+            row.n_errors.to_string(),
+            format!("{:.3}", row.error_rate),
+            row.throughput.to_string(),
+        ]);
+    }
 
+    let mut table = builder.build();
     table
-        .with(style)
+        .with(Style::rounded())
         .with(
             Rows::first()
                 .modify()
                 .with(Alignment::center())
         )
         .with(
-            Columns::single(1)
+            Columns::new(1..)
                 .not(Rows::first())
                 .modify()
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(2)
-                .not(Rows::first())
-                .modify()
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(3)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3,  val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(4)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{}", s.parse::<u32>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(5)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{}", s.parse::<u32>().unwrap()))
                 .with(Alignment::right())
         );
 
-        println!("{}", table);
+    println!("{}", table);
 }
 
 pub fn print_transactions_stats(data: &Vec<ResponseTimeStatistics>) {
