@@ -1,0 +1,826 @@
+# TPC-H Decision Support Benchmark Specification (embedded)
+# 22 read-only analytical queries with weighted random selection.
+# Self-contained: all Lua (loaders + the Q[1]..Q[22] query module) is inlined
+# below, so this single file needs no external samples/lua/ scripts.
+
+name: TPC-H
+description: >
+  TPC-H-like benchmark for analytical query performance on PostgreSQL.
+  8 tables, 22 queries with randomized parameters.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+scaling:
+  unit: scalefactor
+  max_id_query: "SELECT COUNT(*)::int / 10000 AS max_id FROM supplier"
+  constants:
+    suppliers_per_sf: 10000
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# TPC-H is a decision-support workload measured in queries per hour. Note this
+# is a display label over all executed queries, not the official QphH composite
+# (which is a geometric mean of power/throughput runs weighted by scale factor).
+metrics:
+  throughput_unit: "QphH"
+  per: hour
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  tables:
+    - name: region
+      columns:
+        - { name: r_regionkey, type: "INTEGER NOT NULL" }
+        - { name: r_name, type: "CHAR(25) NOT NULL" }
+        - { name: r_comment, type: "VARCHAR(152)" }
+      primary_key: [r_regionkey]
+
+    - name: nation
+      columns:
+        - { name: n_nationkey, type: "INTEGER NOT NULL" }
+        - { name: n_name, type: "CHAR(25) NOT NULL" }
+        - { name: n_regionkey, type: "INTEGER NOT NULL" }
+        - { name: n_comment, type: "VARCHAR(152)" }
+      primary_key: [n_nationkey]
+
+    - name: part
+      columns:
+        - { name: p_partkey, type: "INTEGER NOT NULL" }
+        - { name: p_name, type: "VARCHAR(55) NOT NULL" }
+        - { name: p_mfgr, type: "CHAR(25) NOT NULL" }
+        - { name: p_brand, type: "CHAR(10) NOT NULL" }
+        - { name: p_type, type: "VARCHAR(25) NOT NULL" }
+        - { name: p_size, type: "INTEGER NOT NULL" }
+        - { name: p_container, type: "CHAR(10) NOT NULL" }
+        - { name: p_retailprice, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: p_comment, type: "VARCHAR(23) NOT NULL" }
+      primary_key: [p_partkey]
+
+    - name: supplier
+      columns:
+        - { name: s_suppkey, type: "INTEGER NOT NULL" }
+        - { name: s_name, type: "CHAR(25) NOT NULL" }
+        - { name: s_address, type: "VARCHAR(40) NOT NULL" }
+        - { name: s_nationkey, type: "INTEGER NOT NULL" }
+        - { name: s_phone, type: "CHAR(15) NOT NULL" }
+        - { name: s_acctbal, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: s_comment, type: "VARCHAR(101) NOT NULL" }
+      primary_key: [s_suppkey]
+
+    - name: partsupp
+      columns:
+        - { name: ps_partkey, type: "INTEGER NOT NULL" }
+        - { name: ps_suppkey, type: "INTEGER NOT NULL" }
+        - { name: ps_availqty, type: "INTEGER NOT NULL" }
+        - { name: ps_supplycost, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: ps_comment, type: "VARCHAR(199) NOT NULL" }
+      primary_key: [ps_partkey, ps_suppkey]
+
+    - name: customer
+      columns:
+        - { name: c_custkey, type: "INTEGER NOT NULL" }
+        - { name: c_name, type: "VARCHAR(25) NOT NULL" }
+        - { name: c_address, type: "VARCHAR(40) NOT NULL" }
+        - { name: c_nationkey, type: "INTEGER NOT NULL" }
+        - { name: c_phone, type: "CHAR(15) NOT NULL" }
+        - { name: c_acctbal, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: c_mktsegment, type: "CHAR(10) NOT NULL" }
+        - { name: c_comment, type: "VARCHAR(117) NOT NULL" }
+      primary_key: [c_custkey]
+
+    - name: orders
+      columns:
+        - { name: o_orderkey, type: "INTEGER NOT NULL" }
+        - { name: o_custkey, type: "INTEGER NOT NULL" }
+        - { name: o_orderstatus, type: "CHAR(1) NOT NULL" }
+        - { name: o_totalprice, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: o_orderdate, type: "DATE NOT NULL" }
+        - { name: o_orderpriority, type: "CHAR(15) NOT NULL" }
+        - { name: o_clerk, type: "CHAR(15) NOT NULL" }
+        - { name: o_shippriority, type: "INTEGER NOT NULL" }
+        - { name: o_comment, type: "VARCHAR(79) NOT NULL" }
+      primary_key: [o_orderkey]
+
+    - name: lineitem
+      columns:
+        - { name: l_orderkey, type: "INTEGER NOT NULL" }
+        - { name: l_partkey, type: "INTEGER NOT NULL" }
+        - { name: l_suppkey, type: "INTEGER NOT NULL" }
+        - { name: l_linenumber, type: "INTEGER NOT NULL" }
+        - { name: l_quantity, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: l_extendedprice, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: l_discount, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: l_tax, type: "DECIMAL(15,2) NOT NULL" }
+        - { name: l_returnflag, type: "CHAR(1) NOT NULL" }
+        - { name: l_linestatus, type: "CHAR(1) NOT NULL" }
+        - { name: l_shipdate, type: "DATE NOT NULL" }
+        - { name: l_commitdate, type: "DATE NOT NULL" }
+        - { name: l_receiptdate, type: "DATE NOT NULL" }
+        - { name: l_shipinstruct, type: "CHAR(25) NOT NULL" }
+        - { name: l_shipmode, type: "CHAR(10) NOT NULL" }
+        - { name: l_comment, type: "VARCHAR(44) NOT NULL" }
+      primary_key: [l_orderkey, l_linenumber]
+
+  foreign_keys:
+    - { name: fk_nation_region,      table: nation,   columns: [n_regionkey],          references: { table: region,   columns: [r_regionkey] } }
+    - { name: fk_supplier_nation,    table: supplier, columns: [s_nationkey],           references: { table: nation,   columns: [n_nationkey] } }
+    - { name: fk_partsupp_part,      table: partsupp, columns: [ps_partkey],            references: { table: part,     columns: [p_partkey] } }
+    - { name: fk_partsupp_supplier,  table: partsupp, columns: [ps_suppkey],            references: { table: supplier, columns: [s_suppkey] } }
+    - { name: fk_customer_nation,    table: customer, columns: [c_nationkey],           references: { table: nation,   columns: [n_nationkey] } }
+    - { name: fk_orders_customer,    table: orders,   columns: [o_custkey],             references: { table: customer, columns: [c_custkey] } }
+    - { name: fk_lineitem_orders,    table: lineitem, columns: [l_orderkey],            references: { table: orders,   columns: [o_orderkey] } }
+    - { name: fk_lineitem_partsupp,  table: lineitem, columns: [l_partkey, l_suppkey],  references: { table: partsupp, columns: [ps_partkey, ps_suppkey] } }
+
+  indexes:
+    - { name: idx_lineitem_shipdate,  table: lineitem, columns: [l_shipdate] }
+    - { name: idx_lineitem_orderkey,  table: lineitem, columns: [l_orderkey] }
+    - { name: idx_lineitem_partkey,   table: lineitem, columns: [l_partkey] }
+    - { name: idx_lineitem_suppkey,   table: lineitem, columns: [l_suppkey] }
+    - { name: idx_lineitem_partsupp,  table: lineitem, columns: [l_partkey, l_suppkey] }
+    - { name: idx_orders_custkey,     table: orders,   columns: [o_custkey] }
+    - { name: idx_orders_orderdate,   table: orders,   columns: [o_orderdate] }
+    - { name: idx_partsupp_suppkey,   table: partsupp, columns: [ps_suppkey] }
+    - { name: idx_customer_nationkey, table: customer,  columns: [c_nationkey] }
+    - { name: idx_supplier_nationkey, table: supplier,  columns: [s_nationkey] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+pre_load_script: |
+  -- TPC-H Pre-Load Script
+  -- Populates region (5 rows) and nation (25 rows) reference tables.
+
+  local REGIONS = {"AFRICA", "AMERICA", "ASIA", "EUROPE", "MIDDLE EAST"}
+  local NATIONS = {
+      {"ALGERIA", 0}, {"ARGENTINA", 1}, {"BRAZIL", 1}, {"CANADA", 1}, {"EGYPT", 4},
+      {"ETHIOPIA", 0}, {"FRANCE", 3}, {"GERMANY", 3}, {"INDIA", 2}, {"INDONESIA", 2},
+      {"IRAN", 4}, {"IRAQ", 4}, {"JAPAN", 2}, {"JORDAN", 4}, {"KENYA", 0},
+      {"MOROCCO", 0}, {"MOZAMBIQUE", 0}, {"PERU", 1}, {"CHINA", 2}, {"ROMANIA", 3},
+      {"SAUDI ARABIA", 4}, {"VIETNAM", 2}, {"RUSSIA", 3}, {"UNITED KINGDOM", 3}, {"UNITED STATES", 1},
+  }
+
+  -- Region
+  copy_start("COPY region FROM stdin")
+  for i, name in ipairs(REGIONS) do
+      copy_write(string.format("%d\t%s\t%s\n", i - 1, name, rand_string(31, 115)))
+  end
+  copy_end()
+
+  -- Nation
+  copy_start("COPY nation FROM stdin")
+  for i, n in ipairs(NATIONS) do
+      copy_write(string.format("%d\t%s\t%d\t%s\n", i - 1, n[1], n[2], rand_string(31, 114)))
+  end
+  copy_end()
+load_script: |
+  -- TPC-H Data Loading Script
+  -- Populates part, supplier, partsupp, customer, orders, lineitem.
+  -- TPC-H data is not partitioned -- only the job containing id=1 loads data.
+
+  -- Skip if this job doesn't contain id 1
+  local found = false
+  for _, id in ipairs(ids) do
+      if id == 1 then found = true end
+  end
+  if not found then return end
+
+  -- Sizing constants
+  local SF = scalefactor
+  local N_PARTS = 200000 * SF
+  local N_SUPPLIERS = 10000 * SF
+  local N_CUSTOMERS = 150000 * SF
+  local N_ORDERS = 1500000 * SF
+  local PARTSUPPS_PER_PART = 4
+  local BATCH = 10000
+
+  -- Reference data
+  local SEGMENTS = {"AUTOMOBILE", "BUILDING", "FURNITURE", "HOUSEHOLD", "MACHINERY"}
+  local PRIORITIES = {"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED", "5-LOW"}
+  local SHIP_MODES = {"REG AIR", "AIR", "RAIL", "SHIP", "TRUCK", "MAIL", "FOB"}
+  local SHIP_INSTRUCT = {"DELIVER IN PERSON", "COLLECT COD", "NONE", "TAKE BACK RETURN"}
+  local CONTAINERS = {
+      "SM CASE", "SM BOX", "SM PACK", "SM PKG", "SM JAR", "SM BAG", "SM CAN", "SM DRUM",
+      "MED CASE", "MED BOX", "MED PACK", "MED PKG", "MED JAR", "MED BAG", "MED CAN", "MED DRUM",
+      "LG CASE", "LG BOX", "LG PACK", "LG PKG", "LG JAR", "LG BAG", "LG CAN", "LG DRUM",
+      "JUMBO CASE", "JUMBO BOX", "JUMBO PACK", "JUMBO PKG", "JUMBO JAR", "JUMBO BAG", "JUMBO CAN", "JUMBO DRUM",
+      "WRAP CASE", "WRAP BOX", "WRAP PACK", "WRAP PKG", "WRAP JAR", "WRAP BAG", "WRAP CAN", "WRAP DRUM",
+  }
+  local T1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY"}
+  local T2 = {"ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"}
+  local T3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER", "IRON"}
+
+  local PART_WORDS = {
+      "almond", "antique", "aquamarine", "azure", "beige", "bisque", "black", "blanched",
+      "blue", "blush", "brown", "burlywood", "burnished", "chartreuse", "chiffon", "chocolate",
+      "coral", "cornflower", "cornsilk", "cream", "cyan", "dark", "deep", "dim", "dodger",
+      "drab", "firebrick", "floral", "forest", "frosted", "gainsboro", "ghost", "goldenrod",
+      "green", "grey", "honeydew", "hot", "indian", "ivory", "khaki", "lace", "lavender",
+      "lawn", "lemon", "light", "lime", "linen", "magenta", "maroon", "medium", "metallic",
+      "midnight", "mint", "misty", "moccasin", "navajo", "navy", "olive", "orange", "orchid",
+      "pale", "papaya", "peach", "peru", "pink", "plum", "powder", "puff", "purple", "red",
+      "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell", "sienna", "sky",
+      "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato", "turquoise",
+      "violet", "wheat", "white", "yellow",
+  }
+
+  local function pick(t) return t[rand_int(1, #t)] end
+
+  local function gen_part_name()
+      return pick(PART_WORDS) .. " " .. pick(PART_WORDS) .. " " .. pick(PART_WORDS)
+          .. " " .. pick(PART_WORDS) .. " " .. pick(PART_WORDS)
+  end
+
+  local function gen_type()
+      return pick(T1) .. " " .. pick(T2) .. " " .. pick(T3)
+  end
+
+  local function gen_phone(nation_key)
+      return string.format("%d-%03d-%03d-%04d",
+          10 + nation_key, rand_int(100, 998), rand_int(100, 998), rand_int(1000, 9998))
+  end
+
+  -- Pure-Lua date arithmetic (no SQL round-trips)
+  local function ymd_to_days(y, m, d)
+      local a = math.floor((14 - m) / 12)
+      local y2 = y + 4800 - a
+      local m2 = m + 12 * a - 3
+      return d + math.floor((153 * m2 + 2) / 5) + 365 * y2
+          + math.floor(y2 / 4) - math.floor(y2 / 100) + math.floor(y2 / 400) - 32045
+  end
+
+  local function days_to_ymd(jd)
+      local a = jd + 32044
+      local b = math.floor((4 * a + 3) / 146097)
+      local c = a - math.floor(146097 * b / 4)
+      local d = math.floor((4 * c + 3) / 1461)
+      local e = c - math.floor(1461 * d / 4)
+      local m = math.floor((5 * e + 2) / 153)
+      local day = e - math.floor((153 * m + 2) / 5) + 1
+      local month = m + 3 - 12 * math.floor(m / 10)
+      local year = 100 * b + d - 4800 + math.floor(m / 10)
+      return year, month, day
+  end
+
+  local function rand_date(y1, y2)
+      return string.format("%04d-%02d-%02d", rand_int(y1, y2), rand_int(1, 12), rand_int(1, 28))
+  end
+
+  -- Optimized: parse date once, add days via Julian arithmetic, format result
+  local function add_days_fast(y, m, d, n)
+      local jd = ymd_to_days(y, m, d) + n
+      local ny, nm, nd = days_to_ymd(jd)
+      return string.format("%04d-%02d-%02d", ny, nm, nd), ny, nm, nd
+  end
+
+  -- Parse "YYYY-MM-DD" into y, m, d (avoid repeated string ops)
+  local function parse_date(ds)
+      return tonumber(string.sub(ds, 1, 4)),
+             tonumber(string.sub(ds, 6, 7)),
+             tonumber(string.sub(ds, 9, 10))
+  end
+
+  -- Pre-allocate reusable buffer table
+  local buf = {}
+
+  -- Helper: flush n entries from buffer to COPY
+  local function flush_copy(sql, t, n)
+      copy_start(sql)
+      copy_write(table.concat(t, "", 1, n))
+      copy_end()
+  end
+
+  -- ============================================================
+  -- 1. Part (200K per SF)
+  -- ============================================================
+  local n_batches = math.ceil(N_PARTS / BATCH)
+  for b = 1, n_batches do
+      local s = (b - 1) * BATCH + 1
+      local e = math.min(b * BATCH, N_PARTS)
+      local cnt = e - s + 1
+      -- Pre-generate all random strings for this batch in one Rust call
+      local comments = rand_strings(cnt, 5, 22)
+      local n = 0
+      for pk = s, e do
+          n = n + 1
+          buf[n] = string.format("%d\t%s\t%s\t%s\t%s\t%d\t%s\t%.2f\t%s\n",
+              pk, gen_part_name(),
+              string.format("Manufacturer#%d", rand_int(1, 5)),
+              string.format("Brand#%d%d", rand_int(1, 5), rand_int(1, 5)),
+              gen_type(), rand_int(1, 50), pick(CONTAINERS),
+              (90000 + (pk % 20001) + 100 * (pk % 1000)) / 100.0,
+              comments[n])
+      end
+      flush_copy("COPY part FROM stdin", buf, n)
+  end
+
+  -- ============================================================
+  -- 2. Supplier (10K per SF)
+  -- ============================================================
+  n_batches = math.ceil(N_SUPPLIERS / 5000)
+  for b = 1, n_batches do
+      local s = (b - 1) * 5000 + 1
+      local e = math.min(b * 5000, N_SUPPLIERS)
+      local cnt = e - s + 1
+      local addrs = rand_strings(cnt, 10, 40)
+      local comments = rand_strings(cnt, 25, 100)
+      local n = 0
+      for sk = s, e do
+          n = n + 1
+          local nk = rand_int(0, 24)
+          buf[n] = string.format("%d\tSupplier#%09d\t%s\t%d\t%s\t%.2f\t%s\n",
+              sk, sk, addrs[n], nk, gen_phone(nk),
+              rand_float(-999.99, 9999.99), comments[n])
+      end
+      flush_copy("COPY supplier FROM stdin", buf, n)
+  end
+
+  -- ============================================================
+  -- 3. Partsupp (4 per part)
+  -- ============================================================
+  n_batches = math.ceil(N_PARTS / BATCH)
+  for b = 1, n_batches do
+      local s = (b - 1) * BATCH + 1
+      local e = math.min(b * BATCH, N_PARTS)
+      local cnt = (e - s + 1) * PARTSUPPS_PER_PART
+      local comments = rand_strings(cnt, 49, 198)
+      local n = 0
+      for pk = s, e do
+          for i = 0, PARTSUPPS_PER_PART - 1 do
+              n = n + 1
+              local ps_sk = ((pk + i * (N_SUPPLIERS / 4 + (pk - 1) / N_SUPPLIERS)) % N_SUPPLIERS) + 1
+              buf[n] = string.format("%d\t%d\t%d\t%.2f\t%s\n",
+                  pk, ps_sk, rand_int(1, 9999), rand_float(1.00, 1000.00), comments[n])
+          end
+      end
+      flush_copy("COPY partsupp FROM stdin", buf, n)
+  end
+
+  -- ============================================================
+  -- 4. Customer (150K per SF)
+  -- ============================================================
+  n_batches = math.ceil(N_CUSTOMERS / BATCH)
+  for b = 1, n_batches do
+      local s = (b - 1) * BATCH + 1
+      local e = math.min(b * BATCH, N_CUSTOMERS)
+      local cnt = e - s + 1
+      local addrs = rand_strings(cnt, 10, 40)
+      local comments = rand_strings(cnt, 29, 116)
+      local n = 0
+      for ck = s, e do
+          n = n + 1
+          local nk = rand_int(0, 24)
+          buf[n] = string.format("%d\tCustomer#%09d\t%s\t%d\t%s\t%.2f\t%s\t%s\n",
+              ck, ck, addrs[n], nk, gen_phone(nk),
+              rand_float(-999.99, 9999.99), pick(SEGMENTS), comments[n])
+      end
+      flush_copy("COPY customer FROM stdin", buf, n)
+  end
+
+  -- ============================================================
+  -- 5. Orders + Lineitem
+  -- ============================================================
+  -- Use two separate buffers; flush each as one copy_write per batch.
+  local obuf = {}
+  local lbuf = {}
+
+  n_batches = math.ceil(N_ORDERS / BATCH)
+  for b = 1, n_batches do
+      local s = (b - 1) * BATCH + 1
+      local e = math.min(b * BATCH, N_ORDERS)
+      local cnt = e - s + 1
+
+      -- Pre-generate random strings for this batch (one Rust call each)
+      -- Avg ~4 lineitems per order, so ~4*cnt lineitem comments needed
+      local o_comments = rand_strings(cnt, 19, 78)
+      local l_comments = rand_strings(cnt * 7, 10, 43)  -- max 7 per order
+      local lc_idx = 0
+
+      local on = 0
+      local ln = 0
+
+      for ok = s, e do
+          local o_ck = (ok % N_CUSTOMERS) + 1
+          local o_date = rand_date(1992, 1998)
+          local oy, om, od = parse_date(o_date)
+          local o_priority = pick(PRIORITIES)
+          local o_clerk = string.format("Clerk#%09d", rand_int(1, 1000))
+
+          local n_lines = rand_int(1, 7)
+          local o_totalprice = 0.0
+          local has_returned = false
+
+          for li = 1, n_lines do
+              ln = ln + 1
+              lc_idx = lc_idx + 1
+              local l_pk = rand_int(1, N_PARTS)
+              local supp_idx = rand_int(0, 3)
+              local l_sk = ((l_pk + supp_idx * (N_SUPPLIERS / 4 + (l_pk - 1) / N_SUPPLIERS)) % N_SUPPLIERS) + 1
+              local l_qty = rand_int(1, 50)
+              local l_disc = rand_int(0, 10) / 100.0
+              local l_tax = rand_int(0, 8) / 100.0
+              local base_price = (90000 + (l_pk % 20001) + 100 * (l_pk % 1000)) / 100.0
+              local l_extprice = base_price * l_qty
+              o_totalprice = o_totalprice + l_extprice * (1 - l_disc) * (1 + l_tax)
+
+              local l_shipdate, sy, sm, sd = add_days_fast(oy, om, od, rand_int(1, 121))
+              local l_commitdate = add_days_fast(oy, om, od, rand_int(30, 90))
+              local l_receiptdate = add_days_fast(sy, sm, sd, rand_int(1, 30))
+
+              local l_rflag
+              if l_receiptdate <= "1995-06-17" then
+                  l_rflag = rand_int(0, 1) == 0 and "R" or "A"
+              else
+                  l_rflag = "N"
+              end
+              if l_rflag == "R" then has_returned = true end
+
+              local l_lstatus = l_shipdate > "1995-06-17" and "O" or "F"
+
+              lbuf[ln] = string.format(
+                  "%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                  ok, l_pk, l_sk, li, l_qty, l_extprice, l_disc, l_tax,
+                  l_rflag, l_lstatus, l_shipdate, l_commitdate, l_receiptdate,
+                  pick(SHIP_INSTRUCT), pick(SHIP_MODES), l_comments[lc_idx])
+          end
+
+          on = on + 1
+          local o_status = has_returned and "P" or (o_date < "1995-06-17" and "F" or "O")
+          obuf[on] = string.format("%d\t%d\t%s\t%.2f\t%s\t%s\t%s\t0\t%s\n",
+              ok, o_ck, o_status, o_totalprice, o_date, o_priority, o_clerk,
+              o_comments[on])
+      end
+
+      -- Flush orders
+      copy_start("COPY orders FROM stdin")
+      copy_write(table.concat(obuf, "", 1, on))
+      copy_end()
+
+      -- Flush lineitem
+      copy_start("COPY lineitem FROM stdin")
+      copy_write(table.concat(lbuf, "", 1, ln))
+      copy_end()
+  end
+
+# ---------------------------------------------------------------------------
+# Shared Lua modules
+# ---------------------------------------------------------------------------
+# The query dispatch table (Q[1]..Q[22]) is defined inline below and loaded
+# once per thread before any transaction executes. Each transaction calls its
+# query via Q[<id>]().
+scripts:
+  modules:
+    - |
+      -- TPC-H Query Implementations
+      -- This file is loaded once per transaction ID. The script body runs the query
+      -- corresponding to the transaction ID that was dispatched to it.
+      -- Since we don't know which ID we are at script level, we define all queries
+      -- as a lookup table and use a global __current_tx_id set by the executor.
+      --
+      -- However, the current architecture wraps this file as:
+      --   function __tx_N() <this content> end
+      -- So each transaction gets its own copy. We use the query ID from the
+      -- transaction's position to dispatch.
+      --
+      -- WORKAROUND: Since all 22 transactions point to this same file,
+      -- each __tx_N function contains the full dispatch table. We detect which
+      -- query to run via a lightweight approach: each function runs all the code,
+      -- but we use the fact that rand_int/query/exec are available to just execute
+      -- the query inline. The overhead of the unused dispatch code is negligible.
+
+      -- Reference data for random parameter generation
+      local REGIONS = {"AFRICA", "AMERICA", "ASIA", "EUROPE", "MIDDLE EAST"}
+      local NATIONS = {
+          "ALGERIA", "ARGENTINA", "BRAZIL", "CANADA", "EGYPT",
+          "ETHIOPIA", "FRANCE", "GERMANY", "INDIA", "INDONESIA",
+          "IRAN", "IRAQ", "JAPAN", "JORDAN", "KENYA",
+          "MOROCCO", "MOZAMBIQUE", "PERU", "CHINA", "ROMANIA",
+          "SAUDI ARABIA", "VIETNAM", "RUSSIA", "UNITED KINGDOM", "UNITED STATES"
+      }
+      local SEGMENTS = {"AUTOMOBILE", "BUILDING", "FURNITURE", "HOUSEHOLD", "MACHINERY"}
+      local SHIP_MODES = {"REG AIR", "AIR", "RAIL", "SHIP", "TRUCK", "MAIL", "FOB"}
+      local TYPES1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY"}
+      local TYPES2 = {"ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"}
+      local TYPES3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER", "IRON"}
+      local COLORS = {"almond", "antique", "aquamarine", "azure", "beige", "bisque", "black", "blanched", "blue"}
+
+      local function pick(t) return t[rand_int(1, #t)] end
+      local function rand_date(y1, y2)
+          local y = rand_int(y1, y2)
+          local m = rand_int(1, 12)
+          local d = rand_int(1, 28)
+          return string.format("%04d-%02d-%02d", y, m, d)
+      end
+      local function first_of_month(y1, y2)
+          return string.format("%04d-%02d-01", rand_int(y1, y2), rand_int(1, 12))
+      end
+      local function first_of_year(y1, y2)
+          return string.format("%04d-01-01", rand_int(y1, y2))
+      end
+      local function gen_type()
+          return pick(TYPES1) .. " " .. pick(TYPES2) .. " " .. pick(TYPES3)
+      end
+      local function gen_brand()
+          return string.format("Brand#%d%d", rand_int(1,5), rand_int(1,5))
+      end
+
+      -- Build dispatch table: tx_id -> function (global, accessible from inline scripts)
+      Q = {}
+
+      Q[1] = function() -- Pricing Summary
+          local delta = rand_int(60, 120)
+          exec("SELECT l_returnflag, l_linestatus, SUM(l_quantity), SUM(l_extendedprice), "
+              .. "SUM(l_extendedprice * (1 - l_discount)), SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)), "
+              .. "AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount), COUNT(*) "
+              .. "FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '" .. delta .. " day' "
+              .. "GROUP BY l_returnflag, l_linestatus ORDER BY l_returnflag, l_linestatus")
+      end
+
+      Q[2] = function() -- Min Cost Supplier
+          local size = rand_int(1, 50)
+          local tp = pick(TYPES3)
+          local region = pick(REGIONS)
+          exec("SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr, s_address, s_phone, s_comment "
+              .. "FROM part, supplier, partsupp, nation, region "
+              .. "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey "
+              .. "AND p_size = " .. size .. " AND p_type LIKE '%" .. tp .. "' "
+              .. "AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey AND r_name = '" .. region .. "' "
+              .. "AND ps_supplycost = (SELECT MIN(ps_supplycost) FROM partsupp, supplier, nation, region "
+              .. "WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey AND s_nationkey = n_nationkey "
+              .. "AND n_regionkey = r_regionkey AND r_name = '" .. region .. "') "
+              .. "ORDER BY s_acctbal DESC, n_name, s_name, p_partkey LIMIT 100")
+      end
+
+      Q[3] = function() -- Shipping Priority
+          local seg = pick(SEGMENTS)
+          local dt = rand_date(1995, 1995)
+          exec("SELECT l_orderkey, SUM(l_extendedprice * (1 - l_discount)) AS revenue, o_orderdate, o_shippriority "
+              .. "FROM customer, orders, lineitem WHERE c_mktsegment = '" .. seg .. "' AND c_custkey = o_custkey "
+              .. "AND l_orderkey = o_orderkey AND o_orderdate < DATE '" .. dt .. "' AND l_shipdate > DATE '" .. dt .. "' "
+              .. "GROUP BY l_orderkey, o_orderdate, o_shippriority ORDER BY revenue DESC, o_orderdate LIMIT 10")
+      end
+
+      Q[4] = function() -- Order Priority
+          local dt = first_of_month(1993, 1997)
+          exec("SELECT o_orderpriority, COUNT(*) FROM orders "
+              .. "WHERE o_orderdate >= DATE '" .. dt .. "' AND o_orderdate < DATE '" .. dt .. "' + INTERVAL '3 month' "
+              .. "AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate) "
+              .. "GROUP BY o_orderpriority ORDER BY o_orderpriority")
+      end
+
+      Q[5] = function() -- Local Supplier Volume
+          local region = pick(REGIONS)
+          local dt = first_of_year(1993, 1997)
+          exec("SELECT n_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue "
+              .. "FROM customer, orders, lineitem, supplier, nation, region "
+              .. "WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey AND l_suppkey = s_suppkey "
+              .. "AND c_nationkey = s_nationkey AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey "
+              .. "AND r_name = '" .. region .. "' AND o_orderdate >= DATE '" .. dt .. "' "
+              .. "AND o_orderdate < DATE '" .. dt .. "' + INTERVAL '1 year' "
+              .. "GROUP BY n_name ORDER BY revenue DESC")
+      end
+
+      Q[6] = function() -- Revenue Forecast
+          local dt = first_of_year(1993, 1997)
+          local disc = rand_int(2, 9) / 100.0
+          local qty = rand_int(24, 25)
+          exec(string.format("SELECT SUM(l_extendedprice * l_discount) FROM lineitem "
+              .. "WHERE l_shipdate >= DATE '%s' AND l_shipdate < DATE '%s' + INTERVAL '1 year' "
+              .. "AND l_discount BETWEEN %.2f - 0.01 AND %.2f + 0.01 AND l_quantity < %d",
+              dt, dt, disc, disc, qty))
+      end
+
+      Q[7] = function() -- Volume Shipping
+          local n1 = pick(NATIONS)
+          local n2 = n1
+          while n2 == n1 do n2 = pick(NATIONS) end
+          exec("SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue FROM ("
+              .. "SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation, EXTRACT(YEAR FROM l_shipdate) AS l_year, "
+              .. "l_extendedprice * (1 - l_discount) AS volume "
+              .. "FROM supplier, lineitem, orders, customer, nation n1, nation n2 "
+              .. "WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey AND c_custkey = o_custkey "
+              .. "AND s_nationkey = n1.n_nationkey AND c_nationkey = n2.n_nationkey "
+              .. "AND ((n1.n_name = '" .. n1 .. "' AND n2.n_name = '" .. n2 .. "') "
+              .. "OR (n1.n_name = '" .. n2 .. "' AND n2.n_name = '" .. n1 .. "')) "
+              .. "AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31') AS shipping "
+              .. "GROUP BY supp_nation, cust_nation, l_year ORDER BY supp_nation, cust_nation, l_year")
+      end
+
+      Q[8] = function() -- Market Share
+          local nation = pick(NATIONS)
+          local region = pick(REGIONS)
+          local ptype = gen_type()
+          exec("SELECT o_year, SUM(CASE WHEN nation = '" .. nation .. "' THEN volume ELSE 0 END) / SUM(volume) FROM ("
+              .. "SELECT EXTRACT(YEAR FROM o_orderdate) AS o_year, l_extendedprice * (1 - l_discount) AS volume, "
+              .. "n2.n_name AS nation FROM part, supplier, lineitem, orders, customer, nation n1, nation n2, region "
+              .. "WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey AND l_orderkey = o_orderkey "
+              .. "AND o_custkey = c_custkey AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey "
+              .. "AND r_name = '" .. region .. "' AND s_nationkey = n2.n_nationkey "
+              .. "AND o_orderdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31' "
+              .. "AND p_type = '" .. ptype .. "') AS all_nations GROUP BY o_year ORDER BY o_year")
+      end
+
+      Q[9] = function() -- Product Profit
+          local color = pick(COLORS)
+          exec("SELECT nation, o_year, SUM(amount) FROM ("
+              .. "SELECT n_name AS nation, EXTRACT(YEAR FROM o_orderdate) AS o_year, "
+              .. "l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount "
+              .. "FROM part, supplier, lineitem, partsupp, orders, nation "
+              .. "WHERE s_suppkey = l_suppkey AND ps_suppkey = l_suppkey AND ps_partkey = l_partkey "
+              .. "AND p_partkey = l_partkey AND o_orderkey = l_orderkey AND s_nationkey = n_nationkey "
+              .. "AND p_name LIKE '%" .. color .. "%') AS profit GROUP BY nation, o_year ORDER BY nation, o_year DESC")
+      end
+
+      Q[10] = function() -- Returned Items
+          local dt = first_of_month(1993, 1995)
+          exec("SELECT c_custkey, c_name, SUM(l_extendedprice * (1 - l_discount)) AS revenue, "
+              .. "c_acctbal, n_name, c_address, c_phone, c_comment "
+              .. "FROM customer, orders, lineitem, nation WHERE c_custkey = o_custkey AND l_orderkey = o_orderkey "
+              .. "AND o_orderdate >= DATE '" .. dt .. "' AND o_orderdate < DATE '" .. dt .. "' + INTERVAL '3 month' "
+              .. "AND l_returnflag = 'R' AND c_nationkey = n_nationkey "
+              .. "GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment "
+              .. "ORDER BY revenue DESC LIMIT 20")
+      end
+
+      Q[11] = function() -- Important Stock
+          local nation = pick(NATIONS)
+          local fraction = 0.0001 / (scalefactor > 0 and scalefactor or 1)
+          exec(string.format("SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value "
+              .. "FROM partsupp, supplier, nation WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey "
+              .. "AND n_name = '%s' GROUP BY ps_partkey "
+              .. "HAVING SUM(ps_supplycost * ps_availqty) > ("
+              .. "SELECT SUM(ps_supplycost * ps_availqty) * %f FROM partsupp, supplier, nation "
+              .. "WHERE ps_suppkey = s_suppkey AND s_nationkey = n_nationkey AND n_name = '%s') "
+              .. "ORDER BY value DESC", nation, fraction, nation))
+      end
+
+      Q[12] = function() -- Shipping Modes
+          local m1 = pick(SHIP_MODES)
+          local m2 = m1
+          while m2 == m1 do m2 = pick(SHIP_MODES) end
+          local dt = first_of_year(1993, 1997)
+          exec("SELECT l_shipmode, "
+              .. "SUM(CASE WHEN o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH' THEN 1 ELSE 0 END), "
+              .. "SUM(CASE WHEN o_orderpriority <> '1-URGENT' AND o_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END) "
+              .. "FROM orders, lineitem WHERE o_orderkey = l_orderkey AND l_shipmode IN ('" .. m1 .. "', '" .. m2 .. "') "
+              .. "AND l_commitdate < l_receiptdate AND l_shipdate < l_commitdate "
+              .. "AND l_receiptdate >= DATE '" .. dt .. "' AND l_receiptdate < DATE '" .. dt .. "' + INTERVAL '1 year' "
+              .. "GROUP BY l_shipmode ORDER BY l_shipmode")
+      end
+
+      Q[13] = function() -- Customer Distribution
+          local w1 = ({"special", "pending", "unusual", "express"})[rand_int(1,4)]
+          local w2 = ({"packages", "requests", "accounts", "deposits"})[rand_int(1,4)]
+          exec("SELECT c_count, COUNT(*) AS custdist FROM ("
+              .. "SELECT c_custkey, COUNT(o_orderkey) AS c_count FROM customer LEFT OUTER JOIN orders "
+              .. "ON c_custkey = o_custkey AND o_comment NOT LIKE '%" .. w1 .. "%" .. w2 .. "%' "
+              .. "GROUP BY c_custkey) AS c_orders GROUP BY c_count ORDER BY custdist DESC, c_count DESC")
+      end
+
+      Q[14] = function() -- Promotion Effect
+          local dt = first_of_month(1993, 1997)
+          exec("SELECT 100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) ELSE 0 END) "
+              .. "/ SUM(l_extendedprice * (1 - l_discount)) FROM lineitem, part "
+              .. "WHERE l_partkey = p_partkey AND l_shipdate >= DATE '" .. dt .. "' "
+              .. "AND l_shipdate < DATE '" .. dt .. "' + INTERVAL '1 month'")
+      end
+
+      Q[15] = function() -- Top Supplier
+          local dt = first_of_month(1993, 1997)
+          exec("WITH revenue AS (SELECT l_suppkey AS supplier_no, SUM(l_extendedprice * (1 - l_discount)) AS total_revenue "
+              .. "FROM lineitem WHERE l_shipdate >= DATE '" .. dt .. "' AND l_shipdate < DATE '" .. dt .. "' + INTERVAL '3 month' "
+              .. "GROUP BY l_suppkey) SELECT s_suppkey, s_name, s_address, s_phone, total_revenue "
+              .. "FROM supplier, revenue WHERE s_suppkey = supplier_no "
+              .. "AND total_revenue = (SELECT MAX(total_revenue) FROM revenue) ORDER BY s_suppkey")
+      end
+
+      Q[16] = function() -- Parts/Supplier
+          local brand = gen_brand()
+          local ptype = pick(TYPES1) .. " " .. pick(TYPES2)
+          local sizes = {}
+          for k = 1, 8 do sizes[k] = rand_int(1, 50) end
+          exec("SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) FROM partsupp, part "
+              .. "WHERE p_partkey = ps_partkey AND p_brand <> '" .. brand .. "' AND p_type NOT LIKE '" .. ptype .. "%' "
+              .. "AND p_size IN (" .. table.concat(sizes, ",") .. ") "
+              .. "AND ps_suppkey NOT IN (SELECT s_suppkey FROM supplier WHERE s_comment LIKE '%Customer%Complaints%') "
+              .. "GROUP BY p_brand, p_type, p_size ORDER BY COUNT(DISTINCT ps_suppkey) DESC, p_brand, p_type, p_size")
+      end
+
+      Q[17] = function() -- Small Quantity
+          local brand = gen_brand()
+          local containers = {"SM CASE","SM BOX","SM PACK","SM PKG","SM JAR","SM BAG","SM CAN","SM DRUM",
+              "MED CASE","MED BOX","MED PACK","MED PKG","MED JAR","MED BAG","MED CAN","MED DRUM",
+              "LG CASE","LG BOX","LG PACK","LG PKG","LG JAR","LG BAG","LG CAN","LG DRUM",
+              "JUMBO CASE","JUMBO BOX","JUMBO PACK","JUMBO PKG","JUMBO JAR","JUMBO BAG","JUMBO CAN","JUMBO DRUM",
+              "WRAP CASE","WRAP BOX","WRAP PACK","WRAP PKG","WRAP JAR","WRAP BAG","WRAP CAN","WRAP DRUM"}
+          local container = pick(containers)
+          exec("SELECT SUM(l_extendedprice) / 7.0 FROM lineitem, part "
+              .. "WHERE p_partkey = l_partkey AND p_brand = '" .. brand .. "' AND p_container = '" .. container .. "' "
+              .. "AND l_quantity < (SELECT 0.2 * AVG(l_quantity) FROM lineitem WHERE l_partkey = p_partkey)")
+      end
+
+      Q[18] = function() -- Large Volume
+          local qty = rand_int(312, 315)
+          exec("SELECT c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice, SUM(l_quantity) "
+              .. "FROM customer, orders, lineitem WHERE o_orderkey IN ("
+              .. "SELECT l_orderkey FROM lineitem GROUP BY l_orderkey HAVING SUM(l_quantity) > " .. qty .. ") "
+              .. "AND c_custkey = o_custkey AND o_orderkey = l_orderkey "
+              .. "GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice "
+              .. "ORDER BY o_totalprice DESC, o_orderdate LIMIT 100")
+      end
+
+      Q[19] = function() -- Discounted Revenue
+          local b1, b2, b3 = gen_brand(), gen_brand(), gen_brand()
+          local q1, q2, q3 = rand_int(1,10), rand_int(10,20), rand_int(20,30)
+          exec(string.format("SELECT SUM(l_extendedprice * (1 - l_discount)) FROM lineitem, part "
+              .. "WHERE (p_partkey = l_partkey AND p_brand = '%s' "
+              .. "AND p_container IN ('SM CASE','SM BOX','SM PACK','SM PKG') "
+              .. "AND l_quantity >= %d AND l_quantity <= %d + 10 AND p_size BETWEEN 1 AND 5 "
+              .. "AND l_shipmode IN ('AIR','AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON') "
+              .. "OR (p_partkey = l_partkey AND p_brand = '%s' "
+              .. "AND p_container IN ('MED BAG','MED BOX','MED PKG','MED PACK') "
+              .. "AND l_quantity >= %d AND l_quantity <= %d + 10 AND p_size BETWEEN 1 AND 10 "
+              .. "AND l_shipmode IN ('AIR','AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON') "
+              .. "OR (p_partkey = l_partkey AND p_brand = '%s' "
+              .. "AND p_container IN ('LG CASE','LG BOX','LG PACK','LG PKG') "
+              .. "AND l_quantity >= %d AND l_quantity <= %d + 10 AND p_size BETWEEN 1 AND 15 "
+              .. "AND l_shipmode IN ('AIR','AIR REG') AND l_shipinstruct = 'DELIVER IN PERSON')",
+              b1, q1, q1, b2, q2, q2, b3, q3, q3))
+      end
+
+      Q[20] = function() -- Potential Promotion
+          local color = pick(COLORS)
+          local dt = first_of_year(1993, 1997)
+          local nation = pick(NATIONS)
+          exec("SELECT s_name, s_address FROM supplier, nation "
+              .. "WHERE s_suppkey IN (SELECT ps_suppkey FROM partsupp "
+              .. "WHERE ps_partkey IN (SELECT p_partkey FROM part WHERE p_name LIKE '" .. color .. "%') "
+              .. "AND ps_availqty > (SELECT 0.5 * SUM(l_quantity) FROM lineitem "
+              .. "WHERE l_partkey = ps_partkey AND l_suppkey = ps_suppkey "
+              .. "AND l_shipdate >= DATE '" .. dt .. "' AND l_shipdate < DATE '" .. dt .. "' + INTERVAL '1 year')) "
+              .. "AND s_nationkey = n_nationkey AND n_name = '" .. nation .. "' ORDER BY s_name")
+      end
+
+      Q[21] = function() -- Waiting Supplier
+          local nation = pick(NATIONS)
+          exec("SELECT s_name, COUNT(*) AS numwait FROM supplier, lineitem l1, orders, nation "
+              .. "WHERE s_suppkey = l1.l_suppkey AND o_orderkey = l1.l_orderkey AND o_orderstatus = 'F' "
+              .. "AND l1.l_receiptdate > l1.l_commitdate "
+              .. "AND EXISTS (SELECT * FROM lineitem l2 WHERE l2.l_orderkey = l1.l_orderkey AND l2.l_suppkey <> l1.l_suppkey) "
+              .. "AND NOT EXISTS (SELECT * FROM lineitem l3 WHERE l3.l_orderkey = l1.l_orderkey "
+              .. "AND l3.l_suppkey <> l1.l_suppkey AND l3.l_receiptdate > l3.l_commitdate) "
+              .. "AND s_nationkey = n_nationkey AND n_name = '" .. nation .. "' "
+              .. "GROUP BY s_name ORDER BY numwait DESC, s_name LIMIT 100")
+      end
+
+      Q[22] = function() -- Global Sales
+          local codes = {}
+          while #codes < 7 do
+              local c = rand_int(10, 34)
+              local found = false
+              for _, v in ipairs(codes) do if v == c then found = true end end
+              if not found then codes[#codes+1] = c end
+          end
+          local codes_str = "'" .. table.concat(codes, "','") .. "'"
+          exec("SELECT cntrycode, COUNT(*), SUM(c_acctbal) FROM ("
+              .. "SELECT SUBSTRING(c_phone FROM 1 FOR 2) AS cntrycode, c_acctbal FROM customer "
+              .. "WHERE SUBSTRING(c_phone FROM 1 FOR 2) IN (" .. codes_str .. ") "
+              .. "AND c_acctbal > (SELECT AVG(c_acctbal) FROM customer WHERE c_acctbal > 0.00 "
+              .. "AND SUBSTRING(c_phone FROM 1 FOR 2) IN (" .. codes_str .. ")) "
+              .. "AND NOT EXISTS (SELECT * FROM orders WHERE o_custkey = c_custkey)) AS custsale "
+              .. "GROUP BY cntrycode ORDER BY cntrycode")
+      end
+
+      -- Q is defined at global scope (this file is loaded as a module).
+      -- Each transaction uses inline script: "Q[N]()" to dispatch.
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+# Each transaction calls its query function from the shared dispatch table.
+transactions:
+  - { id: 1,  weight: 8, name: "Q1-Pricing-Summary",   mode: script, script: "Q[1]()",  description: "Pricing summary report" }
+  - { id: 2,  weight: 4, name: "Q2-Min-Cost-Supplier",  mode: script, script: "Q[2]()",  description: "Minimum cost supplier" }
+  - { id: 3,  weight: 5, name: "Q3-Shipping-Priority",  mode: script, script: "Q[3]()",  description: "Shipping priority" }
+  - { id: 4,  weight: 5, name: "Q4-Order-Priority",     mode: script, script: "Q[4]()",  description: "Order priority checking" }
+  - { id: 5,  weight: 5, name: "Q5-Local-Supplier",     mode: script, script: "Q[5]()",  description: "Local supplier volume" }
+  - { id: 6,  weight: 8, name: "Q6-Revenue-Forecast",   mode: script, script: "Q[6]()",  description: "Forecasting revenue change" }
+  - { id: 7,  weight: 4, name: "Q7-Volume-Shipping",    mode: script, script: "Q[7]()",  description: "Volume shipping" }
+  - { id: 8,  weight: 4, name: "Q8-Market-Share",       mode: script, script: "Q[8]()",  description: "National market share" }
+  - { id: 9,  weight: 4, name: "Q9-Product-Profit",     mode: script, script: "Q[9]()",  description: "Product type profit measure" }
+  - { id: 10, weight: 5, name: "Q10-Returned-Items",    mode: script, script: "Q[10]()", description: "Returned item reporting" }
+  - { id: 11, weight: 5, name: "Q11-Important-Stock",   mode: script, script: "Q[11]()", description: "Important stock identification" }
+  - { id: 12, weight: 6, name: "Q12-Shipping-Modes",    mode: script, script: "Q[12]()", description: "Shipping modes and order priority" }
+  - { id: 13, weight: 5, name: "Q13-Customer-Dist",     mode: script, script: "Q[13]()", description: "Customer distribution" }
+  - { id: 14, weight: 6, name: "Q14-Promotion-Effect",  mode: script, script: "Q[14]()", description: "Promotion effect" }
+  - { id: 15, weight: 4, name: "Q15-Top-Supplier",      mode: script, script: "Q[15]()", description: "Top supplier" }
+  - { id: 16, weight: 4, name: "Q16-Parts-Supplier",    mode: script, script: "Q[16]()", description: "Parts/supplier relationship" }
+  - { id: 17, weight: 3, name: "Q17-Small-Quantity",    mode: script, script: "Q[17]()", description: "Small-quantity-order revenue" }
+  - { id: 18, weight: 3, name: "Q18-Large-Volume",      mode: script, script: "Q[18]()", description: "Large volume customer" }
+  - { id: 19, weight: 3, name: "Q19-Discounted-Rev",    mode: script, script: "Q[19]()", description: "Discounted revenue" }
+  - { id: 20, weight: 3, name: "Q20-Potential-Promo",   mode: script, script: "Q[20]()", description: "Potential part promotion" }
+  - { id: 21, weight: 3, name: "Q21-Waiting-Supplier",  mode: script, script: "Q[21]()", description: "Suppliers who kept orders waiting" }
+  - { id: 22, weight: 3, name: "Q22-Global-Sales",      mode: script, script: "Q[22]()", description: "Global sales opportunity" }

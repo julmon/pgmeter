@@ -253,16 +253,22 @@ impl YamlBenchmark {
         spec.scripts
             .modules
             .iter()
-            .map(|module_path| {
-                let path = spec_dir.join(module_path);
-                std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    eprintln!(
-                        "ERROR: Failed to read Lua module '{}': {}",
-                        path.display(),
-                        e
-                    );
-                    std::process::exit(1);
-                })
+            .map(|module| {
+                // A value containing a newline is inline Lua source;
+                // otherwise it is a file path relative to the spec.
+                if module.contains('\n') {
+                    module.clone()
+                } else {
+                    let path = spec_dir.join(module);
+                    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                        eprintln!(
+                            "ERROR: Failed to read Lua module '{}': {}",
+                            path.display(),
+                            e
+                        );
+                        std::process::exit(1);
+                    })
+                }
             })
             .collect()
     }
@@ -714,7 +720,16 @@ transactions:
 
     #[test]
     fn shipped_sample_specs_parse_and_generate_ddls() {
-        for name in ["tpc-b", "tpc-c", "tpc-h", "tpc-iot"] {
+        for name in [
+            "tpc-b",
+            "tpc-c",
+            "tpc-h",
+            "tpc-iot",
+            "tpc-b-embedded",
+            "tpc-c-embedded",
+            "tpc-h-embedded",
+            "tpc-iot-embedded",
+        ] {
             let path = format!("samples/{}.yaml", name);
             let content = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {}", path, e));

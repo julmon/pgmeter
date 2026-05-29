@@ -1,0 +1,145 @@
+# TPC-B-like Benchmark Specification (embedded)
+# Banking debit/credit benchmark per official TPC-B specification.
+# Self-contained: data loading and the debit/credit transaction are written
+# as inline Lua, so this single file needs no external samples/lua/ scripts.
+
+name: TPC-B-like
+description: >
+  TPC-B-like benchmark implementation for PostgreSQL per official TPC-B
+  specification. Simulates a banking system with branches, tellers, and accounts
+  performing debit/credit transactions.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+scaling:
+  # The entity used as the scale-factor unit (1 SF = 1 branch)
+  unit: branch
+  # How to discover the current max ID at run time
+  max_id_query: "SELECT MAX(branch_id) AS max_id FROM branch"
+  # Constants available in expressions as {{const.<name>}} and in Lua as const.<name>
+  constants:
+    tellers_per_branch: 10
+    accounts_per_branch: 100000
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# TPC-B's headline metric is transactions per second.
+metrics:
+  throughput_unit: "TPS"
+  per: second
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  tables:
+    - name: branch
+      columns:
+        - { name: branch_id, type: "INTEGER NOT NULL" }
+        - { name: branch_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(88)" }
+      primary_key: [branch_id]
+
+    - name: teller
+      columns:
+        - { name: teller_id, type: "INTEGER NOT NULL" }
+        - { name: branch_id, type: INTEGER }
+        - { name: teller_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(84)" }
+      primary_key: [teller_id]
+
+    - name: account
+      columns:
+        - { name: account_id, type: "INTEGER NOT NULL" }
+        - { name: branch_id, type: INTEGER }
+        - { name: account_balance, type: INTEGER }
+        - { name: filler, type: "CHAR(84)" }
+      primary_key: [account_id]
+
+    - name: history
+      columns:
+        - { name: account_id, type: INTEGER }
+        - { name: teller_id, type: INTEGER }
+        - { name: branch_id, type: INTEGER }
+        - { name: delta, type: INTEGER }
+        - { name: timestamp, type: TIMESTAMP }
+        - { name: filler, type: "CHAR(22)" }
+
+  foreign_keys:
+    - name: fk_teller_branch
+      table: teller
+      columns: [branch_id]
+      references: { table: branch, columns: [branch_id] }
+
+    - name: fk_account_branch
+      table: account
+      columns: [branch_id]
+      references: { table: branch, columns: [branch_id] }
+
+  indexes:
+    - { name: idx_teller_branch, table: teller, columns: [branch_id] }
+    - { name: idx_account_branch, table: account, columns: [branch_id] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+# Runs once per parallel job with `ids` set to the branch IDs assigned to it.
+# For each branch we load 1 branch row, tellers_per_branch tellers, and
+# accounts_per_branch accounts (batched COPY).
+load_script: |
+  local TELLERS = const.tellers_per_branch
+  local ACCOUNTS = const.accounts_per_branch
+  local BATCH = 10000
+
+  for _, id in ipairs(ids) do
+    -- branch (1 row); empty filler -> CHAR padded to full width
+    copy_start("COPY branch FROM stdin")
+    copy_write(string.format("%d\t0\t\n", id))
+    copy_end()
+
+    -- tellers
+    copy_start("COPY teller FROM stdin")
+    for i = 1, TELLERS do
+      copy_write(string.format("%d\t%d\t0\t\n", (id - 1) * TELLERS + i, id))
+    end
+    copy_end()
+
+    -- accounts (batched)
+    local base = (id - 1) * ACCOUNTS
+    local n_batches = math.ceil(ACCOUNTS / BATCH)
+    for b = 1, n_batches do
+      copy_start("COPY account FROM stdin")
+      local batch_start = (b - 1) * BATCH + 1
+      local batch_end = math.min(b * BATCH, ACCOUNTS)
+      for i = batch_start, batch_end do
+        copy_write(string.format("%d\t%d\t0\t\n", base + i, id))
+      end
+      copy_end()
+    end
+  end
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+transactions:
+  - id: 1
+    name: Debit/credit
+    description: Debit/credit transaction
+    weight: 100
+    mode: script
+    script: |
+      local branch_id = rand_int(min_id, max_id)
+      local account_id = rand_int((min_id - 1) * const.accounts_per_branch + 1, max_id * const.accounts_per_branch)
+      local teller_id = rand_int((min_id - 1) * const.tellers_per_branch + 1, max_id * const.tellers_per_branch)
+      local delta = rand_int(-5000, 5000)
+
+      begin_tx()
+      exec("UPDATE account SET account_balance = account_balance + $1 WHERE account_id = $2", delta, account_id)
+      query("SELECT account_balance FROM account WHERE account_id = $1", account_id)
+      exec("UPDATE teller SET teller_balance = teller_balance + $1 WHERE teller_id = $2", delta, teller_id)
+      exec("UPDATE branch SET branch_balance = branch_balance + $1 WHERE branch_id = $2", delta, branch_id)
+      exec("INSERT INTO history (account_id, teller_id, branch_id, delta, timestamp) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+        account_id, teller_id, branch_id, delta)
+      commit()
