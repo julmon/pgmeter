@@ -331,6 +331,85 @@ pub fn print_transactions_stats(data: &Vec<ResponseTimeStatistics>) {
         println!("{}", table);
 }
 
+// Render the results as a pretty-printed JSON document for machine consumption.
+// `summary` and `stats` are aligned by index (same transaction order).
+pub fn results_json(
+    summary: &Vec<TransactionSummary>,
+    stats: &Vec<ResponseTimeStatistics>,
+    throughput_unit: &str,
+    duration_s: u64,
+) -> String {
+    let transactions: Vec<serde_json::Value> = summary
+        .iter()
+        .zip(stats.iter())
+        .map(|(s, st)| {
+            serde_json::json!({
+                "name": s.name,
+                "committed": s.n_commits,
+                "errors": s.n_errors,
+                "error_rate": s.error_rate,
+                "throughput": s.throughput,
+                "latency_ms": {
+                    "avg": st.mean,
+                    "min": st.min,
+                    "max": st.max,
+                    "stddev": st.std,
+                    "p95": st.percentile_95,
+                    "p99": st.percentile_99,
+                },
+            })
+        })
+        .collect();
+
+    let doc = serde_json::json!({
+        "throughput_unit": throughput_unit,
+        "duration_s": duration_s,
+        "transactions": transactions,
+    });
+
+    format!("{}\n", serde_json::to_string_pretty(&doc).unwrap())
+}
+
+// Render the results as CSV (one row per transaction). The throughput column is
+// labeled with the spec's configured unit, matching the table output.
+pub fn results_csv(
+    summary: &Vec<TransactionSummary>,
+    stats: &Vec<ResponseTimeStatistics>,
+    throughput_unit: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "transaction,committed,errors,error_rate,{},avg_ms,min_ms,max_ms,stddev_ms,p95_ms,p99_ms\n",
+        csv_field(throughput_unit)
+    ));
+    for (s, st) in summary.iter().zip(stats.iter()) {
+        out.push_str(&format!(
+            "{},{},{},{:.3},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}\n",
+            csv_field(&s.name),
+            s.n_commits,
+            s.n_errors,
+            s.error_rate,
+            s.throughput,
+            st.mean,
+            st.min,
+            st.max,
+            st.std,
+            st.percentile_95,
+            st.percentile_99,
+        ));
+    }
+    out
+}
+
+// Quote a CSV field if it contains a comma, double-quote or newline.
+fn csv_field(s: &str) -> String {
+    if s.contains(|c| c == ',' || c == '"' || c == '\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +427,61 @@ mod tests {
 
     fn tx(id: u16, name: &str) -> BenchmarkTransaction {
         BenchmarkTransaction { id, name: name.to_string(), weight: 1, description: String::new() }
+    }
+
+    fn sample_results() -> (Vec<TransactionSummary>, Vec<ResponseTimeStatistics>) {
+        let summary = vec![TransactionSummary::new(
+            "Debit/credit".to_string(),
+            100,
+            2,
+            1.961,
+            3150,
+        )];
+        let stats = vec![ResponseTimeStatistics {
+            name: "Debit/credit".to_string(),
+            mean: 0.633,
+            min: 0.533,
+            max: 6.633,
+            std: 0.202,
+            percentile_95: 0.811,
+            percentile_99: 1.747,
+        }];
+        (summary, stats)
+    }
+
+    #[test]
+    fn results_json_includes_unit_and_latency() {
+        let (summary, stats) = sample_results();
+        let out = results_json(&summary, &stats, "TPS", 30);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["throughput_unit"], "TPS");
+        assert_eq!(v["duration_s"], 30);
+        let t = &v["transactions"][0];
+        assert_eq!(t["name"], "Debit/credit");
+        assert_eq!(t["committed"], 100);
+        assert_eq!(t["errors"], 2);
+        assert_eq!(t["throughput"], 3150);
+        assert_eq!(t["latency_ms"]["p99"], 1.747);
+    }
+
+    #[test]
+    fn results_csv_has_header_and_quotes_commas() {
+        let (mut summary, mut stats) = sample_results();
+        summary.push(TransactionSummary::new("a,b".to_string(), 1, 0, 0.0, 5));
+        stats.push(ResponseTimeStatistics {
+            name: "a,b".to_string(),
+            mean: 0.0, min: 0.0, max: 0.0, std: 0.0,
+            percentile_95: 0.0, percentile_99: 0.0,
+        });
+        let out = results_csv(&summary, &stats, "TPS");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[0],
+            "transaction,committed,errors,error_rate,TPS,avg_ms,min_ms,max_ms,stddev_ms,p95_ms,p99_ms"
+        );
+        assert_eq!(lines[1], "Debit/credit,100,2,1.961,3150,0.633,0.533,6.633,0.202,0.811,1.747");
+        // A name with a comma must be quoted.
+        assert!(lines[2].starts_with("\"a,b\",1,0,"));
     }
 
     #[test]

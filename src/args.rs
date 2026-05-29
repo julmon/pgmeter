@@ -27,6 +27,24 @@ pub enum Action {
     Run,
 }
 
+// How `run` results are written to stdout.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum OutputFormat {
+    Table,
+    Json,
+    Csv,
+}
+
+// clap value parser for --format.
+fn output_format_value(s: &str) -> Result<OutputFormat, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "table" => Ok(OutputFormat::Table),
+        "json" => Ok(OutputFormat::Json),
+        "csv" => Ok(OutputFormat::Csv),
+        other => Err(format!("invalid output format '{}' (expected table, json or csv)", other)),
+    }
+}
+
 // run sub-command arguments
 pub struct RunArgs {
     // Number of concurrent client connected to the database
@@ -69,6 +87,8 @@ pub struct PgMtrArgs {
     pub init_args: InitArgs,
     // Path to YAML benchmark specification file
     pub spec_file: Option<String>,
+    // Results output format (run only; Table for init)
+    pub output_format: OutputFormat,
 }
 
 // Implementation of RunArgs::empty()
@@ -180,6 +200,16 @@ impl PgMtrArgs {
             .value_parser(clap::value_parser!(u16))
             .default_value("0");
 
+        // run: Define the --format command line option
+        let format_option = Arg::new("format")
+            .long("format")
+            .action(ArgAction::Set)
+            .help("Results output format")
+            .required(false)
+            .value_name("FORMAT")
+            .value_parser(output_format_value)
+            .default_value("table");
+
         // init: Define the --scalefactor/-s command line option
         let scalefactor_option = Arg::new("scalefactor")
             .long("scalefactor") // allow --scalefactor
@@ -243,7 +273,8 @@ impl PgMtrArgs {
             .arg(spec_option)
             .arg(client_option)
             .arg(time_option)
-            .arg(rampup_option);
+            .arg(rampup_option)
+            .arg(format_option);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -307,20 +338,21 @@ impl PgMtrArgs {
         }
 
         // Extract subcommand options
-        let (run_args, init_args, action, spec_file) = match matches.subcommand_name() {
+        let (run_args, init_args, action, spec_file, output_format) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
                 let init_args = parse_init_args(init_m);
                 let spec = spec_path(init_m);
 
-                (RunArgs::empty(), init_args, Action::Init, spec)
+                (RunArgs::empty(), init_args, Action::Init, spec, OutputFormat::Table)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
                 let run_args = parse_run_args(run_m);
                 let spec = spec_path(run_m);
+                let format = *run_m.get_one::<OutputFormat>("format").unwrap();
 
-                (run_args, InitArgs::empty(), Action::Run, spec)
+                (run_args, InitArgs::empty(), Action::Run, spec, format)
             },
             // subcommand_required(true) guarantees a subcommand was matched.
             _ => unreachable!("a subcommand is required"),
@@ -341,6 +373,7 @@ impl PgMtrArgs {
                 run_args: run_args,
                 init_args: init_args,
                 spec_file: spec_file,
+                output_format: output_format,
             }
         )
     }

@@ -38,7 +38,7 @@ use benchmark::{
 };
 use yaml_benchmark::YamlBenchmark;
 use txmessage::{TXMessage, TXMessageKind};
-use super::args::{RunArgs};
+use super::args::{RunArgs, OutputFormat};
 
 pub struct Executor {
     dsn: String,
@@ -863,7 +863,7 @@ impl Executor {
         self
     }
 
-    pub fn print_results(&mut self) -> &mut Self {
+    pub fn print_results(&mut self, format: OutputFormat) -> &mut Self {
         let duration_ms = Duration::from_millis(self.total_time_ms as u64);
         // Get transactions details and the headline throughput metric from the spec.
         let benchmark = self.get_benchmark(0, 0, 0);
@@ -908,13 +908,34 @@ impl Executor {
             );
         }
 
-        println!("");
-        // Print summary
-        println!("Results:");
-        data_agg::print_transactions_summary(&data_summary, &throughput_unit);
-        // Print stats
-        println!("Response times:");
-        data_agg::print_transactions_stats(&data_stats);
+        match format {
+            OutputFormat::Table => {
+                println!("");
+                // Print summary
+                println!("Results:");
+                data_agg::print_transactions_summary(&data_summary, &throughput_unit);
+                // Print stats
+                println!("Response times:");
+                data_agg::print_transactions_stats(&data_stats);
+            }
+            OutputFormat::Json => {
+                print!(
+                    "{}",
+                    data_agg::results_json(
+                        &data_summary,
+                        &data_stats,
+                        &throughput_unit,
+                        duration_ms.as_secs(),
+                    )
+                );
+            }
+            OutputFormat::Csv => {
+                print!(
+                    "{}",
+                    data_agg::results_csv(&data_summary, &data_stats, &throughput_unit)
+                );
+            }
+        }
 
         self
     }

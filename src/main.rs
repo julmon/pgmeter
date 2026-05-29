@@ -12,10 +12,11 @@ fn main() {
 
     match env.action {
         Action::Run => {
+            let output_format = env.output_format;
             executor::Executor::new(dsn, spec_file)
                 .run_benchmark(env.run_args)
                 .aggregate_data()
-                .print_results()
+                .print_results(output_format)
                 .generate_report();
         },
         Action::Init => {
