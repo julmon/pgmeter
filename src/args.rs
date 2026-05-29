@@ -1,7 +1,6 @@
 extern crate clap;
 
 use clap::{Arg, ArgAction, ColorChoice, Command};
-use clap::error::ErrorKind;
 use std::ffi::OsString;
 use std::env;
 use users::{get_user_by_uid, get_current_uid};
@@ -71,40 +70,6 @@ impl InitArgs {
     }
 }
 
-// Parse and convert an argument string coming from clap to u16
-fn parse_string_arg_to_u16(value: &str, error_msg: String) -> Result<u16, clap::Error> {
-    let u16_value = match value.parse::<u16>() {
-        Ok(v) => v,
-        Err(_) => {
-            return Err(
-                clap::Error::raw(
-                    ErrorKind::InvalidValue,
-                    format!("{}: \"{}\"\n", error_msg, value.to_string())
-                )
-            )
-        },
-    };
-
-    Ok(u16_value)
-}
-
-// Parse and convert an argument string coming from clap to u32
-fn parse_string_arg_to_u32(value: &str, error_msg: String) -> Result<u32, clap::Error> {
-    let u32_value = match value.parse::<u32>() {
-        Ok(v) => v,
-        Err(_) => {
-            return Err(
-                clap::Error::raw(
-                    ErrorKind::InvalidValue,
-                    format!("{}: \"{}\"\n", error_msg, value.to_string())
-                )
-            )
-        },
-    };
-
-    Ok(u32_value)
-}
-
 impl PgMtrArgs {
     pub fn new(username: String, password: String) -> Self {
         Self::new_from(username, password, std::env::args_os().into_iter()).unwrap_or_else(|e| e.exit())
@@ -121,6 +86,7 @@ impl PgMtrArgs {
         let host_option = Arg::new("host")
             .long("host") // allow --host
             .action(ArgAction::Set)
+            .global(true)
             .env("PGHOST")
             .short('H') // allow -H
             .help("Database server host or socket directory")
@@ -132,17 +98,20 @@ impl PgMtrArgs {
         let port_option = Arg::new("port")
             .long("port") // allow --port
             .action(ArgAction::Set)
+            .global(true)
             .env("PGPORT")
             .short('p') // allow -p
             .help("Database server port")
             .required(false)
             .value_name("PORT")
+            .value_parser(clap::value_parser!(u16).range(1..))
             .default_value("5432");
 
         // Define the global --username/-U command line option
         let username_option = Arg::new("username")
             .long("username") // allow --username
             .action(ArgAction::Set)
+            .global(true)
             .short('U') // allow -U
             .env("PGUSER")
             .help("Database user name")
@@ -154,6 +123,7 @@ impl PgMtrArgs {
         let dbname_option = Arg::new("dbname")
             .long("dbname") // allow --dbname
             .action(ArgAction::Set)
+            .global(true)
             .short('d') // allow -d
             .env("PGDATABASE")
             .help("Database name to connect to")
@@ -170,6 +140,7 @@ impl PgMtrArgs {
             .help("Number of concurrent database clients")
             .required(false)
             .value_name("NUM")
+            .value_parser(clap::value_parser!(u16).range(1..))
             .default_value("1");
 
         // run: Define the --time/-T command line option
@@ -180,6 +151,7 @@ impl PgMtrArgs {
             .help("Duration of benchmark test in seconds")
             .required(false)
             .value_name("NUM")
+            .value_parser(clap::value_parser!(u16).range(1..))
             .default_value("1");
 
         // run: Define the --rampup/-r command line option
@@ -190,6 +162,7 @@ impl PgMtrArgs {
             .help("Duration of rampup stage in seconds")
             .required(false)
             .value_name("NUM")
+            .value_parser(clap::value_parser!(u16))
             .default_value("0");
 
         // init: Define the --scalefactor/-s command line option
@@ -200,6 +173,7 @@ impl PgMtrArgs {
             .help("Database scale factor")
             .required(false)
             .value_name("NUM")
+            .value_parser(clap::value_parser!(u32).range(1..))
             .default_value("1");
 
         // init: Define the --jobs/-j command line option
@@ -207,9 +181,10 @@ impl PgMtrArgs {
             .long("jobs") // allow --jobs
             .action(ArgAction::Set)
             .short('j') // allow -j
-            .help("Number of threads used to populated the database")
+            .help("Number of threads used to populate the database")
             .required(false)
             .value_name("NUM")
+            .value_parser(clap::value_parser!(u32).range(1..))
             .default_value("1");
 
         // init: Define the --no-fkey command line option
@@ -256,7 +231,7 @@ impl PgMtrArgs {
 
         // Basic app information
         let cmd = Command::new("pgmtr")
-            .version("0.1.0")
+            .version(env!("CARGO_PKG_VERSION"))
             .color(ColorChoice::Never)
             .about("Postgres new generation benchmarking tool")
             .arg_required_else_help(true)
@@ -278,8 +253,8 @@ impl PgMtrArgs {
         let host = matches
             .get_one::<String>("host")
             .unwrap();
-        let port_str = matches
-            .get_one::<String>("port")
+        let port = *matches
+            .get_one::<u16>("port")
             .unwrap();
         let username = matches
             .get_one::<String>("username")
@@ -288,57 +263,42 @@ impl PgMtrArgs {
             .get_one::<String>("dbname")
             .unwrap();
 
-        // Convert port ton u16
-        let port = parse_string_arg_to_u16(port_str, "invalid port number".to_string())?;
-
         // Helper function to parse init arguments
-        fn parse_init_args(bm_m: &clap::ArgMatches) -> Result<InitArgs, clap::Error> {
-            let scalefactor_str = bm_m
-                .get_one::<String>("scalefactor")
-                .unwrap();
-            let jobs_str = bm_m
-                .get_one::<String>("jobs")
-                .map(|s| s.as_str())
-                .unwrap_or("1");
+        fn parse_init_args(bm_m: &clap::ArgMatches) -> InitArgs {
+            let scalefactor = *bm_m.get_one::<u32>("scalefactor").unwrap();
+            let jobs = *bm_m.get_one::<u32>("jobs").unwrap();
             let no_fkey = bm_m.get_flag("no_fkey");
             let post_create_table = bm_m
                 .get_one::<String>("post_create_table")
                 .cloned();
 
-            let scalefactor = parse_string_arg_to_u32(scalefactor_str, "invalid scale factor number".to_string())?;
-            let jobs = parse_string_arg_to_u32(jobs_str, "invalid jobs number".to_string())?;
-
-            Ok(InitArgs {scalefactor, jobs, no_fkey, post_create_table})
+            InitArgs {scalefactor, jobs, no_fkey, post_create_table}
         }
 
         // Helper function to parse run arguments
-        fn parse_run_args(bm_m: &clap::ArgMatches) -> Result<RunArgs, clap::Error> {
-            let client_str = bm_m.get_one::<String>("client").unwrap();
-            let time_str = bm_m.get_one::<String>("time").unwrap();
-            let rampup_str = bm_m.get_one::<String>("rampup").unwrap();
-
-            let client = parse_string_arg_to_u16(client_str, "invalid client number".to_string())?;
-            let time = parse_string_arg_to_u16(time_str, "invalid time value".to_string())?;
-            let rampup = parse_string_arg_to_u16(rampup_str, "invalid rampup value".to_string())?;
+        fn parse_run_args(bm_m: &clap::ArgMatches) -> RunArgs {
+            let client = *bm_m.get_one::<u16>("client").unwrap();
+            let time = *bm_m.get_one::<u16>("time").unwrap();
+            let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
             // Target the full scale range: min defaults to 1, max to 0 (auto-detected at run time).
             let min_id = 1;
             let max_id = 0;
 
-            Ok(RunArgs {client, time, rampup, min_id, max_id})
+            RunArgs {client, time, rampup, min_id, max_id}
         }
 
         // Extract subcommand options
         let (run_args, init_args, action, spec_file) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
-                let init_args = parse_init_args(init_m)?;
+                let init_args = parse_init_args(init_m);
                 let spec = init_m.get_one::<String>("spec").cloned();
 
                 (RunArgs::empty(), init_args, "init".to_string(), spec)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
-                let run_args = parse_run_args(run_m)?;
+                let run_args = parse_run_args(run_m);
                 let spec = run_m.get_one::<String>("spec").cloned();
 
                 (run_args, InitArgs::empty(), "run".to_string(), spec)
@@ -370,9 +330,18 @@ pub fn get_os_username() -> String {
     String::from(os_username)
 }
 
-// Returns the database connection string based on CLI args
+// Returns the database connection string based on CLI args. Every user-supplied
+// component is percent-encoded so special characters (e.g. '@', ':', '/' in a
+// password or a socket-directory host path) don't corrupt the URL.
 pub fn get_dsn(args: &PgMtrArgs) -> String {
-    format!("postgresql://{}:\"{}\"@{}:{}/{}", args.username, args.password, encode(&args.host), args.port, args.dbname)
+    format!(
+        "postgresql://{}:{}@{}:{}/{}",
+        encode(&args.username),
+        encode(&args.password),
+        encode(&args.host),
+        args.port,
+        encode(&args.dbname),
+    )
 }
 
 // Returns the database password by looking up into multiple places: environment variable, .pgpass
