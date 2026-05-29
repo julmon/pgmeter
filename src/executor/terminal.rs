@@ -19,6 +19,19 @@ thread_local! {
     static CURRENT: RefCell<Option<Step>> = const { RefCell::new(None) };
 }
 
+// Global quiet switch. When set, all decorative phase output (spinners,
+// checkmarks, run bar, progress lines, KPI banner) is suppressed so only the
+// result data reaches the terminal. Error reporting via err_msg is unaffected.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+}
+
+pub fn is_quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
 // True when stderr is an interactive terminal. Spinners and progress bars are
 // only drawn in that case; piped/redirected output gets plain log lines so the
 // captured logs stay clean.
@@ -54,6 +67,9 @@ pub fn fmt_int(n: u64) -> String {
 // matching done_msg/err_msg call; otherwise the closing call prints a single
 // status line.
 pub fn start_msg(command: &str, message: &str) {
+    if is_quiet() {
+        return;
+    }
     let label = format!("{} {}", style(command).dim(), message);
     let step = if is_tty() {
         let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
@@ -115,7 +131,7 @@ pub fn err_msg(error: &str) {
 // suffix (live throughput/latency) is set by the caller. Hidden on a non-TTY so
 // callers can fall back to periodic log lines.
 pub fn run_bar(total_s: u64) -> ProgressBar {
-    if !is_tty() {
+    if !is_tty() || is_quiet() {
         return ProgressBar::hidden();
     }
     let bar = ProgressBar::with_draw_target(Some(total_s), ProgressDrawTarget::stderr());
@@ -148,6 +164,7 @@ pub fn spawn_workload_monitor(
     let bar = run_bar(total_s);
     let pb = bar.clone();
     let tty = is_tty();
+    let quiet = is_quiet();
     let handle = thread::spawn(move || {
         // Rolling window of (elapsed_s, commits, latency_us) samples spanning ~1s,
         // used to derive an instantaneous rate that isn't dominated by startup.
@@ -180,7 +197,7 @@ pub fn spawn_workload_monitor(
             if tty {
                 pb.set_position(elapsed.min(total_s as f64) as u64);
                 pb.set_message(format!("{} tps · lat {:.2} ms", fmt_int(tps as u64), lat_ms));
-            } else if progress_s > 0 && elapsed >= next_progress {
+            } else if !quiet && progress_s > 0 && elapsed >= next_progress {
                 eprintln!(
                     "progress: {:.1} s, {:.1} tps, lat {:.3} ms",
                     elapsed, tps, lat_ms
@@ -200,6 +217,9 @@ pub fn spawn_workload_monitor(
 // thin-space thousands grouping. Goes to stdout so it travels with the tables and
 // is auto-decolourized when the output is piped.
 pub fn kpi_banner(throughput: u64, unit: &str, committed: u64, error_rate: f64, avg_latency_ms: f64) {
+    if is_quiet() {
+        return;
+    }
     let dot = || style("  ·  ").dim();
     println!();
     println!(
@@ -219,6 +239,9 @@ pub fn kpi_banner(throughput: u64, unit: &str, committed: u64, error_rate: f64, 
 // Clear the workload bar and print a final success line with the elapsed time.
 pub fn finish_run_bar(bar: ProgressBar, duration_ms: f64) {
     bar.finish_and_clear();
+    if is_quiet() {
+        return;
+    }
     eprintln!(
         "{} {} {}  {}",
         style("✔").green().bold(),

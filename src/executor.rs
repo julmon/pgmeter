@@ -90,6 +90,12 @@ fn redact_dsn(dsn: &str) -> String {
     dsn.to_string()
 }
 
+// Forward the quiet switch to the terminal module (which is private to this
+// module) so main can toggle it once at startup.
+pub fn set_quiet(quiet: bool) {
+    terminal::set_quiet(quiet);
+}
+
 pub fn get_target_dir_path() -> PathBuf {
     let current_dir = match current_dir() {
         Ok(current_dir) => current_dir,
@@ -232,6 +238,9 @@ impl Executor {
     // the run can be reproduced from its own log. Kept on stderr so stdout still
     // carries only the results (tables or --format json/csv).
     fn print_run_header(&mut self, args: &RunArgs) {
+        if terminal::is_quiet() {
+            return;
+        }
         let spec_name = self.get_benchmark(0, 0, 0).spec.name.clone();
         let started: DateTime<Utc> = Utc::now();
         eprintln!();

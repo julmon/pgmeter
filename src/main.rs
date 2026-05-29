@@ -1,7 +1,7 @@
 mod executor;
 mod args;
 
-use args::Action;
+use args::{Action, OutputFormat};
 
 fn main() {
     // Parse command arguments
@@ -9,6 +9,12 @@ fn main() {
     let dsn = args::get_dsn(&env);
 
     let spec_file = env.spec_file.expect("--spec is required");
+
+    // Run quietly when explicitly requested, or implicitly when the run results
+    // are emitted in a machine-readable format so stdout carries only the data.
+    let quiet = env.quiet
+        || (matches!(env.action, Action::Run) && env.output_format != OutputFormat::Table);
+    executor::set_quiet(quiet);
 
     match env.action {
         Action::Run => {

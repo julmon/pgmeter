@@ -83,6 +83,8 @@ pub struct PgMtrArgs {
     pub dbname: String,
     // Sub-command selected on the command line
     pub action: Action,
+    // Suppress decorative progress output; emit only result data
+    pub quiet: bool,
     // run arguments
     pub run_args: RunArgs,
     // init arguments
@@ -245,6 +247,15 @@ impl PgMtrArgs {
             .value_parser(clap::value_parser!(u32).range(1..))
             .default_value("1");
 
+        // Define the --quiet/-q flag (valid for both init and run). When set,
+        // the decorative phase output is suppressed so only result data is
+        // printed; for run with a non-table format it is implied.
+        let quiet_option = Arg::new("quiet")
+            .long("quiet") // allow --quiet
+            .short('q') // allow -q
+            .action(ArgAction::SetTrue)
+            .help("Suppress progress output; print only result data");
+
         // init: Define the --no-fkey command line option
         let no_fkey_option = Arg::new("no_fkey")
             .long("no-fkey") // allow --no-fkey
@@ -277,7 +288,8 @@ impl PgMtrArgs {
             .arg(scalefactor_option)
             .arg(jobs_option)
             .arg(no_fkey_option)
-            .arg(post_create_table_option);
+            .arg(post_create_table_option)
+            .arg(quiet_option.clone());
 
         // run --spec <FILE> <OPTIONS>
         let run = Command::new("run")
@@ -288,7 +300,8 @@ impl PgMtrArgs {
             .arg(time_option)
             .arg(rampup_option)
             .arg(progress_option)
-            .arg(format_option);
+            .arg(format_option)
+            .arg(quiet_option);
 
         // Basic app information
         let cmd = Command::new("pgmtr")
@@ -353,21 +366,23 @@ impl PgMtrArgs {
         }
 
         // Extract subcommand options
-        let (run_args, init_args, action, spec_file, output_format) = match matches.subcommand_name() {
+        let (run_args, init_args, action, spec_file, output_format, quiet) = match matches.subcommand_name() {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
                 let init_args = parse_init_args(init_m);
                 let spec = spec_path(init_m);
+                let quiet = init_m.get_flag("quiet");
 
-                (RunArgs::empty(), init_args, Action::Init, spec, OutputFormat::Table)
+                (RunArgs::empty(), init_args, Action::Init, spec, OutputFormat::Table, quiet)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
                 let run_args = parse_run_args(run_m);
                 let spec = spec_path(run_m);
                 let format = *run_m.get_one::<OutputFormat>("format").unwrap();
+                let quiet = run_m.get_flag("quiet");
 
-                (run_args, InitArgs::empty(), Action::Run, spec, format)
+                (run_args, InitArgs::empty(), Action::Run, spec, format, quiet)
             },
             // subcommand_required(true) guarantees a subcommand was matched.
             _ => unreachable!("a subcommand is required"),
@@ -385,6 +400,7 @@ impl PgMtrArgs {
                 password: password,
                 dbname: dbname.to_string(),
                 action: action,
+                quiet: quiet,
                 run_args: run_args,
                 init_args: init_args,
                 spec_file: spec_file,
