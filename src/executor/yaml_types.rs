@@ -12,6 +12,9 @@ pub struct BenchmarkSpec {
     #[serde(default)]
     pub load: Vec<LoadSpec>,
     pub transactions: Vec<TransactionSpec>,
+    /// Headline throughput metric (unit label + time base). Defaults to TPM.
+    #[serde(default)]
+    pub metrics: MetricsSpec,
     /// Shared Lua modules to pre-load into every thread's VM
     #[serde(default)]
     pub scripts: ScriptsSpec,
@@ -21,6 +24,56 @@ pub struct BenchmarkSpec {
     /// Lua script executed per-id for data loading (replaces template-based `load:` section)
     #[serde(default)]
     pub load_script: Option<String>,
+}
+
+/// Defines the report's headline throughput metric. `unit` is the label shown
+/// on the KPI card, chart axis and table column; `per` is the time base used to
+/// turn a committed-transaction count into a rate.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MetricsSpec {
+    /// e.g. "TPS", "tpmC", "QphH". Used purely as a display label.
+    #[serde(default = "default_throughput_unit")]
+    pub throughput_unit: String,
+    /// Time base for the rate: "second", "minute" or "hour".
+    #[serde(default = "default_throughput_per")]
+    pub per: ThroughputPer,
+}
+
+impl Default for MetricsSpec {
+    fn default() -> Self {
+        MetricsSpec {
+            throughput_unit: default_throughput_unit(),
+            per: default_throughput_per(),
+        }
+    }
+}
+
+fn default_throughput_unit() -> String {
+    "TPM".to_string()
+}
+
+fn default_throughput_per() -> ThroughputPer {
+    ThroughputPer::Minute
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThroughputPer {
+    Second,
+    Minute,
+    Hour,
+}
+
+impl ThroughputPer {
+    /// Multiplier applied to a per-second transaction count to express the rate
+    /// in this time base.
+    pub fn factor(self) -> f64 {
+        match self {
+            ThroughputPer::Second => 1.0,
+            ThroughputPer::Minute => 60.0,
+            ThroughputPer::Hour => 3600.0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

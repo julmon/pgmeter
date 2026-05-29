@@ -13,7 +13,8 @@ fn main() {
             executor::Executor::new(dsn, spec_file)
                 .run_benchmark(env.run_args)
                 .aggregate_data()
-                .print_results();
+                .print_results()
+                .generate_report();
         },
         "init" => {
             executor::Executor::new(dsn, spec_file)

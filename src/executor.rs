@@ -22,6 +22,7 @@ mod benchmark;
 mod txmessage;
 mod terminal;
 mod data_agg;
+mod report;
 mod yaml_types;
 mod yaml_benchmark;
 mod yaml_lua;
@@ -45,6 +46,10 @@ pub struct Executor {
     counters: HashMap<u16, Counter>,
     rampup_time_ms: u128,
     total_time_ms: u128,
+    // Run parameters retained for reporting
+    n_clients: u16,
+    duration_s: u16,
+    rampup_s: u16,
     // Target directory used to store collected and aggregated data
     target_dir: PathBuf,
 }
@@ -74,12 +79,18 @@ impl Executor {
             counters: HashMap::new(),
             total_time_ms: 0,
             rampup_time_ms: 0,
+            n_clients: 0,
+            duration_s: 0,
+            rampup_s: 0,
             target_dir: get_target_dir_path(),
         }
     }
 
     // Execute read/write mixed workload
     pub fn run_benchmark(&mut self, args: RunArgs) -> &mut Self {
+        self.n_clients = args.client;
+        self.duration_s = args.time;
+        self.rampup_s = args.rampup;
         let rampup_ms = args.rampup as u64 * 1000;
         let time_ms = args.time as u64 * 1000;
         // Nap time before starting a new client
@@ -905,6 +916,48 @@ impl Executor {
         // Print stats
         println!("Response times:");
         data_agg::print_transactions_stats(&data_stats);
+
+        self
+    }
+
+    // Generate a self-contained HTML report into the run's target directory.
+    pub fn generate_report(&mut self) -> &mut Self {
+        let start = Instant::now();
+        terminal::start_msg("RUN", "Generating HTML report");
+
+        let benchmark = self.get_benchmark(0, 0, 0);
+        let transactions = benchmark.get_transactions_rw();
+        let spec = benchmark.spec.clone();
+
+        let stats = match data_agg::get_stats(&self.target_dir, &transactions) {
+            Ok(stats) => stats,
+            Err(error) => {
+                terminal::err_msg(format!("{}", error).as_str());
+                return self;
+            }
+        };
+
+        let mut client = Executor::connect(self.dsn.clone());
+
+        let input = report::ReportInput {
+            target_dir: &self.target_dir,
+            log_file: LOG_FILE,
+            error_file: ERROR_FILE,
+            spec: &spec,
+            transactions: &transactions,
+            counters: &self.counters,
+            stats: &stats,
+            total_time_ms: self.total_time_ms,
+            rampup_time_ms: self.rampup_time_ms,
+            clients: self.n_clients,
+            duration_s: self.duration_s,
+            rampup_s: self.rampup_s,
+        };
+
+        match report::generate(&input, &mut client) {
+            Ok(_) => terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0),
+            Err(error) => terminal::err_msg(format!("{}", error).as_str()),
+        }
 
         self
     }

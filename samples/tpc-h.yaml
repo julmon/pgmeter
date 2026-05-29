@@ -17,6 +17,16 @@ scaling:
     suppliers_per_sf: 10000
 
 # ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# TPC-H is a decision-support workload measured in queries per hour. Note this
+# is a display label over all executed queries, not the official QphH composite
+# (which is a geometric mean of power/throughput runs weighted by scale factor).
+metrics:
+  throughput_unit: "QphH"
+  per: hour
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 schema:

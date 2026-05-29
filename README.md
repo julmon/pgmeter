@@ -132,6 +132,7 @@ pgmtr -H localhost -U postgres -d benchmark run --spec samples/tpc-c.yaml -c 10 
 
 Each benchmark run creates a timestamped directory (e.g., `pgmtr-2024-01-15T10:30:00/`) containing:
 
+- `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
 - `transaction.log` - Raw transaction data (timestamp, client, transaction type, response time)
 - `error.log` - Error details for failed transactions
 - `pgmtr-tpm-*.csv` - Transactions per minute over time for each transaction type
@@ -154,6 +155,20 @@ After benchmark completion, pgmtr displays:
 - Average, minimum, maximum response time (ms)
 - Standard deviation (ms)
 - 95th and 99th percentiles (ms)
+
+### HTML Report
+
+Every `run` also writes a `report.html` into the results directory. It is fully
+self-contained (charts library inlined, no network required) — just open it in a
+browser. It includes:
+
+- Environment header: benchmark name/description, PostgreSQL version and key
+  server settings (`shared_buffers`, `work_mem`, `max_wal_size`,
+  `max_connections`, `effective_cache_size`), and the run parameters.
+- Headline KPIs: TPS/TPM, peak TPS, committed/errors, error rate, average latency.
+- Per-transaction results table.
+- Charts: throughput over time, latency over time, response-time percentiles,
+  response-time distribution, committed transaction mix, and errors over time.
 
 ## Development
 
@@ -180,8 +195,10 @@ src/
     ├── yaml_benchmark.rs      # YAML-driven Benchmark implementation
     ├── yaml_lua.rs            # Lua VM, DB bridge, binding/template compilation
     ├── data_agg.rs            # Data aggregation and statistics
+    ├── report.rs              # Self-contained HTML report generation
     ├── terminal.rs            # Terminal output formatting
-    └── txmessage.rs           # Inter-thread messaging
+    ├── txmessage.rs           # Inter-thread messaging
+    └── assets/                # Vendored assets (inlined Chart.js)
 samples/                       # Reference and example benchmark specs
 docs/yaml-benchmarks.md        # Benchmark authoring guide
 ```

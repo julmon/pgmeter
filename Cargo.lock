@@ -1725,6 +1725,7 @@ dependencies = [
  "rand 0.8.5",
  "ryu",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sqlx",
  "tabled",

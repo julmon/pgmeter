@@ -11,6 +11,16 @@ use tabled::{
     Table,
 };
 
+// Sanitize a transaction name for use as a filename component: any character
+// that isn't alphanumeric, '-' or '_' (e.g. the '/' in "Debit/credit") becomes
+// '_', so the per-transaction CSV paths stay valid instead of being treated as
+// nested directories.
+fn safe_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
 pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>) -> Result<(), Box<dyn std::error::Error>> {
     // Transaction log file parsing
@@ -21,6 +31,7 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
 
     // Produce aggregated data for each type of transaction
     for transaction in transactions {
+        let safe = safe_name(&transaction.name);
         // Filter data for this transaction type
         let filtered_df = df
             .clone()
@@ -40,21 +51,21 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
                 Series::new("time_s", Vec::<i64>::new()),
                 Series::new("tpm", Vec::<i64>::new()),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", transaction.name)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_tpm.clone())?;
 
             let empty_rt = DataFrame::new(vec![
                 Series::new("time_s", Vec::<i64>::new()),
                 Series::new("response_time_ms", Vec::<f64>::new()),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", transaction.name)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_rt.clone())?;
 
             let empty_stats = DataFrame::new(vec![
                 Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
                 Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_stats.clone())?;
 
             continue;
@@ -75,7 +86,7 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
             .collect()?;
 
         // Save data as a CSV file
-        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", transaction.name)))?;
+        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", safe)))?;
         CsvWriter::new(&mut file).finish(&mut tpm_df)?;
 
         // Calculate the average (mean) response time over a period of time
@@ -113,10 +124,10 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
         };
 
         // Save data as a CSV file
-        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", transaction.name)))?;
+        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", safe)))?;
         CsvWriter::new(&mut file).finish(&mut response_time_df)?;
         // Save statistics
-        let mut file_stats = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name)))?;
+        let mut file_stats = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", safe)))?;
         CsvWriter::new(&mut file_stats).finish(&mut stats)?;
     }
 
@@ -147,6 +158,7 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
     let mut stats_map: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
 
     for transaction in transactions {
+        let safe = safe_name(&transaction.name);
         let mut stats = ResponseTimeStatistics {
             name: transaction.name.clone(),
             min: 0.0,
@@ -157,7 +169,7 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
             percentile_99: 0.0,
         };
 
-        let stats_file = target_dir.join(format!("pgmtr-stats-{}.csv", transaction.name));
+        let stats_file = target_dir.join(format!("pgmtr-stats-{}.csv", safe));
 
         // Check if stats file exists and has data
         if !stats_file.exists() {

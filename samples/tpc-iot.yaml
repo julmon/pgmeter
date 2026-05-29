@@ -20,6 +20,15 @@ scaling:
     measurement_batch_size: 100
 
 # ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# TPCx-IoT reports ingestion throughput per second (IoTps). This counts
+# committed transactions per second; each transaction may insert a batch of rows.
+metrics:
+  throughput_unit: "IoTps"
+  per: second
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 schema:

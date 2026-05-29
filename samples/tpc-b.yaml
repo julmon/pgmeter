@@ -1,11 +1,11 @@
-# TPC-B Benchmark Specification
+# TPC-B-like Benchmark Specification
 # Banking debit/credit benchmark per official TPC-B specification.
 
-name: TPC-B
+name: TPC-B-like
 description: >
-  TPC-B benchmark implementation for PostgreSQL per official TPC-B specification.
-  Simulates a banking system with branches, tellers, and accounts performing
-  debit/credit transactions.
+  TPC-B-like benchmark implementation for PostgreSQL per official TPC-B
+  specification. Simulates a banking system with branches, tellers, and accounts
+  performing debit/credit transactions.
 
 # ---------------------------------------------------------------------------
 # Scaling rules
@@ -19,6 +19,14 @@ scaling:
   constants:
     tellers_per_branch: 10
     accounts_per_branch: 100000
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# TPC-B's headline metric is transactions per second.
+metrics:
+  throughput_unit: "TPS"
+  per: second
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -109,8 +117,8 @@ load:
 # ---------------------------------------------------------------------------
 transactions:
   - id: 1
-    name: TPC-B
-    description: TPC-B debit/credit transaction
+    name: Debit/credit
+    description: Debit/credit transaction
     weight: 100
 
     # Variable bindings evaluated before the SQL block.

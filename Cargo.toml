@@ -26,6 +26,7 @@ polars = { version = "0.26.1", features =["lazy", "temporal", "streaming", "fmt"
 mlua = { version = "0.10", features = ["luau", "vendored", "send"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+serde_json = "1"
 
 [profile.release]
 opt-level = 3
