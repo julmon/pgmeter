@@ -53,6 +53,8 @@ pub struct RunArgs {
     pub time: u16,
     // Rampup duration, in second
     pub rampup: u16,
+    // Live progress reporting interval, in seconds (0 disables it)
+    pub progress: u16,
 }
 
 // init sub-command arguments
@@ -94,7 +96,7 @@ pub struct PgMtrArgs {
 // Implementation of RunArgs::empty()
 impl RunArgs {
     fn empty() -> Self {
-        RunArgs {client: 0, time: 0, rampup: 0}
+        RunArgs {client: 0, time: 0, rampup: 0, progress: 0}
     }
 }
 
@@ -200,6 +202,17 @@ impl PgMtrArgs {
             .value_parser(clap::value_parser!(u16))
             .default_value("0");
 
+        // run: Define the --progress/-P command line option
+        let progress_option = Arg::new("progress")
+            .long("progress") // allow --progress
+            .action(ArgAction::Set)
+            .short('P') // allow -P
+            .help("Print live progress every NUM seconds during the run (0 disables)")
+            .required(false)
+            .value_name("NUM")
+            .value_parser(clap::value_parser!(u16))
+            .default_value("0");
+
         // run: Define the --format command line option
         let format_option = Arg::new("format")
             .long("format")
@@ -274,6 +287,7 @@ impl PgMtrArgs {
             .arg(client_option)
             .arg(time_option)
             .arg(rampup_option)
+            .arg(progress_option)
             .arg(format_option);
 
         // Basic app information
@@ -327,8 +341,9 @@ impl PgMtrArgs {
             let client = *bm_m.get_one::<u16>("client").unwrap();
             let time = *bm_m.get_one::<u16>("time").unwrap();
             let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
+            let progress = *bm_m.get_one::<u16>("progress").unwrap();
 
-            RunArgs {client, time, rampup}
+            RunArgs {client, time, rampup, progress}
         }
 
         // Extract the validated --spec path as a string for downstream use.

@@ -6,6 +6,8 @@ use std::io::{BufWriter, Write};
 use std::collections::{HashMap, BTreeMap};
 use std::env::current_dir;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{Sender, Receiver, unbounded};
@@ -57,6 +59,19 @@ pub struct Executor {
 const LOG_FILE: &str = "transaction.log";
 const ERROR_FILE: &str = "error.log";
 
+// Mask the password in a libpq URL so the connection target can be echoed in the
+// run header without leaking the secret: postgresql://user:pass@host:port/db
+// becomes postgresql://user:****@host:port/db.
+fn redact_dsn(dsn: &str) -> String {
+    if let Some((scheme, rest)) = dsn.split_once("://") {
+        if let Some((cred, hostpart)) = rest.split_once('@') {
+            let user = cred.split_once(':').map(|(u, _)| u).unwrap_or(cred);
+            return format!("{}://{}:****@{}", scheme, user, hostpart);
+        }
+    }
+    dsn.to_string()
+}
+
 pub fn get_target_dir_path() -> PathBuf {
     let current_dir = match current_dir() {
         Ok(current_dir) => current_dir,
@@ -96,6 +111,10 @@ impl Executor {
         // Nap time before starting a new client
         let sleep_ms = if args.client > 0 { rampup_ms / args.client as u64 } else { 0 };
 
+        // Echo the run configuration up front so the output is self-documenting
+        // and the run is reproducible from its own log.
+        self.print_run_header(&args);
+
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
         // Channels used to send back the counters once data collector has finished its work.
@@ -104,6 +123,11 @@ impl Executor {
         // Track total execution time in ms
         let start = Instant::now();
         let command = "RUN";
+
+        // Live counters shared with the data collector; sampled by the optional
+        // progress reporter thread to emit periodic throughput/latency lines.
+        let live_commits = Arc::new(AtomicU64::new(0));
+        let live_latency_us = Arc::new(AtomicU64::new(0));
 
         // Create the target dir
         let target_dir_name = match self.target_dir.file_name() {
@@ -123,7 +147,26 @@ impl Executor {
 
         // Start data collector
         let dc_tx_counters = tx_counters.clone();
-        let data_collector = self.start_data_collector(rx, dc_tx_counters);
+        let data_collector = self.start_data_collector(
+            rx,
+            dc_tx_counters,
+            Arc::clone(&live_commits),
+            Arc::clone(&live_latency_us),
+        );
+
+        // Spawn the optional live progress reporter.
+        let progress_stop = Arc::new(AtomicBool::new(false));
+        let progress_thread = if args.progress > 0 {
+            Some(Self::start_progress_reporter(
+                args.progress,
+                start,
+                Arc::clone(&live_commits),
+                Arc::clone(&live_latency_us),
+                Arc::clone(&progress_stop),
+            ))
+        } else {
+            None
+        };
 
         // The benchmark always targets the full object-id range: min is 1 and
         // max is auto-detected from the dataset at run time.
@@ -164,6 +207,12 @@ impl Executor {
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
 
+        // Stop the progress reporter (if running) before tearing down collection.
+        if let Some(handle) = progress_thread {
+            progress_stop.store(true, Ordering::Relaxed);
+            handle.join().expect("the progress reporter thread panicked");
+        }
+
         // Send termination message to the data collector
         tx.send(TXMessage::terminate_data_collector()).unwrap();
         // Wait for the end of the data collection thread
@@ -173,6 +222,81 @@ impl Executor {
         self.counters = rx_counters.recv().unwrap();
 
         self
+    }
+
+    // Echo the run configuration to stderr so the output is self-documenting and
+    // the run can be reproduced from its own log. Kept on stderr so stdout still
+    // carries only the results (tables or --format json/csv).
+    fn print_run_header(&mut self, args: &RunArgs) {
+        let spec_name = self.get_benchmark(0, 0, 0).spec.name.clone();
+        let started: DateTime<Utc> = Utc::now();
+        eprintln!();
+        eprintln!("pgmtr {} - {}", env!("CARGO_PKG_VERSION"), spec_name);
+        eprintln!("  spec:     {}", self.spec_file);
+        eprintln!("  target:   {}", redact_dsn(&self.dsn));
+        eprintln!("  clients:  {}", args.client);
+        eprintln!("  duration: {} s", args.time);
+        eprintln!("  rampup:   {} s", args.rampup);
+        if args.progress > 0 {
+            eprintln!("  progress: every {} s", args.progress);
+        }
+        eprintln!("  started:  {}", started.format("%Y-%m-%dT%H:%M:%SZ"));
+        eprintln!();
+    }
+
+    // Spawn a thread that prints a pgbench-style progress line to stderr every
+    // `interval_s` seconds: the interval throughput and average latency derived
+    // from the live counters fed by the data collector. The thread polls a stop
+    // flag so it exits promptly once the workload finishes.
+    fn start_progress_reporter(
+        interval_s: u16,
+        start: Instant,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+        stop: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        thread::spawn(move || {
+            let interval = Duration::from_secs(interval_s as u64);
+            let mut last_commits: u64 = 0;
+            let mut last_latency_us: u64 = 0;
+            let mut next = Instant::now() + interval;
+            let mut first = true;
+
+            loop {
+                // Sleep in short steps so we react promptly to the stop signal.
+                while Instant::now() < next {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    sleep(Duration::from_millis(100));
+                }
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                next += interval;
+
+                let commits = live_commits.load(Ordering::Relaxed);
+                let latency_us = live_latency_us.load(Ordering::Relaxed);
+                let d_commits = commits - last_commits;
+                let d_latency_us = latency_us - last_latency_us;
+                last_commits = commits;
+                last_latency_us = latency_us;
+
+                let elapsed = start.elapsed().as_secs_f64();
+                let tps = d_commits as f64 / interval_s as f64;
+                let lat_ms = if d_commits > 0 {
+                    d_latency_us as f64 / d_commits as f64 / 1000.0
+                } else {
+                    0.0
+                };
+
+                // The first line breaks off the open dot-leader of the running
+                // phase so progress lines sit on their own rows.
+                let prefix = if first { "\n" } else { "" };
+                first = false;
+                eprintln!("{}progress: {:.1} s, {:.1} tps, lat {:.3} ms", prefix, elapsed, tps, lat_ms);
+            }
+        })
     }
 
     /// Synchronous benchmark execution using std::thread and prepared statements
@@ -401,7 +525,13 @@ impl Executor {
     // informations into the log file and incrementing counters.
     // Once the data collector has received the shutdown order (message with id=0), then
     // the counters are sent back to the main process through the tx_counters channel.
-    fn start_data_collector(&mut self, rx: Receiver<TXMessage>, tx_counters: Sender<HashMap<u16, Counter>>) -> JoinHandle<()> {
+    fn start_data_collector(
+        &mut self,
+        rx: Receiver<TXMessage>,
+        tx_counters: Sender<HashMap<u16, Counter>>,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+    ) -> JoinHandle<()> {
         let target_dir = self.target_dir.clone();
         thread::spawn(move || {
             // Create the file where transaction logs are written
@@ -455,6 +585,13 @@ impl Executor {
                         }
 
                         let duration_ms = msg.tx_duration_us as f64 / 1000.0;
+
+                        // Feed the live counters for the progress reporter. These
+                        // count every commit (rampup included) so the live view
+                        // reflects real activity; the headline metrics below stay
+                        // rampup-aware.
+                        live_commits.fetch_add(1, Ordering::Relaxed);
+                        live_latency_us.fetch_add(msg.tx_duration_us as u64, Ordering::Relaxed);
 
                         // Counters calculation - update only if rampup stage is over
                         if !ramping_up {
