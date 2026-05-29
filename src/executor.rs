@@ -59,6 +59,24 @@ pub struct Executor {
 const LOG_FILE: &str = "transaction.log";
 const ERROR_FILE: &str = "error.log";
 
+// postgres::Error's Display prints only a terse category such as "db error";
+// the actual server message (e.g. ERROR: relation "warehouse" already exists)
+// lives in its source chain. Build a full message by appending each underlying
+// cause so failures are actionable instead of opaque.
+fn error_detail(error: &dyn std::error::Error) -> String {
+    let mut msg = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !text.is_empty() && !msg.contains(&text) {
+            msg.push_str(": ");
+            msg.push_str(&text);
+        }
+        source = cause.source();
+    }
+    msg
+}
+
 // Mask the password in a libpq URL so the connection target can be echoed in the
 // run header without leaking the secret: postgresql://user:pass@host:port/db
 // becomes postgresql://user:****@host:port/db.
@@ -139,7 +157,7 @@ impl Executor {
         match create_dir_all(&self.target_dir) {
             Ok(_) => (),
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(&error).as_str());
                 std::process::exit(1);
             }
         };
@@ -179,7 +197,7 @@ impl Executor {
             let max_id = match benchmark_client.get_default_max_id(&mut client) {
                 Ok(max_id) => max_id,
                 Err(error) => {
-                    terminal::err_msg(format!("{}", error).as_str());
+                    terminal::err_msg(error_detail(&error).as_str());
                     std::process::exit(1);
                 }
             };
@@ -327,14 +345,14 @@ impl Executor {
             let handle = thread::spawn(move || {
                 // Create synchronous postgres connection
                 let mut client = Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
-                    eprintln!("ERROR: Connection failed: {}", err);
+                    eprintln!("ERROR: Connection failed: {}", error_detail(&err));
                     std::process::exit(1);
                 });
 
                 // Get benchmark and prepare statements
                 let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id);
                 let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
-                    eprintln!("ERROR: Failed to prepare statements: {}", err);
+                    eprintln!("ERROR: Failed to prepare statements: {}", error_detail(&err));
                     std::process::exit(1);
                 });
 
@@ -368,7 +386,7 @@ impl Executor {
                             let _ = tx_clone.send(m);
                         }
                         Err(error) => {
-                            let m = TXMessage::error(transaction.id, client_id as u32, format!("{}", error));
+                            let m = TXMessage::error(transaction.id, client_id as u32, error_detail(error.as_ref()));
                             let _ = tx_clone.send(m);
                         }
                     }
@@ -468,7 +486,7 @@ impl Executor {
             let mut connection = match PgConnection::connect(&dsn).await {
                 Ok(connection) => connection,
                 Err(error) => {
-                    terminal::err_msg(format!("{}", error).as_str());
+                    terminal::err_msg(error_detail(&error).as_str());
                     std::process::exit(1);
                 }
             };
@@ -509,7 +527,7 @@ impl Executor {
                     },
                     Err(error) => {
                         // Send error message
-                        let m = TXMessage::error(transaction.id, client_id, format!("{}", error));
+                        let m = TXMessage::error(transaction.id, client_id, error_detail(error.as_ref()));
                         tx.send(m).unwrap();
                     },
                 }
@@ -676,7 +694,7 @@ impl Executor {
     // Open a new connection to the database and returns a Client
     fn connect(dsn: String) -> Client {
         Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
-            terminal::err_msg(format!("{}", err).as_str());
+            terminal::err_msg(error_detail(&err).as_str());
             std::process::exit(1);
         })
     }
@@ -698,7 +716,7 @@ impl Executor {
         let duration_us = match benchmark_client.initialize_schema(&mut client) {
             Ok(duration) => duration,
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(&error).as_str());
                 std::process::exit(1);
             }
         };
@@ -736,7 +754,7 @@ impl Executor {
         match client.batch_execute(&sql) {
             Ok(_) => (),
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(&error).as_str());
                 std::process::exit(1);
             }
         }
@@ -763,7 +781,7 @@ impl Executor {
         let duration_us = match benchmark_client.pre_load_data(&mut client) {
             Ok(duration) => duration,
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error.as_str());
                 std::process::exit(1);
             }
         };
@@ -808,7 +826,7 @@ impl Executor {
                 let _duration_us = match job_benchmark_client.load_data(&mut job_client, job_ids) {
                     Ok(duration) => duration,
                     Err(error) => {
-                        terminal::err_msg(format!("{}", error).as_str());
+                        terminal::err_msg(error.as_str());
                         std::process::exit(1);
                     }
                 };
@@ -856,21 +874,21 @@ impl Executor {
                         let mut transaction = match client.transaction() {
                             Ok(t) => t,
                             Err(error) => {
-                                terminal::err_msg(format!("{}", error).as_str());
+                                terminal::err_msg(error_detail(&error).as_str());
                                 std::process::exit(1);
                             }
                         };
                         match transaction.batch_execute(stmt) {
                             Ok(_) => (),
                             Err(error) => {
-                                terminal::err_msg(format!("{}", error).as_str());
+                                terminal::err_msg(error_detail(&error).as_str());
                                 std::process::exit(1);
                             }
                         }
                         match transaction.commit() {
                             Ok(_) => (),
                             Err(error) => {
-                                terminal::err_msg(format!("{}", error).as_str());
+                                terminal::err_msg(error_detail(&error).as_str());
                                 std::process::exit(1);
                             }
                         }
@@ -880,7 +898,7 @@ impl Executor {
                         match client.batch_execute(stmt) {
                             Ok(_) => (),
                             Err(error) => {
-                                terminal::err_msg(format!("{}", error).as_str());
+                                terminal::err_msg(error_detail(&error).as_str());
                                 std::process::exit(1);
                             }
                         }
@@ -968,7 +986,7 @@ impl Executor {
         match client.batch_execute("CHECKPOINT") {
             Ok(_) => (),
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(&error).as_str());
                 std::process::exit(1);
             }
         }
@@ -990,7 +1008,7 @@ impl Executor {
         match data_agg::aggregate_tpcc_data(LOG_FILE, &self.target_dir, &transactions) {
             Ok(_) => (),
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(error.as_ref()).as_str());
                 std::process::exit(1);
             }
         }
@@ -1089,7 +1107,7 @@ impl Executor {
         let stats = match data_agg::get_stats(&self.target_dir, &transactions) {
             Ok(stats) => stats,
             Err(error) => {
-                terminal::err_msg(format!("{}", error).as_str());
+                terminal::err_msg(error_detail(error.as_ref()).as_str());
                 return self;
             }
         };
@@ -1113,7 +1131,7 @@ impl Executor {
 
         match report::generate(&input, &mut client) {
             Ok(_) => terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0),
-            Err(error) => terminal::err_msg(format!("{}", error).as_str()),
+            Err(error) => terminal::err_msg(error_detail(error.as_ref()).as_str()),
         }
 
         self
