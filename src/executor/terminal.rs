@@ -124,7 +124,9 @@ pub fn err_msg(error: &str) {
             eprintln!("{} {}", style("✗").red().bold(), label);
         }
     });
-    eprintln!("{}", style(error).red());
+    // Mirror clap's error style ("error: <message>" with a bold-red label) so
+    // argument-parse failures and runtime failures look identical.
+    eprintln!("{} {}", style("error:").red().bold(), error);
 }
 
 // Determinate bar tracking the workload's elapsed/total seconds. The message

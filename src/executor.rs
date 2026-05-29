@@ -100,7 +100,7 @@ pub fn get_target_dir_path() -> PathBuf {
     let current_dir = match current_dir() {
         Ok(current_dir) => current_dir,
         Err(error) => {
-            eprintln!("ERROR: {}", error);
+            terminal::err_msg(&error.to_string());
             std::process::exit(1);
          }
     };
@@ -287,14 +287,14 @@ impl Executor {
             let handle = thread::spawn(move || {
                 // Create synchronous postgres connection
                 let mut client = Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
-                    eprintln!("ERROR: Connection failed: {}", error_detail(&err));
+                    terminal::err_msg(&format!("Connection failed: {}", error_detail(&err)));
                     std::process::exit(1);
                 });
 
                 // Get benchmark and prepare statements
                 let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id);
                 let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
-                    eprintln!("ERROR: Failed to prepare statements: {}", error_detail(&err));
+                    terminal::err_msg(&format!("Failed to prepare statements: {}", error_detail(&err)));
                     std::process::exit(1);
                 });
 
@@ -524,7 +524,7 @@ impl Executor {
             let log_file = match File::create(target_dir.join(LOG_FILE)) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("ERROR: Could not create {}: {}", LOG_FILE, e);
+                    terminal::err_msg(&format!("Could not create {}: {}", LOG_FILE, e));
                     std::process::exit(1);
                 },
             };
@@ -534,7 +534,7 @@ impl Executor {
             let error_file = match File::create(target_dir.join(ERROR_FILE)) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("ERROR: Could not create {}: {}", ERROR_FILE, e);
+                    terminal::err_msg(&format!("Could not create {}: {}", ERROR_FILE, e));
                     std::process::exit(1);
                 },
             };
@@ -997,7 +997,7 @@ impl Executor {
         let stats_map = match data_agg::get_stats(&self.target_dir, &transactions) {
             Ok(stats_map) => stats_map,
             Err(error) => {
-                eprintln!("ERROR: {}", error);
+                terminal::err_msg(error_detail(error.as_ref()).as_str());
                 std::process::exit(1);
             }
         };

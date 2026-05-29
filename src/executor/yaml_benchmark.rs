@@ -41,12 +41,12 @@ impl YamlBenchmark {
     /// Load a benchmark specification from a YAML file.
     pub fn from_file(path: &str, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
         let yaml_content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("ERROR: Failed to read spec file '{}': {}", path, e);
+            super::terminal::err_msg(&format!("Failed to read spec file '{}': {}", path, e));
             std::process::exit(1);
         });
 
         let spec: BenchmarkSpec = serde_yaml::from_str(&yaml_content).unwrap_or_else(|e| {
-            eprintln!("ERROR: Failed to parse YAML spec '{}': {}", path, e);
+            super::terminal::err_msg(&format!("Failed to parse YAML spec '{}': {}", path, e));
             std::process::exit(1);
         });
 
@@ -242,7 +242,7 @@ impl YamlBenchmark {
             } else {
                 let full_path = spec_dir.join(v);
                 std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
-                    eprintln!("ERROR: Failed to read script '{}': {}", full_path.display(), e);
+                    super::terminal::err_msg(&format!("Failed to read script '{}': {}", full_path.display(), e));
                     std::process::exit(1);
                 })
             }
@@ -261,11 +261,11 @@ impl YamlBenchmark {
                 } else {
                     let path = spec_dir.join(module);
                     std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                        eprintln!(
-                            "ERROR: Failed to read Lua module '{}': {}",
+                        super::terminal::err_msg(&format!(
+                            "Failed to read Lua module '{}': {}",
                             path.display(),
                             e
-                        );
+                        ));
                         std::process::exit(1);
                     })
                 }
@@ -287,11 +287,11 @@ impl YamlBenchmark {
             if let Some(ref script_file) = tx.script_file {
                 let script_path = spec_dir.join(script_file);
                 let script = std::fs::read_to_string(&script_path).unwrap_or_else(|e| {
-                    eprintln!(
-                        "ERROR: Failed to read Lua script '{}': {}",
+                    super::terminal::err_msg(&format!(
+                        "Failed to read Lua script '{}': {}",
                         script_path.display(),
                         e
-                    );
+                    ));
                     std::process::exit(1);
                 });
                 scripts.insert(tx.id, script);
