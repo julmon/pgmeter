@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.6", features = [ "runtime-tokio-native-tls" , "postgres" ] }
 async-trait = "0.1.59"
 console = "0.15.2"
+indicatif = "0.17"
 itertools = "0.10.5"
 tabled = "0.10.0"
 ryu = "1.0"

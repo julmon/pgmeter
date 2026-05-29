@@ -172,20 +172,6 @@ impl Executor {
             Arc::clone(&live_latency_us),
         );
 
-        // Spawn the optional live progress reporter.
-        let progress_stop = Arc::new(AtomicBool::new(false));
-        let progress_thread = if args.progress > 0 {
-            Some(Self::start_progress_reporter(
-                args.progress,
-                start,
-                Arc::clone(&live_commits),
-                Arc::clone(&live_latency_us),
-                Arc::clone(&progress_stop),
-            ))
-        } else {
-            None
-        };
-
         // The benchmark always targets the full object-id range: min is 1 and
         // max is auto-detected from the dataset at run time.
         let min_id: u32 = 1;
@@ -216,20 +202,20 @@ impl Executor {
 
         if use_sync {
             // Use synchronous execution with std::thread (faster, matches pgbench)
-            self.run_benchmark_sync(args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+            self.run_benchmark_sync(
+                args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
+                Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
+            );
         } else {
             // Use async execution with tokio (for benchmarks that don't support sync)
-            self.run_benchmark_async(args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+            self.run_benchmark_async(
+                args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
+                Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
+            );
         }
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
-
-        // Stop the progress reporter (if running) before tearing down collection.
-        if let Some(handle) = progress_thread {
-            progress_stop.store(true, Ordering::Relaxed);
-            handle.join().expect("the progress reporter thread panicked");
-        }
 
         // Send termination message to the data collector
         tx.send(TXMessage::terminate_data_collector()).unwrap();
@@ -262,61 +248,6 @@ impl Executor {
         eprintln!();
     }
 
-    // Spawn a thread that prints a pgbench-style progress line to stderr every
-    // `interval_s` seconds: the interval throughput and average latency derived
-    // from the live counters fed by the data collector. The thread polls a stop
-    // flag so it exits promptly once the workload finishes.
-    fn start_progress_reporter(
-        interval_s: u16,
-        start: Instant,
-        live_commits: Arc<AtomicU64>,
-        live_latency_us: Arc<AtomicU64>,
-        stop: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        thread::spawn(move || {
-            let interval = Duration::from_secs(interval_s as u64);
-            let mut last_commits: u64 = 0;
-            let mut last_latency_us: u64 = 0;
-            let mut next = Instant::now() + interval;
-            let mut first = true;
-
-            loop {
-                // Sleep in short steps so we react promptly to the stop signal.
-                while Instant::now() < next {
-                    if stop.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    sleep(Duration::from_millis(100));
-                }
-                if stop.load(Ordering::Relaxed) {
-                    return;
-                }
-                next += interval;
-
-                let commits = live_commits.load(Ordering::Relaxed);
-                let latency_us = live_latency_us.load(Ordering::Relaxed);
-                let d_commits = commits - last_commits;
-                let d_latency_us = latency_us - last_latency_us;
-                last_commits = commits;
-                last_latency_us = latency_us;
-
-                let elapsed = start.elapsed().as_secs_f64();
-                let tps = d_commits as f64 / interval_s as f64;
-                let lat_ms = if d_commits > 0 {
-                    d_latency_us as f64 / d_commits as f64 / 1000.0
-                } else {
-                    0.0
-                };
-
-                // The first line breaks off the open dot-leader of the running
-                // phase so progress lines sit on their own rows.
-                let prefix = if first { "\n" } else { "" };
-                first = false;
-                eprintln!("{}progress: {:.1} s, {:.1} tps, lat {:.3} ms", prefix, elapsed, tps, lat_ms);
-            }
-        })
-    }
-
     /// Synchronous benchmark execution using std::thread and prepared statements
     /// This path is significantly faster than async for simple benchmarks like TPC-B
     fn run_benchmark_sync(
@@ -329,8 +260,10 @@ impl Executor {
         sleep_ms: u64,
         tx: Sender<TXMessage>,
         start: Instant,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+        progress: u16,
     ) {
-        let command = "RUN";
         let mut client_threads: Vec<JoinHandle<()>> = Vec::with_capacity(n_clients as usize);
 
         // Start the clients using std::thread
@@ -402,9 +335,19 @@ impl Executor {
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
-        let message2 = format!("Running the workload for {} seconds", time_ms / 1000);
-        terminal::start_msg(command, message2.as_str());
         let start2 = Instant::now();
+
+        // Drive a determinate bar (TTY) or periodic progress lines (non-TTY) over
+        // the post-rampup workload window, fed by the live counters.
+        let monitor_stop = Arc::new(AtomicBool::new(false));
+        let (bar, monitor) = terminal::spawn_workload_monitor(
+            time_ms / 1000,
+            start2,
+            live_commits,
+            live_latency_us,
+            Arc::clone(&monitor_stop),
+            progress,
+        );
 
         // Send end-of-rampup message
         tx.send(TXMessage::end_of_rampup()).unwrap();
@@ -415,7 +358,9 @@ impl Executor {
             handle.join().expect("Client thread panicked");
         }
 
-        terminal::done_msg(start2.elapsed().as_micros() as f64 / 1000.0);
+        monitor_stop.store(true, Ordering::Relaxed);
+        monitor.join().expect("the workload monitor thread panicked");
+        terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
     }
 
     /// Async benchmark execution using tokio (for complex benchmarks)
@@ -429,8 +374,10 @@ impl Executor {
         sleep_ms: u64,
         tx: Sender<TXMessage>,
         start: Instant,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+        progress: u16,
     ) {
-        let command = "RUN";
         let worker_threads = std::cmp::min(n_clients as usize, num_cpus::get());
         let rt = Builder::new_multi_thread()
             .worker_threads(worker_threads)
@@ -459,9 +406,19 @@ impl Executor {
 
             terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
-            let message2 = format!("Running the workload for {} seconds", time_ms / 1000);
-            terminal::start_msg(command, message2.as_str());
             let start2 = Instant::now();
+
+            // Drive a determinate bar (TTY) or periodic progress lines (non-TTY)
+            // over the post-rampup workload window, fed by the live counters.
+            let monitor_stop = Arc::new(AtomicBool::new(false));
+            let (bar, monitor) = terminal::spawn_workload_monitor(
+                time_ms / 1000,
+                start2,
+                live_commits,
+                live_latency_us,
+                Arc::clone(&monitor_stop),
+                progress,
+            );
 
             tx.send(TXMessage::end_of_rampup()).unwrap();
             self.rampup_time_ms = start.elapsed().as_millis();
@@ -470,7 +427,9 @@ impl Executor {
                 benchmark_client.await.expect("Client task panicked");
             }
 
-            terminal::done_msg(start2.elapsed().as_micros() as f64 / 1000.0);
+            monitor_stop.store(true, Ordering::Relaxed);
+            monitor.join().expect("the workload monitor thread panicked");
+            terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
         });
     }
 
@@ -1065,7 +1024,29 @@ impl Executor {
 
         match format {
             OutputFormat::Table => {
-                println!("");
+                // Headline KPIs aggregated across all transaction types.
+                let total_commits: u64 = data_summary.iter().map(|s| s.n_commits).sum();
+                let total_errors: u64 = data_summary.iter().map(|s| s.n_errors).sum();
+                let total_throughput: u64 = data_summary.iter().map(|s| s.throughput as u64).sum();
+                let total_tx = total_commits + total_errors;
+                let error_rate = if total_tx > 0 {
+                    total_errors as f64 / total_tx as f64 * 100.0
+                } else {
+                    0.0
+                };
+                // Commit-weighted mean latency so heavier transactions dominate.
+                let weighted: f64 = data_summary
+                    .iter()
+                    .zip(data_stats.iter())
+                    .map(|(s, st)| st.mean * s.n_commits as f64)
+                    .sum();
+                let avg_latency = if total_commits > 0 {
+                    weighted / total_commits as f64
+                } else {
+                    0.0
+                };
+                terminal::kpi_banner(total_throughput, &throughput_unit, total_commits, error_rate, avg_latency);
+
                 // Print summary
                 println!("Results:");
                 data_agg::print_transactions_summary(&data_summary, &throughput_unit);

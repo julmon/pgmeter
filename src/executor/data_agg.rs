@@ -249,10 +249,10 @@ pub fn print_transactions_summary(data: &Vec<TransactionSummary>, throughput_uni
     for row in data {
         builder.add_record([
             row.name.clone(),
-            row.n_commits.to_string(),
-            row.n_errors.to_string(),
+            super::terminal::fmt_int(row.n_commits),
+            super::terminal::fmt_int(row.n_errors),
             format!("{:.3}", row.error_rate),
-            row.throughput.to_string(),
+            super::terminal::fmt_int(row.throughput as u64),
         ]);
     }
 
