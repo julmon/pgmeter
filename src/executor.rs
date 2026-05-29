@@ -61,7 +61,7 @@ pub fn get_target_dir_path() -> PathBuf {
     let current_dir = match current_dir() {
         Ok(current_dir) => current_dir,
         Err(error) => {
-            println!("ERROR: {}", error);
+            eprintln!("ERROR: {}", error);
             std::process::exit(1);
          }
     };
