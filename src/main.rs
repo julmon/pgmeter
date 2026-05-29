@@ -1,22 +1,24 @@
 mod executor;
 mod args;
 
+use args::Action;
+
 fn main() {
     // Parse command arguments
-    let env = args::PgMtrArgs::new(args::get_os_username(), args::get_pg_password());
+    let env = args::PgMtrArgs::new(args::get_os_username());
     let dsn = args::get_dsn(&env);
 
     let spec_file = env.spec_file.expect("--spec is required");
 
-    match &*env.action {
-        "run" => {
+    match env.action {
+        Action::Run => {
             executor::Executor::new(dsn, spec_file)
                 .run_benchmark(env.run_args)
                 .aggregate_data()
                 .print_results()
                 .generate_report();
         },
-        "init" => {
+        Action::Init => {
             executor::Executor::new(dsn, spec_file)
                 .init_db_schema()
                 .exec_post_create_table_script(env.init_args.post_create_table)
@@ -27,6 +29,5 @@ fn main() {
                 .vacuum(env.init_args.jobs)
                 .checkpoint();
         },
-        _ => todo!(),
     }
 }

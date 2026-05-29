@@ -125,28 +125,27 @@ impl Executor {
         let dc_tx_counters = tx_counters.clone();
         let data_collector = self.start_data_collector(rx, dc_tx_counters);
 
-        // Let's find the maximum object id if --max-id is set to 0 (default behavior)
-        let max_id: u32 = match args.max_id {
-            0 => {
-                terminal::start_msg(command, "Fetching maximum ID value");
-                let mut client = Executor::connect(self.dsn.clone());
-                let benchmark_client = self.get_benchmark(0, 0, 0);
+        // The benchmark always targets the full object-id range: min is 1 and
+        // max is auto-detected from the dataset at run time.
+        let min_id: u32 = 1;
+        terminal::start_msg(command, "Fetching maximum ID value");
+        let max_id: u32 = {
+            let mut client = Executor::connect(self.dsn.clone());
+            let benchmark_client = self.get_benchmark(0, 0, 0);
 
-                let max_id = match benchmark_client.get_default_max_id(&mut client) {
-                    Ok(max_id) => max_id,
-                    Err(error) => {
-                        terminal::err_msg(format!("{}", error).as_str());
-                        std::process::exit(1);
-                    }
-                };
-                terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
-                max_id
-            },
-            _ => args.max_id,
+            let max_id = match benchmark_client.get_default_max_id(&mut client) {
+                Ok(max_id) => max_id,
+                Err(error) => {
+                    terminal::err_msg(format!("{}", error).as_str());
+                    std::process::exit(1);
+                }
+            };
+            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+            max_id
         };
 
         // Check if benchmark supports synchronous execution (faster path)
-        let benchmark_check = self.get_benchmark(0, args.min_id, max_id);
+        let benchmark_check = self.get_benchmark(0, min_id, max_id);
         let use_sync = benchmark_check.supports_sync();
 
         let message = format!("Starting {} client(s) in {} seconds{}",
@@ -156,10 +155,10 @@ impl Executor {
 
         if use_sync {
             // Use synchronous execution with std::thread (faster, matches pgbench)
-            self.run_benchmark_sync(args.client, args.min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+            self.run_benchmark_sync(args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
         } else {
             // Use async execution with tokio (for benchmarks that don't support sync)
-            self.run_benchmark_async(args.client, args.min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
+            self.run_benchmark_async(args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start);
         }
 
         // Proceed total execution time

@@ -3,9 +3,29 @@ extern crate clap;
 use clap::{Arg, ArgAction, ColorChoice, Command};
 use std::ffi::OsString;
 use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use users::{get_user_by_uid, get_current_uid};
 use urlencoding::encode;
 
+// clap value parser for --spec: reject a path that doesn't point to a file so
+// we fail fast at parse time instead of after connecting to the database.
+fn spec_file_value(s: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(s);
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!("spec file not found: '{}'", s))
+    }
+}
+
+
+// The sub-command the user invoked.
+pub enum Action {
+    Init,
+    Run,
+}
 
 // run sub-command arguments
 pub struct RunArgs {
@@ -15,11 +35,6 @@ pub struct RunArgs {
     pub time: u16,
     // Rampup duration, in second
     pub rampup: u16,
-    // Minimum object ID value we want to hit during the benchmark. In TPCC context, the object ID is a warehouse id.
-    // min_id and max_id define the target object interval.
-    pub min_id: u32,
-    // Max object ID value
-    pub max_id: u32,
 }
 
 // init sub-command arguments
@@ -46,8 +61,8 @@ pub struct PgMtrArgs {
     pub password: String,
     // Database name
     pub dbname: String,
-    // Action: run, init, etc...
-    pub action: String,
+    // Sub-command selected on the command line
+    pub action: Action,
     // run arguments
     pub run_args: RunArgs,
     // init arguments
@@ -59,7 +74,7 @@ pub struct PgMtrArgs {
 // Implementation of RunArgs::empty()
 impl RunArgs {
     fn empty() -> Self {
-        RunArgs {client: 0, time: 0, rampup: 0, min_id: 0, max_id: 0}
+        RunArgs {client: 0, time: 0, rampup: 0}
     }
 }
 
@@ -71,11 +86,11 @@ impl InitArgs {
 }
 
 impl PgMtrArgs {
-    pub fn new(username: String, password: String) -> Self {
-        Self::new_from(username, password, std::env::args_os().into_iter()).unwrap_or_else(|e| e.exit())
+    pub fn new(default_username: String) -> Self {
+        Self::new_from(default_username, std::env::args_os().into_iter()).unwrap_or_else(|e| e.exit())
     }
 
-    fn new_from<I, T>(username: String, password: String, args: I) -> Result<Self, clap::Error>
+    fn new_from<I, T>(default_username: String, args: I) -> Result<Self, clap::Error>
     where
         I: Iterator<Item = T>,
         T: Into<OsString> + Clone,
@@ -117,7 +132,7 @@ impl PgMtrArgs {
             .help("Database user name")
             .required(false)
             .value_name("USERNAME")
-            .default_value(&username);
+            .default_value(&default_username);
 
         // Define the global --dbname/-d command line option
         let dbname_option = Arg::new("dbname")
@@ -129,7 +144,7 @@ impl PgMtrArgs {
             .help("Database name to connect to")
             .required(false)
             .value_name("DBNAME")
-            .default_value(&username);
+            .default_value(&default_username);
 
         // run options
         // run: Define the --client/-c command line option
@@ -207,7 +222,8 @@ impl PgMtrArgs {
             .action(ArgAction::Set)
             .help("Path to YAML benchmark specification file")
             .required(true)
-            .value_name("FILE");
+            .value_name("FILE")
+            .value_parser(spec_file_value);
 
         // Sub-commands
         // init --spec <FILE> <OPTIONS>
@@ -232,7 +248,7 @@ impl PgMtrArgs {
         // Basic app information
         let cmd = Command::new("pgmtr")
             .version(env!("CARGO_PKG_VERSION"))
-            .color(ColorChoice::Never)
+            .color(ColorChoice::Auto)
             .about("Postgres new generation benchmarking tool")
             .arg_required_else_help(true)
             .subcommand_required(true)
@@ -280,11 +296,14 @@ impl PgMtrArgs {
             let client = *bm_m.get_one::<u16>("client").unwrap();
             let time = *bm_m.get_one::<u16>("time").unwrap();
             let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
-            // Target the full scale range: min defaults to 1, max to 0 (auto-detected at run time).
-            let min_id = 1;
-            let max_id = 0;
 
-            RunArgs {client, time, rampup, min_id, max_id}
+            RunArgs {client, time, rampup}
+        }
+
+        // Extract the validated --spec path as a string for downstream use.
+        fn spec_path(bm_m: &clap::ArgMatches) -> Option<String> {
+            bm_m.get_one::<PathBuf>("spec")
+                .map(|p| p.to_string_lossy().into_owned())
         }
 
         // Extract subcommand options
@@ -292,19 +311,24 @@ impl PgMtrArgs {
             Some("init") => {
                 let init_m = matches.subcommand_matches("init").unwrap();
                 let init_args = parse_init_args(init_m);
-                let spec = init_m.get_one::<String>("spec").cloned();
+                let spec = spec_path(init_m);
 
-                (RunArgs::empty(), init_args, "init".to_string(), spec)
+                (RunArgs::empty(), init_args, Action::Init, spec)
             },
             Some("run") => {
                 let run_m = matches.subcommand_matches("run").unwrap();
                 let run_args = parse_run_args(run_m);
-                let spec = run_m.get_one::<String>("spec").cloned();
+                let spec = spec_path(run_m);
 
-                (run_args, InitArgs::empty(), "run".to_string(), spec)
+                (run_args, InitArgs::empty(), Action::Run, spec)
             },
-            _ => (RunArgs::empty(), InitArgs::empty(), "undefined".to_string(), None),
+            // subcommand_required(true) guarantees a subcommand was matched.
+            _ => unreachable!("a subcommand is required"),
         };
+
+        // Resolve the password now that the connection target is known, so a
+        // .pgpass lookup can match on host/port/database/user.
+        let password = resolve_password(host, port, dbname, username);
 
         Ok(
             PgMtrArgs {
@@ -344,15 +368,156 @@ pub fn get_dsn(args: &PgMtrArgs) -> String {
     )
 }
 
-// Returns the database password by looking up into multiple places: environment variable, .pgpass
-pub fn get_pg_password() -> String {
-    // Retreive the password from PGPASSWORD environment variable.
-    let password = match env::var("PGPASSWORD") {
-        Ok(p) => p,
-        Err(_) => "".to_string(),
-    };
-    // TODO: implement .pgpass support
-    // TODO: test password by opening a new connection to the DB, and ask for a new one if it fails
-    // to connect (auth. error).
-    password
+// Resolve the connection password. PGPASSWORD takes precedence; otherwise the
+// password is looked up in the password file (PGPASSFILE or ~/.pgpass), matching
+// the first line whose host:port:database:username fields match (with '*'
+// wildcards). Returns an empty string when nothing matches.
+fn resolve_password(host: &str, port: u16, dbname: &str, username: &str) -> String {
+    if let Ok(password) = env::var("PGPASSWORD") {
+        return password;
+    }
+    lookup_pgpass(host, port, dbname, username).unwrap_or_default()
+}
+
+// Location of the password file: PGPASSFILE if set, otherwise ~/.pgpass.
+fn pgpass_path() -> Option<PathBuf> {
+    if let Ok(file) = env::var("PGPASSFILE") {
+        if !file.is_empty() {
+            return Some(PathBuf::from(file));
+        }
+    }
+    env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(".pgpass"))
+}
+
+// Scan the password file for the first entry matching the connection target.
+fn lookup_pgpass(host: &str, port: u16, dbname: &str, username: &str) -> Option<String> {
+    let path = pgpass_path()?;
+    let file = File::open(&path).ok()?;
+
+    // Like libpq, refuse a file that is group- or world-accessible.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = file.metadata() {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "WARNING: password file \"{}\" has group or world access; permissions should be u=rw (0600) or less; ignoring",
+                    path.display()
+                );
+                return None;
+            }
+        }
+    }
+
+    let port = port.to_string();
+    for line in BufReader::new(file).lines().flatten() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields = split_pgpass_line(line);
+        if fields.len() != 5 {
+            continue;
+        }
+        if pgpass_match(&fields[0], host)
+            && pgpass_match(&fields[1], &port)
+            && pgpass_match(&fields[2], dbname)
+            && pgpass_match(&fields[3], username)
+        {
+            return Some(fields[4].clone());
+        }
+    }
+    None
+}
+
+// A field matches when it is the '*' wildcard or equals the connection value.
+fn pgpass_match(field: &str, value: &str) -> bool {
+    field == "*" || field == value
+}
+
+// Split a .pgpass line into its 5 fields, honoring backslash escapes ('\:' and
+// '\\') so colons and backslashes can appear inside a field (e.g. a password).
+fn split_pgpass_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                } else {
+                    current.push('\\');
+                }
+            }
+            ':' => fields.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    fields.push(current);
+    fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn splits_pgpass_fields_with_escapes() {
+        assert_eq!(
+            split_pgpass_line("localhost:5432:db:user:secret"),
+            vec!["localhost", "5432", "db", "user", "secret"],
+        );
+        // An escaped colon stays inside the password field, an escaped
+        // backslash collapses to one.
+        assert_eq!(
+            split_pgpass_line(r"*:*:*:user:pa\:ss\\word"),
+            vec!["*", "*", "*", "user", r"pa:ss\word"],
+        );
+    }
+
+    #[test]
+    fn matches_wildcards_and_exact_values() {
+        assert!(pgpass_match("*", "anything"));
+        assert!(pgpass_match("5432", "5432"));
+        assert!(!pgpass_match("5432", "5433"));
+    }
+
+    #[test]
+    fn lookup_returns_first_matching_entry() {
+        let path = std::env::temp_dir().join(format!("pgmtr-pgpass-{}", std::process::id()));
+        {
+            let mut f = File::create(&path).unwrap();
+            writeln!(f, "# comment").unwrap();
+            writeln!(f, "otherhost:5432:db:user:nope").unwrap();
+            writeln!(f, "localhost:5432:*:user:hunter2").unwrap();
+            writeln!(f, "localhost:5432:db:user:later").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        std::env::set_var("PGPASSFILE", &path);
+        std::env::remove_var("PGPASSWORD");
+
+        assert_eq!(
+            resolve_password("localhost", 5432, "db", "user"),
+            "hunter2".to_string(),
+        );
+        // No matching line -> empty password.
+        assert_eq!(resolve_password("localhost", 5432, "db", "other"), String::new());
+
+        std::env::remove_var("PGPASSFILE");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn spec_file_value_rejects_missing_path() {
+        assert!(spec_file_value("/definitely/not/here.yaml").is_err());
+    }
 }
