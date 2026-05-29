@@ -807,3 +807,100 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
 fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn interpolate_params_substitutes_in_reverse_order() {
+        // $10 must not be clobbered by the $1 replacement.
+        let params: Vec<String> = (1..=10).map(|n| format!("v{}", n)).collect();
+        let out = interpolate_params("a=$1 j=$10", &params);
+        assert_eq!(out, "a=v1 j=v10");
+    }
+
+    #[test]
+    fn interpolate_params_replaces_all_occurrences() {
+        let params = vec!["42".to_string()];
+        assert_eq!(interpolate_params("$1 + $1", &params), "42 + 42");
+    }
+
+    #[test]
+    fn parse_template_concatenates_exprs_and_literals() {
+        // Tab and newline escapes are emitted as Lua escape sequences.
+        let expr = parse_template_to_lua_expr("{{id}}\t{{ (id - 1) * 100 + i }}\n").unwrap();
+        assert_eq!(
+            expr,
+            r#"tostring(id) .. "\t" .. tostring((id - 1) * 100 + i) .. "\n""#,
+        );
+    }
+
+    #[test]
+    fn parse_template_single_literal_has_no_concat() {
+        assert_eq!(parse_template_to_lua_expr("plain").unwrap(), r#""plain""#);
+    }
+
+    #[test]
+    fn parse_template_rejects_unterminated_expr() {
+        assert!(parse_template_to_lua_expr("{{id").is_err());
+    }
+
+    #[test]
+    fn str_to_lua_value_detects_types() {
+        let lua = Lua::new();
+        assert!(matches!(str_to_lua_value(&lua, "42").unwrap(), LuaValue::Integer(n) if n == 42));
+        assert!(matches!(str_to_lua_value(&lua, "3.5").unwrap(), LuaValue::Number(f) if (f - 3.5).abs() < 1e-9));
+        assert!(matches!(str_to_lua_value(&lua, "t").unwrap(), LuaValue::Boolean(true)));
+        assert!(matches!(str_to_lua_value(&lua, "false").unwrap(), LuaValue::Boolean(false)));
+        assert!(matches!(str_to_lua_value(&lua, "hello").unwrap(), LuaValue::String(_)));
+    }
+
+    #[test]
+    fn collect_params_escapes_and_maps_types() {
+        let lua = Lua::new();
+        let values = vec![
+            LuaValue::Integer(5),
+            LuaValue::String(lua.create_string("O'Brien").unwrap()),
+            LuaValue::Boolean(true),
+            LuaValue::Nil,
+        ];
+        let params = collect_params_as_literals(values.into_iter()).unwrap();
+        assert_eq!(params, vec!["5", "'O''Brien'", "true", "NULL"]);
+    }
+
+    #[test]
+    fn batch_row_template_generates_all_rows() {
+        let lua = Lua::new();
+        let f = compile_batch_row_template(&lua, "{{id}}|{{i}}\n").unwrap();
+        let out: String = f.call((3i64, 1i64, 3i64)).unwrap();
+        assert_eq!(out, "3|1\n3|2\n3|3\n");
+    }
+
+    #[test]
+    fn rand_int_and_float_stay_in_range() {
+        let lua = create_eval_vm().unwrap();
+        // A degenerate range is deterministic.
+        let i: i64 = lua.load("return rand_int(5, 5)").eval().unwrap();
+        assert_eq!(i, 5);
+        for _ in 0..100 {
+            let f: f64 = lua.load("return rand_float(1.0, 2.0)").eval().unwrap();
+            assert!((1.0..2.0).contains(&f));
+        }
+    }
+
+    #[test]
+    fn eval_bindings_resolves_in_declaration_order() {
+        // Later bindings may reference earlier ones; values come back as literals.
+        let bindings = vec![
+            ("a".to_string(), "min_id + 1".to_string()),
+            ("b".to_string(), "a * 2".to_string()),
+        ];
+        let constants: HashMap<String, serde_yaml::Value> = HashMap::new();
+        // Unique tx id so this test's compiled function can't clash with others.
+        let resolved = eval_bindings_simple(777, &bindings, 10, 20, 1, &constants).unwrap();
+        assert_eq!(resolved.get("a").map(String::as_str), Some("11"));
+        assert_eq!(resolved.get("b").map(String::as_str), Some("22"));
+    }
+}

@@ -338,3 +338,58 @@ pub fn print_transactions_stats(data: &Vec<ResponseTimeStatistics>) {
 
         println!("{}", table);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::benchmark::BenchmarkTransaction;
+    use std::fs::File;
+    use std::io::Write;
+
+    #[test]
+    fn safe_name_replaces_path_unsafe_chars() {
+        assert_eq!(safe_name("Debit/credit"), "Debit_credit");
+        assert_eq!(safe_name("New-Order"), "New-Order");
+        assert_eq!(safe_name("a b:c\\d"), "a_b_c_d");
+        assert_eq!(safe_name("plain_123"), "plain_123");
+    }
+
+    fn tx(id: u16, name: &str) -> BenchmarkTransaction {
+        BenchmarkTransaction { id, name: name.to_string(), weight: 1, description: String::new() }
+    }
+
+    #[test]
+    fn get_stats_reads_csv_and_defaults_when_missing() {
+        let dir = std::env::temp_dir().join(format!("pgmtr-stats-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // safe_name("tx/one") == "tx_one" -> file must use the sanitized name.
+        let mut f = File::create(dir.join("pgmtr-stats-tx_one.csv")).unwrap();
+        writeln!(f, "describe,response_time_ms").unwrap();
+        writeln!(f, "mean,1.5").unwrap();
+        writeln!(f, "std,0.5").unwrap();
+        writeln!(f, "min,0.1").unwrap();
+        writeln!(f, "95%,2.0").unwrap();
+        writeln!(f, "99%,3.0").unwrap();
+        writeln!(f, "max,9.9").unwrap();
+        drop(f);
+
+        let transactions = vec![tx(1, "tx/one"), tx(2, "missing")];
+        let stats = get_stats(&dir, &transactions).unwrap();
+
+        let one = &stats[&1];
+        assert_eq!(one.mean, 1.5);
+        assert_eq!(one.std, 0.5);
+        assert_eq!(one.min, 0.1);
+        assert_eq!(one.percentile_95, 2.0);
+        assert_eq!(one.percentile_99, 3.0);
+        assert_eq!(one.max, 9.9);
+
+        // No file for tx 2 -> all-zero stats, but still present.
+        let two = &stats[&2];
+        assert_eq!(two.mean, 0.0);
+        assert_eq!(two.max, 0.0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

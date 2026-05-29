@@ -70,3 +70,48 @@ impl TXMessage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committed_carries_ids_and_duration_without_error() {
+        let m = TXMessage::committed(7, 42, 1234);
+        assert!(matches!(m.kind, TXMessageKind::COMMITTED));
+        assert_eq!(m.tx_id, 7);
+        assert_eq!(m.client_id, 42);
+        assert_eq!(m.tx_duration_us, 1234);
+        assert!(m.error.is_none());
+    }
+
+    #[test]
+    fn error_populates_message_and_zeroes_duration() {
+        let m = TXMessage::error(3, 9, "deadlock".to_string());
+        assert!(matches!(m.kind, TXMessageKind::ERROR));
+        assert_eq!(m.tx_id, 3);
+        assert_eq!(m.client_id, 9);
+        assert_eq!(m.tx_duration_us, 0);
+        assert_eq!(m.error.as_deref(), Some("deadlock"));
+    }
+
+    #[test]
+    fn terminate_is_zeroed_control_message() {
+        let m = TXMessage::terminate_data_collector();
+        assert!(matches!(m.kind, TXMessageKind::TERMINATE));
+        assert_eq!(m.tx_id, 0);
+        assert_eq!(m.client_id, 0);
+        assert_eq!(m.tx_duration_us, 0);
+        assert!(m.error.is_none());
+    }
+
+    #[test]
+    fn end_of_rampup_is_zeroed_control_message() {
+        let m = TXMessage::end_of_rampup();
+        assert!(matches!(m.kind, TXMessageKind::ENDOFRAMPUP));
+        assert_eq!(m.tx_id, 0);
+        assert_eq!(m.client_id, 0);
+        assert_eq!(m.tx_duration_us, 0);
+        assert!(m.error.is_none());
+    }
+}

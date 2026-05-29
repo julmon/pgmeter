@@ -563,3 +563,170 @@ impl Benchmark for YamlBenchmark {
         self.vacuum_stmts.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::YamlBenchmark;
+    use crate::executor::yaml_types::BenchmarkSpec;
+
+    fn sample_spec() -> BenchmarkSpec {
+        let yaml = r#"
+name: full
+scaling:
+  unit: warehouse
+  max_id_query: "SELECT max(id) FROM t1"
+schema:
+  pre_ddls:
+    - "CREATE SEQUENCE s1"
+  tables:
+    - name: t1
+      columns:
+        - { name: id, type: "int" }
+        - { name: val, type: "text" }
+      primary_key: [id]
+    - name: t2
+      access_method: heap
+      storage:
+        fillfactor: 80
+      columns:
+        - { name: id, type: "int" }
+        - { name: t1_id, type: "int" }
+  foreign_keys:
+    - name: t2_t1_fk
+      table: t2
+      columns: [t1_id]
+      references:
+        table: t1
+        columns: [id]
+  indexes:
+    - name: idx_t2_t1
+      table: t2
+      columns: [t1_id]
+    - name: uidx_t1_val
+      table: t1
+      columns: [val]
+      unique: true
+      type: btree
+      include: [id]
+      where: "val IS NOT NULL"
+  post_ddls:
+    - "SELECT setval('s1', 100)"
+transactions:
+  - id: 1
+    name: tx-one
+    weight: 70
+    description: first
+  - id: 2
+    name: tx-two
+    weight: 30
+"#;
+        serde_yaml::from_str(yaml).expect("valid spec")
+    }
+
+    #[test]
+    fn table_ddls_include_pre_ddls_drop_create_storage() {
+        let spec = sample_spec();
+        let ddls: Vec<String> = YamlBenchmark::generate_table_ddls(&spec)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            ddls,
+            vec![
+                "CREATE SEQUENCE s1".to_string(),
+                "DROP TABLE IF EXISTS t1 CASCADE".to_string(),
+                "CREATE TABLE t1 (id int, val text)".to_string(),
+                "DROP TABLE IF EXISTS t2 CASCADE".to_string(),
+                "CREATE TABLE t2 (id int, t1_id int) USING heap WITH (fillfactor = 80)".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn pkey_ddls_only_for_tables_with_primary_key() {
+        let spec = sample_spec();
+        let ddls: Vec<String> = YamlBenchmark::generate_pkey_ddls(&spec)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        // Only t1 declares a primary key.
+        assert_eq!(ddls, vec!["ALTER TABLE t1 ADD PRIMARY KEY (id)".to_string()]);
+    }
+
+    #[test]
+    fn fkey_ddls_render_references() {
+        let spec = sample_spec();
+        let ddls: Vec<String> = YamlBenchmark::generate_fkey_ddls(&spec)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            ddls,
+            vec!["ALTER TABLE t2 ADD CONSTRAINT t2_t1_fk FOREIGN KEY (t1_id) REFERENCES t1 (id)".to_string()],
+        );
+    }
+
+    #[test]
+    fn index_ddls_render_all_clauses() {
+        let spec = sample_spec();
+        let ddls: Vec<String> = YamlBenchmark::generate_index_ddls(&spec)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            ddls,
+            vec![
+                "CREATE INDEX idx_t2_t1 ON t2 (t1_id)".to_string(),
+                "CREATE UNIQUE INDEX uidx_t1_val ON t1 USING btree (val) INCLUDE (id) WHERE val IS NOT NULL".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn vacuum_stmts_cover_tables_then_post_ddls() {
+        let spec = sample_spec();
+        let stmts: Vec<String> = YamlBenchmark::generate_vacuum_stmts(&spec)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            stmts,
+            vec![
+                "VACUUM FREEZE ANALYZE t1".to_string(),
+                "VACUUM FREEZE ANALYZE t2".to_string(),
+                "SELECT setval('s1', 100)".to_string(),
+            ],
+        );
+    }
+
+    #[test]
+    fn transactions_preserve_id_name_weight() {
+        let spec = sample_spec();
+        let txs = YamlBenchmark::generate_transactions(&spec);
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].id, 1);
+        assert_eq!(txs[0].name, "tx-one");
+        assert_eq!(txs[0].weight, 70);
+        assert_eq!(txs[0].description, "first");
+        assert_eq!(txs[1].id, 2);
+        assert_eq!(txs[1].weight, 30);
+    }
+
+    #[test]
+    fn shipped_sample_specs_parse_and_generate_ddls() {
+        for name in ["tpc-b", "tpc-c", "tpc-h", "tpc-iot"] {
+            let path = format!("samples/{}.yaml", name);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {}", path, e));
+            let spec: BenchmarkSpec = serde_yaml::from_str(&content)
+                .unwrap_or_else(|e| panic!("parse {}: {}", path, e));
+            assert!(!spec.schema.tables.is_empty(), "{} has no tables", name);
+            assert!(!spec.transactions.is_empty(), "{} has no transactions", name);
+            assert!(
+                !YamlBenchmark::generate_table_ddls(&spec).is_empty(),
+                "{} produced no table DDLs",
+                name,
+            );
+        }
+    }
+}

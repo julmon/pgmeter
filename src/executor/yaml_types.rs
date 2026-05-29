@@ -209,3 +209,73 @@ pub struct ScriptsSpec {
     #[serde(default)]
     pub modules: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throughput_factor_per_time_base() {
+        assert_eq!(ThroughputPer::Second.factor(), 1.0);
+        assert_eq!(ThroughputPer::Minute.factor(), 60.0);
+        assert_eq!(ThroughputPer::Hour.factor(), 3600.0);
+    }
+
+    #[test]
+    fn metrics_default_is_tpm_per_minute() {
+        let m = MetricsSpec::default();
+        assert_eq!(m.throughput_unit, "TPM");
+        assert_eq!(m.per, ThroughputPer::Minute);
+    }
+
+    #[test]
+    fn metrics_deserializes_lowercase_per() {
+        let m: MetricsSpec =
+            serde_yaml::from_str("throughput_unit: QphH\nper: hour\n").unwrap();
+        assert_eq!(m.throughput_unit, "QphH");
+        assert_eq!(m.per, ThroughputPer::Hour);
+    }
+
+    #[test]
+    fn metrics_fills_missing_fields_with_defaults() {
+        // Only the unit is given; `per` falls back to minute.
+        let m: MetricsSpec = serde_yaml::from_str("throughput_unit: TPS\n").unwrap();
+        assert_eq!(m.throughput_unit, "TPS");
+        assert_eq!(m.per, ThroughputPer::Minute);
+    }
+
+    #[test]
+    fn spec_applies_field_defaults() {
+        let yaml = r#"
+name: demo
+scaling:
+  unit: thing
+  max_id_query: "SELECT 1"
+schema:
+  tables:
+    - name: t
+      columns:
+        - { name: id, type: int }
+load:
+  - table: t
+    copy_columns: [id]
+    rows_per_id: 1
+    row: "{{id}}\n"
+transactions:
+  - id: 1
+    name: only
+    weight: 100
+"#;
+        let spec: BenchmarkSpec = serde_yaml::from_str(yaml).unwrap();
+        // metrics block omitted -> default TPM/minute.
+        assert_eq!(spec.metrics.throughput_unit, "TPM");
+        assert_eq!(spec.metrics.per, ThroughputPer::Minute);
+        // load method defaults to "copy", batch_size to 10_000.
+        assert_eq!(spec.load[0].method, "copy");
+        assert_eq!(spec.load[0].batch_size, 10_000);
+        // transaction mode defaults to "simple".
+        assert_eq!(spec.transactions[0].mode, "simple");
+        // column type rename ("type" -> col_type) works.
+        assert_eq!(spec.schema.tables[0].columns[0].col_type, "int");
+    }
+}
