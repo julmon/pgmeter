@@ -137,14 +137,19 @@ pub fn run_bar(total_s: u64) -> ProgressBar {
         return ProgressBar::hidden();
     }
     let bar = ProgressBar::with_draw_target(Some(total_s), ProgressDrawTarget::stderr());
-    bar.set_style(
-        ProgressStyle::with_template(
-            "{prefix:.dim} {bar:24.cyan/blue} {percent:>3}% {pos:>3}/{len}s  {msg}",
-        )
-        .unwrap()
-        .progress_chars("█▉░"),
+    // Two leading spaces shift the line right so "RUN" aligns with the icon-
+    // prefixed status lines (✔/spinner + space). "Running workload" is rendered
+    // in white while the "RUN" prefix stays dim.
+    let template = format!(
+        "  {{prefix:.dim}} {} {{bar:24.cyan/blue}} {{percent:>3}}% {{pos:>3}}/{{len}}s  {{msg}}",
+        style("Running workload").white(),
     );
-    bar.set_prefix("RUN running");
+    bar.set_style(
+        ProgressStyle::with_template(&template)
+            .unwrap()
+            .progress_chars("█▉░"),
+    );
+    bar.set_prefix("RUN");
     bar
 }
 
