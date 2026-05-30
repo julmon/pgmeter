@@ -608,7 +608,7 @@ fn render_html(json_blob: &str) -> String {
   .chart-card {{ position: relative; height: 320px; }}
   .chart-card canvas {{ max-height: 280px; }}
   /* Line/pie charts get a taller card and a scrollable external legend so many
-     series (e.g. TPC-H's 22 queries) don't crowd the plot area. The plot lives
+     series (e.g. PGM-H's 22 queries) don't crowd the plot area. The plot lives
      in a fixed-height wrapper so populating the legend can't shrink the canvas
      after Chart.js has rendered (which would scale and crush the bitmap). */
   .line-card {{ height: 420px; display: flex; flex-direction: column; }}
@@ -1021,7 +1021,7 @@ charts.latency = new Chart(document.getElementById('latency'), {
 });
 
 // Per-transaction panels (percentiles, mix) are only meaningful with more than
-// one transaction type; hide them for single-transaction workloads like TPC-B.
+// one transaction type; hide them for single-transaction workloads like PGM-B.
 const multiTx = DATA.transactions.length > 1;
 if (!multiTx) {
   for (const id of ['card-percentiles', 'card-mix']) {

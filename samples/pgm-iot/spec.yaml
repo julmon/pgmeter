@@ -1,12 +1,18 @@
-# TPCx-IoT Benchmark Specification
-# IoT gateway simulation with sensor data ingestion and queries.
-# Transaction logic is implemented in Lua scripts in the scripts/ folder.
+# PGM-IoT Benchmark Specification (IoT time-series ingestion + queries)
+#
+# PGM-IoT is an open workload DERIVED FROM the TPCx-IoT specification. It is not
+# an audited, spec-compliant TPC benchmark, and its results are NOT comparable
+# to official published TPCx-IoT results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and
+# TPCx are trademarks of the Transaction Processing Performance Council
+# (tpc.org). Transaction logic is implemented in Lua scripts in the scripts/ folder.
 
-name: TPCx-IoT
+name: PGM-IoT
 description: >
-  TPCx-IoT-like benchmark for PostgreSQL. Simulates an electric utility
-  operational scenario with power substations containing multiple sensors
-  that generate time-series data.
+  PGM-IoT: an IoT time-series ingestion-and-query workload for PostgreSQL,
+  derived from the TPCx-IoT specification (not an audited, spec-compliant TPC
+  benchmark; results are not comparable to official TPCx-IoT results). Simulates
+  an electric utility scenario with power substations whose sensors generate
+  time-series data.
 
 # ---------------------------------------------------------------------------
 # Scaling rules
@@ -22,10 +28,11 @@ scaling:
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-# TPCx-IoT reports ingestion throughput per second (IoTps). This counts
-# committed transactions per second; each transaction may insert a batch of rows.
+# Ingestion throughput per second. This counts committed transactions per
+# second; each transaction may insert a batch of rows. Plain display label --
+# deliberately NOT the trademarked TPCx-IoT IoTps metric.
 metrics:
-  throughput_unit: "IoTps"
+  throughput_unit: "txns/sec"
   per: second
 
 # ---------------------------------------------------------------------------

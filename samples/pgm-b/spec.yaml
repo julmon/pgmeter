@@ -1,11 +1,16 @@
-# TPC-B-like Benchmark Specification
-# Banking debit/credit benchmark per official TPC-B specification.
+# PGM-B Benchmark Specification (banking debit/credit)
+#
+# PGM-B is an open workload DERIVED FROM the TPC-B specification. It is not an
+# audited, spec-compliant TPC benchmark, and its results are NOT comparable to
+# official published TPC-B results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
+# are trademarks of the Transaction Processing Performance Council (tpc.org).
 
-name: TPC-B-like
+name: PGM-B
 description: >
-  TPC-B-like benchmark implementation for PostgreSQL per official TPC-B
-  specification. Simulates a banking system with branches, tellers, and accounts
-  performing debit/credit transactions.
+  PGM-B: a banking debit/credit workload for PostgreSQL, derived from the TPC-B
+  specification (not an audited, spec-compliant TPC benchmark; results are not
+  comparable to official TPC-B results). Simulates a banking system with
+  branches, tellers, and accounts performing debit/credit transactions.
 
 # ---------------------------------------------------------------------------
 # Scaling rules

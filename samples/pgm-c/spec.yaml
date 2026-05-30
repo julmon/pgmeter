@@ -1,12 +1,18 @@
-# TPC-C Benchmark Specification
-# Order-entry benchmark with 5 transaction types.
+# PGM-C Benchmark Specification (order-entry OLTP, 5 transaction types)
+#
+# PGM-C is an open workload DERIVED FROM the TPC-C specification. It is not an
+# audited, spec-compliant TPC benchmark, and its results are NOT comparable to
+# official published TPC-C results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
+# are trademarks of the Transaction Processing Performance Council (tpc.org).
 # Transaction logic is implemented in Lua scripts in the scripts/ folder.
 
-name: TPC-C
+name: PGM-C
 description: >
-  TPC-C-like benchmark implementation for PostgreSQL.
-  Simulates a complete order-entry environment with warehouses, districts,
-  customers, orders, and inventory management.
+  PGM-C: an order-entry OLTP workload for PostgreSQL, derived from the TPC-C
+  specification (not an audited, spec-compliant TPC benchmark; results are not
+  comparable to official TPC-C results). Simulates a complete order-entry
+  environment with warehouses, districts, customers, orders, and inventory
+  management.
 
 # ---------------------------------------------------------------------------
 # Scaling rules

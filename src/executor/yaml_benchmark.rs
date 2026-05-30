@@ -710,11 +710,11 @@ transactions:
     #[test]
     fn shipped_sample_specs_parse_and_generate_ddls() {
         for name in [
-            "tpc-b",
-            "tpc-c",
-            "tpc-h",
-            "tpc-ds",
-            "tpc-iot",
+            "pgm-b",
+            "pgm-c",
+            "pgm-h",
+            "pgm-ds",
+            "pgm-iot",
         ] {
             let path = format!("samples/{}/spec.yaml", name);
             let content = std::fs::read_to_string(&path)

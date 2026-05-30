@@ -252,7 +252,7 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
 
 // Render both result tables with a light, frame-less style and at an identical
 // width so they line up visually. `throughput_unit` is the headline metric
-// label from the spec's `metrics` block (e.g. TPS, tpmC, QphH); it becomes the
+// label from the spec's `metrics` block (e.g. TPS, txns/min, queries/hr); it becomes the
 // summary table's throughput column header. The two tables have different
 // column counts (hence different natural widths), so the narrower one is grown
 // to match via `Width::increase`.

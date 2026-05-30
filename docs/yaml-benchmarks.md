@@ -9,9 +9,11 @@ This document is the complete reference for benchmark authors. It covers every
 field of the spec file, the row-template mini-language, the binding mechanism,
 and the full Lua scripting API.
 
-> The built-in TPC-B, TPC-C, TPCx-IoT, TPC-H, and TPC-DS benchmarks are all
-> expressed as YAML specs under [`samples/`](../samples). They are the best
-> worked examples to read alongside this guide.
+> The built-in PGM-B, PGM-C, PGM-IoT, PGM-H, and PGM-DS workloads — derived from
+> the TPC-B/C, TPCx-IoT and TPC-H/DS specifications — are all expressed as YAML
+> specs under [`samples/`](../samples). They are the best worked examples to read
+> alongside this guide. (They are not audited, full-specification TPC benchmarks;
+> see the trademark notice in the project README.)
 
 ---
 
@@ -373,7 +375,7 @@ row: "{{(id - 1) * 100 + i}}\t{{id}}\tProduct-{{i}}\t{{rand_float(1.0, 999.99)}}
 
 The default `COPY` text format treats an empty field as an empty string and the
 two-character sequence `\N` as SQL `NULL`. `CHAR(n)` columns left empty (as in
-the TPC-B `filler` columns) are stored blank-padded. If you need a real `NULL`,
+the PGM-B `filler` columns) are stored blank-padded. If you need a real `NULL`,
 emit `\N`, or switch to a Lua loader where you control the `COPY` options.
 
 ### 6.2 Lua-based loading (`load_script` / `pre_load_script`)
@@ -390,7 +392,7 @@ load_script: lua/load_per_unit.lua                # runs per parallel job
 
 - **`pre_load_script`** runs a single time on one connection before any per-unit
   loading. Use it to populate small shared/reference tables that are not
-  partitioned by unit id (e.g. the TPC-C `item` table, TPC-H `region`/`nation`).
+  partitioned by unit id (e.g. the PGM-C `item` table, PGM-H `region`/`nation`).
   It has the full DB API but `ids` is empty.
 
 - **`load_script`** runs once per parallel job. The global `ids` is the array of
@@ -473,7 +475,7 @@ every `{{name}}` occurrence in `sql`.
 
 ```yaml
 - id: 1
-  name: TPC-B
+  name: PGM-B
   weight: 100
   mode: simple
   bindings:
@@ -552,7 +554,7 @@ Each listed file is loaded **once per worker thread**, at global scope, before
 any transaction runs. Use modules for:
 
 - Helper functions shared across transactions.
-- Dispatch tables (e.g. `Q[1]..Q[22]` for TPC-H).
+- Dispatch tables (e.g. `Q[1]..Q[22]` for PGM-H).
 - Constant lookup tables (syllable lists, type names, ...).
 
 Anything a module defines as a global is visible to every `script`-mode
@@ -656,7 +658,8 @@ if #item == 0 then
 end
 ```
 
-This is exactly how TPC-C implements its mandated ~1% New-Order rollbacks.
+This is how PGM-C mirrors the ~1% New-Order rollback rate mandated by the TPC-C
+specification.
 
 ### 9.7 Bulk COPY streaming (loaders)
 

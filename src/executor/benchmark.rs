@@ -76,7 +76,7 @@ pub trait ReadWriteSync: Send + Sync {
 }
 
 // Per-transaction headline results. The throughput is expressed in the unit
-// configured by the spec's `metrics` block (e.g. TPS, tpmC, QphH); the column
+// configured by the spec's `metrics` block (e.g. TPS, txns/min, queries/hr); the column
 // is rendered with a dynamic header rather than the tabled derive.
 pub struct TransactionSummary {
     pub name: String,

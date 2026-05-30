@@ -5,8 +5,10 @@ A next-generation PostgreSQL benchmarking tool written in Rust. pgmtr runs
 data loading, and transaction mix in a spec file, and pgmtr initializes the
 database and drives the workload — no Rust code or recompilation required.
 
-Reference TPC-B, TPC-C, TPCx-IoT, and TPC-H workloads ship as ready-to-run
-specs under [`samples/`](samples/).
+Reference workloads (PGM-B, PGM-C, PGM-H, PGM-DS, PGM-IoT) ship as ready-to-run
+specs under [`samples/`](samples/). These are **derived from** the corresponding
+TPC and TPCx benchmark specifications; see the [trademark notice](#trademark-notice)
+below — they are not audited, full-specification TPC benchmarks.
 
 ## Features
 
@@ -15,8 +17,9 @@ specs under [`samples/`](samples/).
 - **Lua scripting**: Implement transaction logic and data generation in Lua
   (Luau), with a built-in PostgreSQL bridge (`exec`, `query`, `copy_*`,
   transaction control) and fast random-data helpers.
-- **Bundled reference specs**: TPC-B, TPC-C, TPCx-IoT, and TPC-H, validated to
-  match hand-written native implementations.
+- **Bundled reference specs**: PGM-B, PGM-C, PGM-H, PGM-DS, and PGM-IoT (derived
+  from TPC-B/C/H/DS and TPCx-IoT), validated to match hand-written native
+  implementations.
 - **Concurrent clients** with a configurable **ramp-up period**.
 - **Data aggregation & statistics**: Response-time percentiles (95th, 99th),
   throughput (TPM/TPS), and error rates.
@@ -62,10 +65,10 @@ workload:
 
 ```bash
 # 1. Initialize: create schema and load data (scale factor 10, 4 loader threads)
-pgmtr -H localhost -d benchmark init --spec samples/tpc-b.yaml -s 10 -j 4
+pgmtr -H localhost -d benchmark init --spec samples/pgm-b -s 10 -j 4
 
 # 2. Run: 8 clients for 60 seconds with a 10 second ramp-up
-pgmtr -H localhost -d benchmark run --spec samples/tpc-b.yaml -c 8 -T 60 -r 10
+pgmtr -H localhost -d benchmark run --spec samples/pgm-b -c 8 -T 60 -r 10
 ```
 
 Swap the `--spec` file to run a different workload — the same `init`/`run` flow
@@ -73,13 +76,14 @@ applies to every spec, including your own.
 
 ### Bundled Reference Specs
 
-| Spec | Workload | Scale unit |
-|------|----------|------------|
-| `samples/tpc-b.yaml` | Banking debit/credit (single transaction) | branch |
-| `samples/tpc-c.yaml` | Order-entry (New-Order, Payment, Order-Status, Delivery, Stock-Level) | warehouse |
-| `samples/tpc-iot.yaml` | IoT gateway (Data-Ingestion, Scan/Device/Alert queries, Threshold-Update) | substation |
-| `samples/tpc-h.yaml` | Decision-support (22 analytical queries) | scale factor |
-| `samples/custom-simple.yaml` | Minimal example of a user-defined workload | tenant |
+| Spec | Workload | Derived from | Scale unit |
+|------|----------|--------------|------------|
+| `samples/pgm-b` | Banking debit/credit (single transaction) | TPC-B | branch |
+| `samples/pgm-c` | Order-entry (New-Order, Payment, Order-Status, Delivery, Stock-Level) | TPC-C | warehouse |
+| `samples/pgm-iot` | IoT gateway (Data-Ingestion, Scan/Device/Alert queries, Threshold-Update) | TPCx-IoT | substation |
+| `samples/pgm-h` | Decision-support (22 analytical queries) | TPC-H | scale factor |
+| `samples/pgm-ds` | Decision-support, snowflake schema (24 tables) | TPC-DS | scale factor |
+| `samples/custom-simple` | Minimal example of a user-defined workload | — | tenant |
 
 ### Writing Your Own Benchmark
 
@@ -118,11 +122,11 @@ export PGPASSWORD='your_password'
 # Create a dedicated benchmark database
 psql -h localhost -U postgres -c "CREATE DATABASE benchmark;"
 
-# Initialize TPC-C with 5 warehouses using 4 loader threads
-pgmtr -H localhost -U postgres -d benchmark init --spec samples/tpc-c.yaml -s 5 -j 4
+# Initialize PGM-C with 5 warehouses using 4 loader threads
+pgmtr -H localhost -U postgres -d benchmark init --spec samples/pgm-c -s 5 -j 4
 
 # Run a 5-minute benchmark with 10 clients and a 30 second ramp-up
-pgmtr -H localhost -U postgres -d benchmark run --spec samples/tpc-c.yaml -c 10 -T 300 -r 30
+pgmtr -H localhost -U postgres -d benchmark run --spec samples/pgm-c -c 10 -T 300 -r 30
 ```
 
 ## Output
@@ -201,6 +205,19 @@ src/
 samples/                       # Reference and example benchmark specs
 docs/yaml-benchmarks.md        # Benchmark authoring guide
 ```
+
+## Trademark notice
+
+pgmtr ships workloads (PGM-B, PGM-C, PGM-H, PGM-DS, PGM-IoT) **derived from** the
+corresponding TPC and TPCx benchmark specifications. They implement a
+representative subset of each specification for relative comparison (for
+example, comparing two table access methods under the same workload). **They are
+not audited, full-specification TPC benchmarks, and their results must not be
+compared with, or represented as, official TPC results.**
+
+TPC, TPC Benchmark, TPC-B, TPC-C, TPC-H, TPC-DS, TPCx-IoT, tpmC, QphH and QphDS
+are trademarks of the Transaction Processing Performance Council. See
+[www.tpc.org](https://www.tpc.org).
 
 ## License
 

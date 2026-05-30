@@ -70,7 +70,7 @@ pub struct RunArgs {
 
 // init sub-command arguments
 pub struct InitArgs {
-    // Database scale factor. In TPC-C context, this is the number of warehouses
+    // Database scale factor. In PGM-C context, this is the number of warehouses
     pub scalefactor: u32,
     // Number of concurrent jobs used to populate the database
     pub jobs: u32,

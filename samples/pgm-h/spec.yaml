@@ -1,11 +1,18 @@
-# TPC-H Decision Support Benchmark Specification
+# PGM-H Decision Support Benchmark Specification
 # 22 read-only analytical queries with weighted random selection.
 # All queries are implemented in a single Lua script that dispatches by transaction ID.
+#
+# PGM-H is an open workload DERIVED FROM the TPC-H specification. It is not an
+# audited, spec-compliant TPC benchmark, and its results are NOT comparable to
+# official published TPC-H results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
+# are trademarks of the Transaction Processing Performance Council (tpc.org).
 
-name: TPC-H
+name: PGM-H
 description: >
-  TPC-H-like benchmark for analytical query performance on PostgreSQL.
-  8 tables, 22 queries with randomized parameters.
+  PGM-H: an analytical decision-support workload for PostgreSQL, derived from
+  the TPC-H specification (not an audited, spec-compliant TPC benchmark; results
+  are not comparable to official TPC-H results). 8 tables, 22 queries with
+  randomized parameters.
 
 # ---------------------------------------------------------------------------
 # Scaling rules
@@ -19,11 +26,12 @@ scaling:
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-# TPC-H is a decision-support workload measured in queries per hour. Note this
-# is a display label over all executed queries, not the official QphH composite
-# (which is a geometric mean of power/throughput runs weighted by scale factor).
+# Decision-support workload measured in queries per hour. This is a plain
+# display label over all executed queries -- deliberately NOT the trademarked
+# TPC-H QphH composite (a geometric mean of power/throughput runs weighted by
+# scale factor), which only an audited, full-spec run may report.
 metrics:
-  throughput_unit: "QphH"
+  throughput_unit: "queries/hr"
   per: hour
 
 # ---------------------------------------------------------------------------

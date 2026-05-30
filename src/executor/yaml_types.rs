@@ -31,7 +31,7 @@ pub struct BenchmarkSpec {
 /// turn a committed-transaction count into a rate.
 #[derive(Debug, Deserialize, Clone)]
 pub struct MetricsSpec {
-    /// e.g. "TPS", "tpmC", "QphH". Used purely as a display label.
+    /// e.g. "TPS", "txns/min", "queries/hr". Used purely as a display label.
     #[serde(default = "default_throughput_unit")]
     pub throughput_unit: String,
     /// Time base for the rate: "second", "minute" or "hour".
@@ -231,8 +231,8 @@ mod tests {
     #[test]
     fn metrics_deserializes_lowercase_per() {
         let m: MetricsSpec =
-            serde_yaml::from_str("throughput_unit: QphH\nper: hour\n").unwrap();
-        assert_eq!(m.throughput_unit, "QphH");
+            serde_yaml::from_str("throughput_unit: queries/hr\nper: hour\n").unwrap();
+        assert_eq!(m.throughput_unit, "queries/hr");
         assert_eq!(m.per, ThroughputPer::Hour);
     }
 

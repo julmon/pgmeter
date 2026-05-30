@@ -1,15 +1,22 @@
-# TPC-DS Decision Support Benchmark Specification
+# PGM-DS Decision Support Benchmark Specification
 #
 # All 24 tables (7 fact + 17 dimension) with columns, primary keys, the full
 # snowflake foreign-key graph, and workload-driven secondary indexes; data
 # generation (pre_load_script / load_script) for the dimensions and fact tables;
 # and a representative query workload (scripts/tpcds_queries.lua + the
 # transactions below).
+#
+# PGM-DS is an open workload DERIVED FROM the TPC-DS specification. It is not an
+# audited, spec-compliant TPC benchmark, and its results are NOT comparable to
+# official published TPC-DS results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
+# are trademarks of the Transaction Processing Performance Council (tpc.org).
 
-name: TPC-DS
+name: PGM-DS
 description: >
-  TPC-DS-like decision support benchmark for PostgreSQL. Snowflake schema with
-  24 tables (7 fact, 17 dimension). Phase 0 ships the schema only.
+  PGM-DS: a decision-support workload for PostgreSQL, derived from the TPC-DS
+  specification (not an audited, spec-compliant TPC benchmark; results are not
+  comparable to official TPC-DS results). Snowflake schema with 24 tables
+  (7 fact, 17 dimension) and a representative query workload.
 
 # ---------------------------------------------------------------------------
 # Scaling rules
@@ -26,11 +33,12 @@ scaling:
 # ---------------------------------------------------------------------------
 # Metrics
 # ---------------------------------------------------------------------------
-# Decision-support workload measured in queries per hour. This is a display
-# label over executed queries, not the official QphDS@SF composite (which folds
-# in load, power, throughput and maintenance runs).
+# Decision-support workload measured in queries per hour. This is a plain
+# display label over executed queries -- deliberately NOT the trademarked
+# TPC-DS QphDS@SF composite (which folds in load, power, throughput and
+# maintenance runs), which only an audited, full-spec run may report.
 metrics:
-  throughput_unit: "QphDS"
+  throughput_unit: "queries/hr"
   per: hour
 
 # ---------------------------------------------------------------------------
