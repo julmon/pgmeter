@@ -9,9 +9,9 @@ This document is the complete reference for benchmark authors. It covers every
 field of the spec file, the row-template mini-language, the binding mechanism,
 and the full Lua scripting API.
 
-> The built-in TPC-B, TPC-C, TPCx-IoT, and TPC-H benchmarks are all expressed as
-> YAML specs under [`samples/`](../samples). They are the best worked examples
-> to read alongside this guide.
+> The built-in TPC-B, TPC-C, TPCx-IoT, TPC-H, and TPC-DS benchmarks are all
+> expressed as YAML specs under [`samples/`](../samples). They are the best
+> worked examples to read alongside this guide.
 
 ---
 
