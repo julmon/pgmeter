@@ -32,6 +32,10 @@ fn spec_file_value(s: &str) -> Result<PathBuf, String> {
 pub enum Action {
     Init,
     Run,
+    // Scaffold an embedded benchmark spec to disk for editing.
+    SpecNew { benchmark: String, output: String, force: bool },
+    // List the benchmarks available to scaffold.
+    SpecList,
 }
 
 // How `run` results are written to stdout.
@@ -310,6 +314,44 @@ impl PgMtrArgs {
             .arg(format_option)
             .arg(quiet_option);
 
+        // spec new <BENCHMARK> [--output <DIR>] [--force]
+        let spec_new = Command::new("new")
+            .about("Scaffold an editable copy of an embedded benchmark spec")
+            .arg_required_else_help(true)
+            .arg(
+                Arg::new("benchmark")
+                    .action(ArgAction::Set)
+                    .required(true)
+                    .value_name("BENCHMARK")
+                    .help("Embedded benchmark to scaffold (see `spec list`)"),
+            )
+            .arg(
+                Arg::new("output")
+                    .long("output")
+                    .short('o')
+                    .action(ArgAction::Set)
+                    .default_value(".")
+                    .value_name("DIR")
+                    .help("Directory to write the benchmark folder into"),
+            )
+            .arg(
+                Arg::new("force")
+                    .long("force")
+                    .action(ArgAction::SetTrue)
+                    .help("Overwrite the destination if it already exists"),
+            );
+
+        // spec list
+        let spec_list = Command::new("list").about("List the benchmarks available to scaffold");
+
+        // spec <new|list>
+        let spec = Command::new("spec")
+            .about("Work with embedded benchmark specs")
+            .arg_required_else_help(true)
+            .subcommand_required(true)
+            .subcommand(spec_new)
+            .subcommand(spec_list);
+
         // Basic app information
         let cmd = Command::new("pgmtr")
             .version(env!("CARGO_PKG_VERSION"))
@@ -318,7 +360,8 @@ impl PgMtrArgs {
             .arg_required_else_help(true)
             .subcommand_required(true)
             .subcommand(init)
-            .subcommand(run);
+            .subcommand(run)
+            .subcommand(spec);
 
         // Add in the arguments we want to parse
         let cmd = cmd
@@ -390,6 +433,24 @@ impl PgMtrArgs {
                 let quiet = run_m.get_flag("quiet");
 
                 (run_args, InitArgs::empty(), Action::Run, spec, format, quiet)
+            },
+            Some("spec") => {
+                let spec_m = matches.subcommand_matches("spec").unwrap();
+                let action = match spec_m.subcommand_name() {
+                    Some("new") => {
+                        let m = spec_m.subcommand_matches("new").unwrap();
+                        Action::SpecNew {
+                            benchmark: m.get_one::<String>("benchmark").unwrap().clone(),
+                            output: m.get_one::<String>("output").unwrap().clone(),
+                            force: m.get_flag("force"),
+                        }
+                    },
+                    Some("list") => Action::SpecList,
+                    // subcommand_required(true) on `spec` guarantees a match.
+                    _ => unreachable!("a spec subcommand is required"),
+                };
+
+                (RunArgs::empty(), InitArgs::empty(), action, None, OutputFormat::Table, false)
             },
             // subcommand_required(true) guarantees a subcommand was matched.
             _ => unreachable!("a subcommand is required"),
