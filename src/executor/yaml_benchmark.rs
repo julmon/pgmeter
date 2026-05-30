@@ -715,10 +715,6 @@ transactions:
             "tpc-h",
             "tpc-ds",
             "tpc-iot",
-            "tpc-b-embedded",
-            "tpc-c-embedded",
-            "tpc-h-embedded",
-            "tpc-iot-embedded",
         ] {
             let path = format!("samples/{}/spec.yaml", name);
             let content = std::fs::read_to_string(&path)

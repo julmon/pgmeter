@@ -80,7 +80,6 @@ applies to every spec, including your own.
 | `samples/tpc-iot.yaml` | IoT gateway (Data-Ingestion, Scan/Device/Alert queries, Threshold-Update) | substation |
 | `samples/tpc-h.yaml` | Decision-support (22 analytical queries) | scale factor |
 | `samples/custom-simple.yaml` | Minimal example of a user-defined workload | tenant |
-| `samples/tpc-c-embedded.yaml` | TPC-C with Lua embedded inline instead of external files | warehouse |
 
 ### Writing Your Own Benchmark
 
