@@ -238,6 +238,15 @@ pub fn kpi_banner(throughput: u64, unit: &str, committed: u64, error_rate: f64, 
     println!();
 }
 
+// Print the path of a generated artifact (e.g. the HTML report) on stderr,
+// indented to match the run header. Suppressed when quiet.
+pub fn artifact_path(label: &str, path: &str) {
+    if is_quiet() {
+        return;
+    }
+    eprintln!("  {} {}", style(label).dim(), path);
+}
+
 // Clear the workload bar and print a final success line with the elapsed time.
 pub fn finish_run_bar(bar: ProgressBar, duration_ms: f64) {
     bar.finish_and_clear();

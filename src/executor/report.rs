@@ -63,7 +63,7 @@ struct Series {
 }
 
 // Generate the self-contained HTML report into the run's target directory.
-pub fn generate(input: &ReportInput, client: &mut Client) -> Result<(), Box<dyn std::error::Error>> {
+pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let server = fetch_server_info(client);
     let data_info = fetch_data_info(client, input.spec);
 
@@ -230,10 +230,11 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<(), Box<dyn 
     let json_blob = serde_json::to_string(&data)?;
     let html = render_html(&json_blob);
 
-    let mut file = File::create(input.target_dir.join(REPORT_FILE))?;
+    let report_path = input.target_dir.join(REPORT_FILE);
+    let mut file = File::create(&report_path)?;
     file.write_all(html.as_bytes())?;
 
-    Ok(())
+    Ok(report_path)
 }
 
 #[derive(Default)]

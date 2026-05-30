@@ -1,6 +1,4 @@
-use async_trait::async_trait;
 use postgres::Client;
-use sqlx::PgConnection;
 use tabled::Tabled;
 
 // Transaction specifications
@@ -62,12 +60,6 @@ pub struct ResponseTimeStatistics {
     pub percentile_99: f64,
 }
 
-// ReadWrite trait for all benchmarks implementing read/write workload (async version)
-#[async_trait]
-pub trait ReadWrite {
-    async fn execute_rw_transaction(&self, conn: &mut PgConnection, transaction :&BenchmarkTransaction) -> Result<u128, Box<dyn std::error::Error>>;
-}
-
 /// Synchronous ReadWrite trait for high-performance benchmark execution
 /// Uses prepared statements and synchronous I/O (matches pgbench architecture)
 pub trait ReadWriteSync: Send + Sync {
@@ -81,11 +73,6 @@ pub trait ReadWriteSync: Send + Sync {
         prepared: &PreparedStatements,
         transaction: &BenchmarkTransaction,
     ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
-
-    /// Check if this benchmark supports synchronous execution
-    fn supports_sync(&self) -> bool {
-        false
-    }
 }
 
 // Per-transaction headline results. The throughput is expressed in the unit
@@ -111,7 +98,7 @@ impl TransactionSummary {
     }
 }
 
-pub trait Benchmark:ReadWrite {
+pub trait Benchmark {
     fn initialize_schema(&self, client: &mut Client) -> Result<u128, postgres::Error>;
     fn pre_load_data(&self, client: &mut Client) -> Result<u128, String>;
     fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, String>;

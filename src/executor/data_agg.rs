@@ -6,11 +6,26 @@ use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, Transaction
 use tabled::{
     builder::Builder,
     object::{Rows, Object, Columns},
+    style::{HorizontalLine, Line},
+    width::Width,
     Alignment,
     ModifyObject,
     Style,
     Table,
 };
+
+// Widest rendered line (in characters) of a table.
+fn rendered_width<R>(table: &Table<R>) -> usize
+where
+    Table<R>: std::fmt::Display,
+{
+    table
+        .to_string()
+        .lines()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
+}
 
 // Sanitize a transaction name for use as a filename component: any character
 // that isn't alphanumeric, '-' or '_' (e.g. the '/' in "Debit/credit") becomes
@@ -235,9 +250,24 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
     Ok(stats_map)
 }
 
-// `throughput_unit` is the headline metric label from the spec's `metrics`
-// block (e.g. TPS, tpmC, QphH); it becomes the throughput column's header.
-pub fn print_transactions_summary(data: &Vec<TransactionSummary>, throughput_unit: &str) {
+// Render both result tables with a light, frame-less style and at an identical
+// width so they line up visually. `throughput_unit` is the headline metric
+// label from the spec's `metrics` block (e.g. TPS, tpmC, QphH); it becomes the
+// summary table's throughput column header. The two tables have different
+// column counts (hence different natural widths), so the narrower one is grown
+// to match via `Width::increase`.
+pub fn print_transactions_tables(
+    summary: &Vec<TransactionSummary>,
+    stats: &Vec<ResponseTimeStatistics>,
+    throughput_unit: &str,
+) {
+    let header_rule = || {
+        Style::blank()
+            .off_vertical()
+            .horizontals([HorizontalLine::new(1, Line::filled('─'))])
+    };
+
+    // Summary table.
     let mut builder = Builder::default();
     builder.set_columns([
         "Transaction",
@@ -246,7 +276,7 @@ pub fn print_transactions_summary(data: &Vec<TransactionSummary>, throughput_uni
         "Error rate (%)",
         throughput_unit,
     ]);
-    for row in data {
+    for row in summary {
         builder.add_record([
             row.name.clone(),
             super::terminal::fmt_int(row.n_commits),
@@ -255,80 +285,42 @@ pub fn print_transactions_summary(data: &Vec<TransactionSummary>, throughput_uni
             super::terminal::fmt_int(row.throughput as u64),
         ]);
     }
-
-    let mut table = builder.build();
-    table
-        .with(Style::rounded())
-        .with(
-            Rows::first()
-                .modify()
-                .with(Alignment::center())
-        )
+    let mut summary_table = builder.build();
+    summary_table
+        .with(header_rule())
+        .with(Rows::first().modify().with(Alignment::center()))
         .with(
             Columns::new(1..)
                 .not(Rows::first())
                 .modify()
-                .with(Alignment::right())
+                .with(Alignment::right()),
         );
 
-    println!("{}", table);
-}
-
-pub fn print_transactions_stats(data: &Vec<ResponseTimeStatistics>) {
-    let mut table = Table::from_iter(data);
-    let style = Style::rounded();
-
-    table
-        .with(style)
-        .with(
-            Rows::first()
-                .modify()
-                .with(Alignment::center())
-        )
-        .with(
-            Columns::single(1)
+    // Response-time stats table.
+    let mut stats_table = Table::from_iter(stats);
+    stats_table
+        .with(header_rule())
+        .with(Rows::first().modify().with(Alignment::center()));
+    for col in 1..=6 {
+        stats_table.with(
+            Columns::single(col)
                 .not(Rows::first())
                 .modify()
-                .with(|s: &str| format!("{val:.*}", 3,  val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(2)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3,  val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(3)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3,  val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(4)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3, val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(5)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3, val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
-        )
-        .with(
-            Columns::single(6)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3, val=s.parse::<f64>().unwrap()))
-                .with(Alignment::right())
+                .with(|s: &str| format!("{val:.*}", 3, val = s.parse::<f64>().unwrap()))
+                .with(Alignment::right()),
         );
+    }
 
-        println!("{}", table);
+    // Equalize widths, then print.
+    let target = rendered_width(&summary_table).max(rendered_width(&stats_table));
+    summary_table.with(Width::increase(target));
+    stats_table.with(Width::increase(target));
+
+    println!("Results:");
+    println!("{}", summary_table);
+    println!();
+    println!("Response times:");
+    println!("{}", stats_table);
 }
 
 // Render the results as a pretty-printed JSON document for machine consumption.

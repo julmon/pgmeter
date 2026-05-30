@@ -22,8 +22,8 @@ fn main() {
             executor::Executor::new(dsn, spec_file)
                 .run_benchmark(env.run_args)
                 .aggregate_data()
-                .print_results(output_format)
-                .generate_report();
+                .generate_report()
+                .print_results(output_format);
         },
         Action::Init => {
             executor::Executor::new(dsn, spec_file)

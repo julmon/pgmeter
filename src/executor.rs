@@ -11,12 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{Sender, Receiver, unbounded};
-use num_cpus;
 use postgres::{Client, NoTls};
 use rand::prelude::*;
-use tokio::runtime::Builder;
-use sqlx::PgConnection;
-use sqlx::Connection;
 use itoa;
 use ryu;
 
@@ -33,7 +29,6 @@ use benchmark::{
     Benchmark,
     BenchmarkStmt,
     Counter,
-    ReadWrite,
     ReadWriteSync,
     ResponseTimeStatistics,
     TransactionSummary,
@@ -197,28 +192,16 @@ impl Executor {
             max_id
         };
 
-        // Check if benchmark supports synchronous execution (faster path)
-        let benchmark_check = self.get_benchmark(0, min_id, max_id);
-        let use_sync = benchmark_check.supports_sync();
-
-        let message = format!("Starting {} client(s) in {} seconds{}",
-            args.client, args.rampup,
-            if use_sync { " (sync mode)" } else { "" });
+        let message = format!("Starting {} client(s) in {} seconds",
+            args.client, args.rampup);
         terminal::start_msg(command, message.as_str());
 
-        if use_sync {
-            // Use synchronous execution with std::thread (faster, matches pgbench)
-            self.run_benchmark_sync(
-                args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
-                Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
-            );
-        } else {
-            // Use async execution with tokio (for benchmarks that don't support sync)
-            self.run_benchmark_async(
-                args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
-                Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
-            );
-        }
+        // One std::thread per client, each on its own blocking connection
+        // (matches pgbench's load-generation model).
+        self.run_benchmark_sync(
+            args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
+            Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
+        );
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
@@ -257,8 +240,8 @@ impl Executor {
         eprintln!();
     }
 
-    /// Synchronous benchmark execution using std::thread and prepared statements
-    /// This path is significantly faster than async for simple benchmarks like TPC-B
+    /// Benchmark execution using one std::thread per client, each on its own
+    /// blocking connection (matches pgbench's load-generation model).
     fn run_benchmark_sync(
         &mut self,
         n_clients: u16,
@@ -370,141 +353,6 @@ impl Executor {
         monitor_stop.store(true, Ordering::Relaxed);
         monitor.join().expect("the workload monitor thread panicked");
         terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
-    }
-
-    /// Async benchmark execution using tokio (for complex benchmarks)
-    fn run_benchmark_async(
-        &mut self,
-        n_clients: u16,
-        min_id: u32,
-        max_id: u32,
-        time_ms: u64,
-        rampup_ms: u64,
-        sleep_ms: u64,
-        tx: Sender<TXMessage>,
-        start: Instant,
-        live_commits: Arc<AtomicU64>,
-        live_latency_us: Arc<AtomicU64>,
-        progress: u16,
-    ) {
-        let worker_threads = std::cmp::min(n_clients as usize, num_cpus::get());
-        let rt = Builder::new_multi_thread()
-            .worker_threads(worker_threads)
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
-            let mut benchmark_clients = Vec::new();
-
-            for client_id in 1..=n_clients {
-                let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
-                sleep(Duration::from_millis(sleep_ms));
-
-                let benchmark_client = self.start_rw_client(
-                    duration_ms,
-                    self.dsn.clone(),
-                    min_id,
-                    max_id,
-                    tx.clone(),
-                    client_id as u32,
-                ).await;
-
-                benchmark_clients.push(benchmark_client);
-            }
-
-            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
-
-            let start2 = Instant::now();
-
-            // Drive a determinate bar (TTY) or periodic progress lines (non-TTY)
-            // over the post-rampup workload window, fed by the live counters.
-            let monitor_stop = Arc::new(AtomicBool::new(false));
-            let (bar, monitor) = terminal::spawn_workload_monitor(
-                time_ms / 1000,
-                start2,
-                live_commits,
-                live_latency_us,
-                Arc::clone(&monitor_stop),
-                progress,
-            );
-
-            tx.send(TXMessage::end_of_rampup()).unwrap();
-            self.rampup_time_ms = start.elapsed().as_millis();
-
-            for benchmark_client in benchmark_clients {
-                benchmark_client.await.expect("Client task panicked");
-            }
-
-            monitor_stop.store(true, Ordering::Relaxed);
-            monitor.join().expect("the workload monitor thread panicked");
-            terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
-        });
-    }
-
-    // Start a new read/write benchmark client in its own thread
-    async fn start_rw_client(&mut self, duration_ms: u64, dsn: String, min_id: u32, max_id: u32, tx: Sender<TXMessage>, client_id: u32) -> tokio::task::JoinHandle<()>
-    {
-        // Create a new benchmark object by thread because we don't want to share a such
-        // complex structure between all the client threads
-        let benchmark_client = self.get_benchmark(0, min_id, max_id);
-
-        tokio::spawn(async move {
-            // New database connection
-            let mut connection = match PgConnection::connect(&dsn).await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    terminal::err_msg(error_detail(&error).as_str());
-                    std::process::exit(1);
-                }
-            };
-            let transactions = benchmark_client.get_transactions_rw();
-
-            // Pre-compute cumulative weights for faster weighted selection
-            let total_weight: u32 = transactions.iter().map(|t| t.weight as u32).sum();
-            let cumulative_weights: Vec<u32> = transactions
-                .iter()
-                .scan(0u32, |acc, t| {
-                    *acc += t.weight as u32;
-                    Some(*acc)
-                })
-                .collect();
-
-            // Used for tracking client execution time
-            let start = Instant::now();
-            let duration_limit = duration_ms as u128;
-
-            loop {
-                // Generate random value before await (ThreadRng is not Send)
-                // Fast weighted random selection using pre-computed cumulative weights
-                let tx_idx = {
-                    let rand_val: u32 = thread_rng().gen_range(1..=total_weight);
-                    cumulative_weights
-                        .iter()
-                        .position(|&w| rand_val <= w)
-                        .unwrap_or(0)
-                };
-                let transaction = &transactions[tx_idx];
-
-                // Execute the database transactions
-                match benchmark_client.execute_rw_transaction(&mut connection, &transaction).await {
-                    Ok(duration) => {
-                        // Send committed message (avoid timestamp computation in hot path)
-                        let m = TXMessage::committed(transaction.id, client_id, duration);
-                        tx.send(m).unwrap();
-                    },
-                    Err(error) => {
-                        // Send error message
-                        let m = TXMessage::error(transaction.id, client_id, error_detail(error.as_ref()));
-                        tx.send(m).unwrap();
-                    },
-                }
-                // Break the loop if we reach the time limit
-                if start.elapsed().as_millis() >= duration_limit {
-                    break;
-                }
-            }
-        })
     }
 
     // Start the data collector thread. Data collector is in charge of storing transaction
@@ -1056,12 +904,7 @@ impl Executor {
                 };
                 terminal::kpi_banner(total_throughput, &throughput_unit, total_commits, error_rate, avg_latency);
 
-                // Print summary
-                println!("Results:");
-                data_agg::print_transactions_summary(&data_summary, &throughput_unit);
-                // Print stats
-                println!("Response times:");
-                data_agg::print_transactions_stats(&data_stats);
+                data_agg::print_transactions_tables(&data_summary, &data_stats, &throughput_unit);
             }
             OutputFormat::Json => {
                 print!(
@@ -1120,7 +963,10 @@ impl Executor {
         };
 
         match report::generate(&input, &mut client) {
-            Ok(_) => terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0),
+            Ok(report_path) => {
+                terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
+                terminal::artifact_path("report:", &report_path.display().to_string());
+            }
             Err(error) => terminal::err_msg(error_detail(error.as_ref()).as_str()),
         }
 

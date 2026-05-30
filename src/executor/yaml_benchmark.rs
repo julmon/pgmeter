@@ -3,12 +3,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use async_trait::async_trait;
 use postgres::Client;
-use sqlx::PgConnection;
 
 use super::benchmark::{
-    Benchmark, BenchmarkStmt, BenchmarkTransaction, PreparedStatements, ReadWrite, ReadWriteSync,
+    Benchmark, BenchmarkStmt, BenchmarkTransaction, PreparedStatements, ReadWriteSync,
 };
 use super::yaml_lua;
 use super::yaml_types::BenchmarkSpec;
@@ -416,22 +414,7 @@ impl YamlBenchmark {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
-#[async_trait]
-impl ReadWrite for YamlBenchmark {
-    async fn execute_rw_transaction(
-        &self,
-        _conn: &mut PgConnection,
-        _transaction: &BenchmarkTransaction,
-    ) -> Result<u128, Box<dyn std::error::Error>> {
-        Err("YAML benchmarks use sync mode only".into())
-    }
-}
-
 impl ReadWriteSync for YamlBenchmark {
-    fn supports_sync(&self) -> bool {
-        true
-    }
-
     fn prepare_statements(
         &self,
         _client: &mut Client,
