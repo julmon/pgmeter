@@ -1,7 +1,7 @@
 # TPC-H Decision Support Benchmark Specification (embedded)
 # 22 read-only analytical queries with weighted random selection.
 # Self-contained: all Lua (loaders + the Q[1]..Q[22] query module) is inlined
-# below, so this single file needs no external samples/lua/ scripts.
+# below, so this single file needs no external scripts/ folder.
 
 name: TPC-H
 description: >

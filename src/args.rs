@@ -9,11 +9,18 @@ use std::path::PathBuf;
 use users::{get_user_by_uid, get_current_uid};
 use urlencoding::encode;
 
-// clap value parser for --spec: reject a path that doesn't point to a file so
-// we fail fast at parse time instead of after connecting to the database.
+// clap value parser for --spec: accept either a benchmark directory (resolved
+// to <dir>/spec.yaml) or a single spec file, and fail fast at parse time if
+// neither exists instead of after connecting to the database.
 fn spec_file_value(s: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(s);
-    if path.is_file() {
+    if path.is_dir() {
+        if path.join("spec.yaml").is_file() {
+            Ok(path)
+        } else {
+            Err(format!("spec directory has no spec.yaml: '{}'", s))
+        }
+    } else if path.is_file() {
         Ok(path)
     } else {
         Err(format!("spec file not found: '{}'", s))

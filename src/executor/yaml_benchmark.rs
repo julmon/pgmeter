@@ -36,22 +36,28 @@ pub struct YamlBenchmark {
 }
 
 impl YamlBenchmark {
-    /// Load a benchmark specification from a YAML file.
+    /// Load a benchmark specification from either a benchmark directory
+    /// (containing `spec.yaml` and an optional `scripts/` folder) or a single
+    /// spec file. Relative `script_file`/module/load-script paths resolve
+    /// against the benchmark directory (the spec file's parent).
     pub fn from_file(path: &str, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
-        let yaml_content = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!("Failed to read spec file '{}': {}", path, e));
+        let path = Path::new(path);
+        let (spec_path, spec_dir) = if path.is_dir() {
+            (path.join("spec.yaml"), path.to_path_buf())
+        } else {
+            let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            (path.to_path_buf(), dir)
+        };
+
+        let yaml_content = std::fs::read_to_string(&spec_path).unwrap_or_else(|e| {
+            super::terminal::err_msg(&format!("Failed to read spec file '{}': {}", spec_path.display(), e));
             std::process::exit(1);
         });
 
         let spec: BenchmarkSpec = serde_yaml::from_str(&yaml_content).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!("Failed to parse YAML spec '{}': {}", path, e));
+            super::terminal::err_msg(&format!("Failed to parse YAML spec '{}': {}", spec_path.display(), e));
             std::process::exit(1);
         });
-
-        let spec_dir = Path::new(path)
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
 
         let table_ddls = Self::generate_table_ddls(&spec);
         let pkey_ddls = Self::generate_pkey_ddls(&spec);
@@ -713,7 +719,7 @@ transactions:
             "tpc-h-embedded",
             "tpc-iot-embedded",
         ] {
-            let path = format!("samples/{}.yaml", name);
+            let path = format!("samples/{}/spec.yaml", name);
             let content = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {}", path, e));
             let spec: BenchmarkSpec = serde_yaml::from_str(&content)

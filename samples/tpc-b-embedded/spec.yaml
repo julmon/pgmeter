@@ -1,7 +1,7 @@
 # TPC-B-like Benchmark Specification (embedded)
 # Banking debit/credit benchmark per official TPC-B specification.
 # Self-contained: data loading and the debit/credit transaction are written
-# as inline Lua, so this single file needs no external samples/lua/ scripts.
+# as inline Lua, so this single file needs no external scripts/ folder.
 
 name: TPC-B-like
 description: >

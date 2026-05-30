@@ -149,8 +149,8 @@ schema:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-pre_load_script: lua/tpch_pre_load.lua
-load_script: lua/tpch_load.lua
+pre_load_script: scripts/tpch_pre_load.lua
+load_script: scripts/tpch_load.lua
 
 # ---------------------------------------------------------------------------
 # Shared Lua modules
@@ -159,7 +159,7 @@ load_script: lua/tpch_load.lua
 # and loaded once per thread before any transaction executes.
 scripts:
   modules:
-    - lua/tpch_queries.lua
+    - scripts/tpch_queries.lua
 
 # ---------------------------------------------------------------------------
 # Transactions (workload)

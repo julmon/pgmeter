@@ -1,7 +1,7 @@
 # TPCx-IoT Benchmark Specification (embedded)
 # IoT gateway simulation with sensor data ingestion and queries.
 # Self-contained: all transaction and loader Lua is inlined below, so this
-# single file needs no external samples/lua/ scripts.
+# single file needs no external scripts/ folder.
 
 name: TPCx-IoT
 description: >
