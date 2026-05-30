@@ -713,6 +713,7 @@ transactions:
             "tpc-b",
             "tpc-c",
             "tpc-h",
+            "tpc-ds",
             "tpc-iot",
             "tpc-b-embedded",
             "tpc-c-embedded",

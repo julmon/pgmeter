@@ -1,0 +1,724 @@
+# TPC-DS Decision Support Benchmark Specification
+#
+# All 24 tables (7 fact + 17 dimension) with columns, primary keys, the full
+# snowflake foreign-key graph, and workload-driven secondary indexes; data
+# generation (pre_load_script / load_script) for the dimensions and fact tables;
+# and a representative query workload (scripts/tpcds_queries.lua + the
+# transactions below).
+
+name: TPC-DS
+description: >
+  TPC-DS-like decision support benchmark for PostgreSQL. Snowflake schema with
+  24 tables (7 fact, 17 dimension). Phase 0 ships the schema only.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+# TPC-DS scaling is non-linear (many dimensions grow sub-linearly with SF), so
+# this max_id_query is a provisional SF estimate from the store_sales row count
+# (~2.88M rows at SF=1). It is finalized once the load scripts exist.
+scaling:
+  unit: scalefactor
+  max_id_query: "SELECT GREATEST(1, (SELECT COUNT(*) FROM store_sales) / 2880000)::int AS max_id"
+  constants:
+    store_sales_rows_per_sf: 2880000
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+# Decision-support workload measured in queries per hour. This is a display
+# label over executed queries, not the official QphDS@SF composite (which folds
+# in load, power, throughput and maintenance runs).
+metrics:
+  throughput_unit: "QphDS"
+  per: hour
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  tables:
+    # -----------------------------------------------------------------------
+    # Dimension tables (17)
+    # -----------------------------------------------------------------------
+    - name: call_center
+      columns:
+        - { name: cc_call_center_sk, type: "INTEGER NOT NULL" }
+        - { name: cc_call_center_id, type: "CHAR(16) NOT NULL" }
+        - { name: cc_rec_start_date, type: "DATE" }
+        - { name: cc_rec_end_date, type: "DATE" }
+        - { name: cc_closed_date_sk, type: "INTEGER" }
+        - { name: cc_open_date_sk, type: "INTEGER" }
+        - { name: cc_name, type: "VARCHAR(50)" }
+        - { name: cc_class, type: "VARCHAR(50)" }
+        - { name: cc_employees, type: "INTEGER" }
+        - { name: cc_sq_ft, type: "INTEGER" }
+        - { name: cc_hours, type: "CHAR(20)" }
+        - { name: cc_manager, type: "VARCHAR(40)" }
+        - { name: cc_mkt_id, type: "INTEGER" }
+        - { name: cc_mkt_class, type: "CHAR(50)" }
+        - { name: cc_mkt_desc, type: "VARCHAR(100)" }
+        - { name: cc_market_manager, type: "VARCHAR(40)" }
+        - { name: cc_division, type: "INTEGER" }
+        - { name: cc_division_name, type: "VARCHAR(50)" }
+        - { name: cc_company, type: "INTEGER" }
+        - { name: cc_company_name, type: "CHAR(50)" }
+        - { name: cc_street_number, type: "CHAR(10)" }
+        - { name: cc_street_name, type: "VARCHAR(60)" }
+        - { name: cc_street_type, type: "CHAR(15)" }
+        - { name: cc_suite_number, type: "CHAR(10)" }
+        - { name: cc_city, type: "VARCHAR(60)" }
+        - { name: cc_county, type: "VARCHAR(30)" }
+        - { name: cc_state, type: "CHAR(2)" }
+        - { name: cc_zip, type: "CHAR(10)" }
+        - { name: cc_country, type: "VARCHAR(20)" }
+        - { name: cc_gmt_offset, type: "DECIMAL(5,2)" }
+        - { name: cc_tax_percentage, type: "DECIMAL(5,2)" }
+      primary_key: [cc_call_center_sk]
+
+    - name: catalog_page
+      columns:
+        - { name: cp_catalog_page_sk, type: "INTEGER NOT NULL" }
+        - { name: cp_catalog_page_id, type: "CHAR(16) NOT NULL" }
+        - { name: cp_start_date_sk, type: "INTEGER" }
+        - { name: cp_end_date_sk, type: "INTEGER" }
+        - { name: cp_department, type: "VARCHAR(50)" }
+        - { name: cp_catalog_number, type: "INTEGER" }
+        - { name: cp_catalog_page_number, type: "INTEGER" }
+        - { name: cp_description, type: "VARCHAR(100)" }
+        - { name: cp_type, type: "VARCHAR(100)" }
+      primary_key: [cp_catalog_page_sk]
+
+    - name: customer
+      columns:
+        - { name: c_customer_sk, type: "INTEGER NOT NULL" }
+        - { name: c_customer_id, type: "CHAR(16) NOT NULL" }
+        - { name: c_current_cdemo_sk, type: "INTEGER" }
+        - { name: c_current_hdemo_sk, type: "INTEGER" }
+        - { name: c_current_addr_sk, type: "INTEGER" }
+        - { name: c_first_shipto_date_sk, type: "INTEGER" }
+        - { name: c_first_sales_date_sk, type: "INTEGER" }
+        - { name: c_salutation, type: "CHAR(10)" }
+        - { name: c_first_name, type: "CHAR(20)" }
+        - { name: c_last_name, type: "CHAR(30)" }
+        - { name: c_preferred_cust_flag, type: "CHAR(1)" }
+        - { name: c_birth_day, type: "INTEGER" }
+        - { name: c_birth_month, type: "INTEGER" }
+        - { name: c_birth_year, type: "INTEGER" }
+        - { name: c_birth_country, type: "VARCHAR(20)" }
+        - { name: c_login, type: "CHAR(13)" }
+        - { name: c_email_address, type: "CHAR(50)" }
+        - { name: c_last_review_date, type: "CHAR(10)" }
+      primary_key: [c_customer_sk]
+
+    - name: customer_address
+      columns:
+        - { name: ca_address_sk, type: "INTEGER NOT NULL" }
+        - { name: ca_address_id, type: "CHAR(16) NOT NULL" }
+        - { name: ca_street_number, type: "CHAR(10)" }
+        - { name: ca_street_name, type: "VARCHAR(60)" }
+        - { name: ca_street_type, type: "CHAR(15)" }
+        - { name: ca_suite_number, type: "CHAR(10)" }
+        - { name: ca_city, type: "VARCHAR(60)" }
+        - { name: ca_county, type: "VARCHAR(30)" }
+        - { name: ca_state, type: "CHAR(2)" }
+        - { name: ca_zip, type: "CHAR(10)" }
+        - { name: ca_country, type: "VARCHAR(20)" }
+        - { name: ca_gmt_offset, type: "DECIMAL(5,2)" }
+        - { name: ca_location_type, type: "CHAR(20)" }
+      primary_key: [ca_address_sk]
+
+    - name: customer_demographics
+      columns:
+        - { name: cd_demo_sk, type: "INTEGER NOT NULL" }
+        - { name: cd_gender, type: "CHAR(1)" }
+        - { name: cd_marital_status, type: "CHAR(1)" }
+        - { name: cd_education_status, type: "CHAR(20)" }
+        - { name: cd_purchase_estimate, type: "INTEGER" }
+        - { name: cd_credit_rating, type: "CHAR(10)" }
+        - { name: cd_dep_count, type: "INTEGER" }
+        - { name: cd_dep_employed_count, type: "INTEGER" }
+        - { name: cd_dep_college_count, type: "INTEGER" }
+      primary_key: [cd_demo_sk]
+
+    - name: date_dim
+      columns:
+        - { name: d_date_sk, type: "INTEGER NOT NULL" }
+        - { name: d_date_id, type: "CHAR(16) NOT NULL" }
+        - { name: d_date, type: "DATE" }
+        - { name: d_month_seq, type: "INTEGER" }
+        - { name: d_week_seq, type: "INTEGER" }
+        - { name: d_quarter_seq, type: "INTEGER" }
+        - { name: d_year, type: "INTEGER" }
+        - { name: d_dow, type: "INTEGER" }
+        - { name: d_moy, type: "INTEGER" }
+        - { name: d_dom, type: "INTEGER" }
+        - { name: d_qoy, type: "INTEGER" }
+        - { name: d_fy_year, type: "INTEGER" }
+        - { name: d_fy_quarter_seq, type: "INTEGER" }
+        - { name: d_fy_week_seq, type: "INTEGER" }
+        - { name: d_day_name, type: "CHAR(9)" }
+        - { name: d_quarter_name, type: "CHAR(6)" }
+        - { name: d_holiday, type: "CHAR(1)" }
+        - { name: d_weekend, type: "CHAR(1)" }
+        - { name: d_following_holiday, type: "CHAR(1)" }
+        - { name: d_first_dom, type: "INTEGER" }
+        - { name: d_last_dom, type: "INTEGER" }
+        - { name: d_same_day_ly, type: "INTEGER" }
+        - { name: d_same_day_lq, type: "INTEGER" }
+        - { name: d_current_day, type: "CHAR(1)" }
+        - { name: d_current_week, type: "CHAR(1)" }
+        - { name: d_current_month, type: "CHAR(1)" }
+        - { name: d_current_quarter, type: "CHAR(1)" }
+        - { name: d_current_year, type: "CHAR(1)" }
+      primary_key: [d_date_sk]
+
+    - name: household_demographics
+      columns:
+        - { name: hd_demo_sk, type: "INTEGER NOT NULL" }
+        - { name: hd_income_band_sk, type: "INTEGER" }
+        - { name: hd_buy_potential, type: "CHAR(15)" }
+        - { name: hd_dep_count, type: "INTEGER" }
+        - { name: hd_vehicle_count, type: "INTEGER" }
+      primary_key: [hd_demo_sk]
+
+    - name: income_band
+      columns:
+        - { name: ib_income_band_sk, type: "INTEGER NOT NULL" }
+        - { name: ib_lower_bound, type: "INTEGER" }
+        - { name: ib_upper_bound, type: "INTEGER" }
+      primary_key: [ib_income_band_sk]
+
+    - name: item
+      columns:
+        - { name: i_item_sk, type: "INTEGER NOT NULL" }
+        - { name: i_item_id, type: "CHAR(16) NOT NULL" }
+        - { name: i_rec_start_date, type: "DATE" }
+        - { name: i_rec_end_date, type: "DATE" }
+        - { name: i_item_desc, type: "VARCHAR(200)" }
+        - { name: i_current_price, type: "DECIMAL(7,2)" }
+        - { name: i_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: i_brand_id, type: "INTEGER" }
+        - { name: i_brand, type: "CHAR(50)" }
+        - { name: i_class_id, type: "INTEGER" }
+        - { name: i_class, type: "CHAR(50)" }
+        - { name: i_category_id, type: "INTEGER" }
+        - { name: i_category, type: "CHAR(50)" }
+        - { name: i_manufact_id, type: "INTEGER" }
+        - { name: i_manufact, type: "CHAR(50)" }
+        - { name: i_size, type: "CHAR(20)" }
+        - { name: i_formulation, type: "CHAR(20)" }
+        - { name: i_color, type: "CHAR(20)" }
+        - { name: i_units, type: "CHAR(10)" }
+        - { name: i_container, type: "CHAR(10)" }
+        - { name: i_manager_id, type: "INTEGER" }
+        - { name: i_product_name, type: "CHAR(50)" }
+      primary_key: [i_item_sk]
+
+    - name: promotion
+      columns:
+        - { name: p_promo_sk, type: "INTEGER NOT NULL" }
+        - { name: p_promo_id, type: "CHAR(16) NOT NULL" }
+        - { name: p_start_date_sk, type: "INTEGER" }
+        - { name: p_end_date_sk, type: "INTEGER" }
+        - { name: p_item_sk, type: "INTEGER" }
+        - { name: p_cost, type: "DECIMAL(15,2)" }
+        - { name: p_response_target, type: "INTEGER" }
+        - { name: p_promo_name, type: "CHAR(50)" }
+        - { name: p_channel_dmail, type: "CHAR(1)" }
+        - { name: p_channel_email, type: "CHAR(1)" }
+        - { name: p_channel_catalog, type: "CHAR(1)" }
+        - { name: p_channel_tv, type: "CHAR(1)" }
+        - { name: p_channel_radio, type: "CHAR(1)" }
+        - { name: p_channel_press, type: "CHAR(1)" }
+        - { name: p_channel_event, type: "CHAR(1)" }
+        - { name: p_channel_demo, type: "CHAR(1)" }
+        - { name: p_channel_details, type: "VARCHAR(100)" }
+        - { name: p_purpose, type: "CHAR(15)" }
+        - { name: p_discount_active, type: "CHAR(1)" }
+      primary_key: [p_promo_sk]
+
+    - name: reason
+      columns:
+        - { name: r_reason_sk, type: "INTEGER NOT NULL" }
+        - { name: r_reason_id, type: "CHAR(16) NOT NULL" }
+        - { name: r_reason_desc, type: "CHAR(100)" }
+      primary_key: [r_reason_sk]
+
+    - name: ship_mode
+      columns:
+        - { name: sm_ship_mode_sk, type: "INTEGER NOT NULL" }
+        - { name: sm_ship_mode_id, type: "CHAR(16) NOT NULL" }
+        - { name: sm_type, type: "CHAR(30)" }
+        - { name: sm_code, type: "CHAR(10)" }
+        - { name: sm_carrier, type: "CHAR(20)" }
+        - { name: sm_contract, type: "CHAR(20)" }
+      primary_key: [sm_ship_mode_sk]
+
+    - name: store
+      columns:
+        - { name: s_store_sk, type: "INTEGER NOT NULL" }
+        - { name: s_store_id, type: "CHAR(16) NOT NULL" }
+        - { name: s_rec_start_date, type: "DATE" }
+        - { name: s_rec_end_date, type: "DATE" }
+        - { name: s_closed_date_sk, type: "INTEGER" }
+        - { name: s_store_name, type: "VARCHAR(50)" }
+        - { name: s_number_employees, type: "INTEGER" }
+        - { name: s_floor_space, type: "INTEGER" }
+        - { name: s_hours, type: "CHAR(20)" }
+        - { name: s_manager, type: "VARCHAR(40)" }
+        - { name: s_market_id, type: "INTEGER" }
+        - { name: s_geography_class, type: "VARCHAR(100)" }
+        - { name: s_market_desc, type: "VARCHAR(100)" }
+        - { name: s_market_manager, type: "VARCHAR(40)" }
+        - { name: s_division_id, type: "INTEGER" }
+        - { name: s_division_name, type: "VARCHAR(50)" }
+        - { name: s_company_id, type: "INTEGER" }
+        - { name: s_company_name, type: "VARCHAR(50)" }
+        - { name: s_street_number, type: "VARCHAR(10)" }
+        - { name: s_street_name, type: "VARCHAR(60)" }
+        - { name: s_street_type, type: "CHAR(15)" }
+        - { name: s_suite_number, type: "CHAR(10)" }
+        - { name: s_city, type: "VARCHAR(60)" }
+        - { name: s_county, type: "VARCHAR(30)" }
+        - { name: s_state, type: "CHAR(2)" }
+        - { name: s_zip, type: "CHAR(10)" }
+        - { name: s_country, type: "VARCHAR(20)" }
+        - { name: s_gmt_offset, type: "DECIMAL(5,2)" }
+        - { name: s_tax_precentage, type: "DECIMAL(5,2)" }
+      primary_key: [s_store_sk]
+
+    - name: time_dim
+      columns:
+        - { name: t_time_sk, type: "INTEGER NOT NULL" }
+        - { name: t_time_id, type: "CHAR(16) NOT NULL" }
+        - { name: t_time, type: "INTEGER" }
+        - { name: t_hour, type: "INTEGER" }
+        - { name: t_minute, type: "INTEGER" }
+        - { name: t_second, type: "INTEGER" }
+        - { name: t_am_pm, type: "CHAR(2)" }
+        - { name: t_shift, type: "CHAR(20)" }
+        - { name: t_sub_shift, type: "CHAR(20)" }
+        - { name: t_meal_time, type: "CHAR(20)" }
+      primary_key: [t_time_sk]
+
+    - name: warehouse
+      columns:
+        - { name: w_warehouse_sk, type: "INTEGER NOT NULL" }
+        - { name: w_warehouse_id, type: "CHAR(16) NOT NULL" }
+        - { name: w_warehouse_name, type: "VARCHAR(20)" }
+        - { name: w_warehouse_sq_ft, type: "INTEGER" }
+        - { name: w_street_number, type: "CHAR(10)" }
+        - { name: w_street_name, type: "VARCHAR(60)" }
+        - { name: w_street_type, type: "CHAR(15)" }
+        - { name: w_suite_number, type: "CHAR(10)" }
+        - { name: w_city, type: "VARCHAR(60)" }
+        - { name: w_county, type: "VARCHAR(30)" }
+        - { name: w_state, type: "CHAR(2)" }
+        - { name: w_zip, type: "CHAR(10)" }
+        - { name: w_country, type: "VARCHAR(20)" }
+        - { name: w_gmt_offset, type: "DECIMAL(5,2)" }
+      primary_key: [w_warehouse_sk]
+
+    - name: web_page
+      columns:
+        - { name: wp_web_page_sk, type: "INTEGER NOT NULL" }
+        - { name: wp_web_page_id, type: "CHAR(16) NOT NULL" }
+        - { name: wp_rec_start_date, type: "DATE" }
+        - { name: wp_rec_end_date, type: "DATE" }
+        - { name: wp_creation_date_sk, type: "INTEGER" }
+        - { name: wp_access_date_sk, type: "INTEGER" }
+        - { name: wp_autogen_flag, type: "CHAR(1)" }
+        - { name: wp_customer_sk, type: "INTEGER" }
+        - { name: wp_url, type: "VARCHAR(100)" }
+        - { name: wp_type, type: "CHAR(50)" }
+        - { name: wp_char_count, type: "INTEGER" }
+        - { name: wp_link_count, type: "INTEGER" }
+        - { name: wp_image_count, type: "INTEGER" }
+        - { name: wp_max_ad_count, type: "INTEGER" }
+      primary_key: [wp_web_page_sk]
+
+    - name: web_site
+      columns:
+        - { name: web_site_sk, type: "INTEGER NOT NULL" }
+        - { name: web_site_id, type: "CHAR(16) NOT NULL" }
+        - { name: web_rec_start_date, type: "DATE" }
+        - { name: web_rec_end_date, type: "DATE" }
+        - { name: web_name, type: "VARCHAR(50)" }
+        - { name: web_open_date_sk, type: "INTEGER" }
+        - { name: web_close_date_sk, type: "INTEGER" }
+        - { name: web_class, type: "VARCHAR(50)" }
+        - { name: web_manager, type: "VARCHAR(40)" }
+        - { name: web_mkt_id, type: "INTEGER" }
+        - { name: web_mkt_class, type: "VARCHAR(50)" }
+        - { name: web_mkt_desc, type: "VARCHAR(100)" }
+        - { name: web_market_manager, type: "VARCHAR(40)" }
+        - { name: web_company_id, type: "INTEGER" }
+        - { name: web_company_name, type: "CHAR(50)" }
+        - { name: web_street_number, type: "CHAR(10)" }
+        - { name: web_street_name, type: "VARCHAR(60)" }
+        - { name: web_street_type, type: "CHAR(15)" }
+        - { name: web_suite_number, type: "CHAR(10)" }
+        - { name: web_city, type: "VARCHAR(60)" }
+        - { name: web_county, type: "VARCHAR(30)" }
+        - { name: web_state, type: "CHAR(2)" }
+        - { name: web_zip, type: "CHAR(10)" }
+        - { name: web_country, type: "VARCHAR(20)" }
+        - { name: web_gmt_offset, type: "DECIMAL(5,2)" }
+        - { name: web_tax_percentage, type: "DECIMAL(5,2)" }
+      primary_key: [web_site_sk]
+
+    # -----------------------------------------------------------------------
+    # Fact tables (7)
+    # -----------------------------------------------------------------------
+    - name: store_sales
+      columns:
+        - { name: ss_sold_date_sk, type: "INTEGER" }
+        - { name: ss_sold_time_sk, type: "INTEGER" }
+        - { name: ss_item_sk, type: "INTEGER NOT NULL" }
+        - { name: ss_customer_sk, type: "INTEGER" }
+        - { name: ss_cdemo_sk, type: "INTEGER" }
+        - { name: ss_hdemo_sk, type: "INTEGER" }
+        - { name: ss_addr_sk, type: "INTEGER" }
+        - { name: ss_store_sk, type: "INTEGER" }
+        - { name: ss_promo_sk, type: "INTEGER" }
+        - { name: ss_ticket_number, type: "INTEGER NOT NULL" }
+        - { name: ss_quantity, type: "INTEGER" }
+        - { name: ss_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: ss_list_price, type: "DECIMAL(7,2)" }
+        - { name: ss_sales_price, type: "DECIMAL(7,2)" }
+        - { name: ss_ext_discount_amt, type: "DECIMAL(7,2)" }
+        - { name: ss_ext_sales_price, type: "DECIMAL(7,2)" }
+        - { name: ss_ext_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: ss_ext_list_price, type: "DECIMAL(7,2)" }
+        - { name: ss_ext_tax, type: "DECIMAL(7,2)" }
+        - { name: ss_coupon_amt, type: "DECIMAL(7,2)" }
+        - { name: ss_net_paid, type: "DECIMAL(7,2)" }
+        - { name: ss_net_paid_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: ss_net_profit, type: "DECIMAL(7,2)" }
+      primary_key: [ss_item_sk, ss_ticket_number]
+
+    - name: store_returns
+      columns:
+        - { name: sr_returned_date_sk, type: "INTEGER" }
+        - { name: sr_return_time_sk, type: "INTEGER" }
+        - { name: sr_item_sk, type: "INTEGER NOT NULL" }
+        - { name: sr_customer_sk, type: "INTEGER" }
+        - { name: sr_cdemo_sk, type: "INTEGER" }
+        - { name: sr_hdemo_sk, type: "INTEGER" }
+        - { name: sr_addr_sk, type: "INTEGER" }
+        - { name: sr_store_sk, type: "INTEGER" }
+        - { name: sr_reason_sk, type: "INTEGER" }
+        - { name: sr_ticket_number, type: "INTEGER NOT NULL" }
+        - { name: sr_return_quantity, type: "INTEGER" }
+        - { name: sr_return_amt, type: "DECIMAL(7,2)" }
+        - { name: sr_return_tax, type: "DECIMAL(7,2)" }
+        - { name: sr_return_amt_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: sr_fee, type: "DECIMAL(7,2)" }
+        - { name: sr_return_ship_cost, type: "DECIMAL(7,2)" }
+        - { name: sr_refunded_cash, type: "DECIMAL(7,2)" }
+        - { name: sr_reversed_charge, type: "DECIMAL(7,2)" }
+        - { name: sr_store_credit, type: "DECIMAL(7,2)" }
+        - { name: sr_net_loss, type: "DECIMAL(7,2)" }
+      primary_key: [sr_item_sk, sr_ticket_number]
+
+    - name: catalog_sales
+      columns:
+        - { name: cs_sold_date_sk, type: "INTEGER" }
+        - { name: cs_sold_time_sk, type: "INTEGER" }
+        - { name: cs_ship_date_sk, type: "INTEGER" }
+        - { name: cs_bill_customer_sk, type: "INTEGER" }
+        - { name: cs_bill_cdemo_sk, type: "INTEGER" }
+        - { name: cs_bill_hdemo_sk, type: "INTEGER" }
+        - { name: cs_bill_addr_sk, type: "INTEGER" }
+        - { name: cs_ship_customer_sk, type: "INTEGER" }
+        - { name: cs_ship_cdemo_sk, type: "INTEGER" }
+        - { name: cs_ship_hdemo_sk, type: "INTEGER" }
+        - { name: cs_ship_addr_sk, type: "INTEGER" }
+        - { name: cs_call_center_sk, type: "INTEGER" }
+        - { name: cs_catalog_page_sk, type: "INTEGER" }
+        - { name: cs_ship_mode_sk, type: "INTEGER" }
+        - { name: cs_warehouse_sk, type: "INTEGER" }
+        - { name: cs_item_sk, type: "INTEGER NOT NULL" }
+        - { name: cs_promo_sk, type: "INTEGER" }
+        - { name: cs_order_number, type: "INTEGER NOT NULL" }
+        - { name: cs_quantity, type: "INTEGER" }
+        - { name: cs_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: cs_list_price, type: "DECIMAL(7,2)" }
+        - { name: cs_sales_price, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_discount_amt, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_sales_price, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_list_price, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_tax, type: "DECIMAL(7,2)" }
+        - { name: cs_coupon_amt, type: "DECIMAL(7,2)" }
+        - { name: cs_ext_ship_cost, type: "DECIMAL(7,2)" }
+        - { name: cs_net_paid, type: "DECIMAL(7,2)" }
+        - { name: cs_net_paid_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: cs_net_paid_inc_ship, type: "DECIMAL(7,2)" }
+        - { name: cs_net_paid_inc_ship_tax, type: "DECIMAL(7,2)" }
+        - { name: cs_net_profit, type: "DECIMAL(7,2)" }
+      primary_key: [cs_item_sk, cs_order_number]
+
+    - name: catalog_returns
+      columns:
+        - { name: cr_returned_date_sk, type: "INTEGER" }
+        - { name: cr_returned_time_sk, type: "INTEGER" }
+        - { name: cr_item_sk, type: "INTEGER NOT NULL" }
+        - { name: cr_refunded_customer_sk, type: "INTEGER" }
+        - { name: cr_refunded_cdemo_sk, type: "INTEGER" }
+        - { name: cr_refunded_hdemo_sk, type: "INTEGER" }
+        - { name: cr_refunded_addr_sk, type: "INTEGER" }
+        - { name: cr_returning_customer_sk, type: "INTEGER" }
+        - { name: cr_returning_cdemo_sk, type: "INTEGER" }
+        - { name: cr_returning_hdemo_sk, type: "INTEGER" }
+        - { name: cr_returning_addr_sk, type: "INTEGER" }
+        - { name: cr_call_center_sk, type: "INTEGER" }
+        - { name: cr_catalog_page_sk, type: "INTEGER" }
+        - { name: cr_ship_mode_sk, type: "INTEGER" }
+        - { name: cr_warehouse_sk, type: "INTEGER" }
+        - { name: cr_reason_sk, type: "INTEGER" }
+        - { name: cr_order_number, type: "INTEGER NOT NULL" }
+        - { name: cr_return_quantity, type: "INTEGER" }
+        - { name: cr_return_amount, type: "DECIMAL(7,2)" }
+        - { name: cr_return_tax, type: "DECIMAL(7,2)" }
+        - { name: cr_return_amt_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: cr_fee, type: "DECIMAL(7,2)" }
+        - { name: cr_return_ship_cost, type: "DECIMAL(7,2)" }
+        - { name: cr_refunded_cash, type: "DECIMAL(7,2)" }
+        - { name: cr_reversed_charge, type: "DECIMAL(7,2)" }
+        - { name: cr_store_credit, type: "DECIMAL(7,2)" }
+        - { name: cr_net_loss, type: "DECIMAL(7,2)" }
+      primary_key: [cr_item_sk, cr_order_number]
+
+    - name: web_sales
+      columns:
+        - { name: ws_sold_date_sk, type: "INTEGER" }
+        - { name: ws_sold_time_sk, type: "INTEGER" }
+        - { name: ws_ship_date_sk, type: "INTEGER" }
+        - { name: ws_item_sk, type: "INTEGER NOT NULL" }
+        - { name: ws_bill_customer_sk, type: "INTEGER" }
+        - { name: ws_bill_cdemo_sk, type: "INTEGER" }
+        - { name: ws_bill_hdemo_sk, type: "INTEGER" }
+        - { name: ws_bill_addr_sk, type: "INTEGER" }
+        - { name: ws_ship_customer_sk, type: "INTEGER" }
+        - { name: ws_ship_cdemo_sk, type: "INTEGER" }
+        - { name: ws_ship_hdemo_sk, type: "INTEGER" }
+        - { name: ws_ship_addr_sk, type: "INTEGER" }
+        - { name: ws_web_page_sk, type: "INTEGER" }
+        - { name: ws_web_site_sk, type: "INTEGER" }
+        - { name: ws_ship_mode_sk, type: "INTEGER" }
+        - { name: ws_warehouse_sk, type: "INTEGER" }
+        - { name: ws_promo_sk, type: "INTEGER" }
+        - { name: ws_order_number, type: "INTEGER NOT NULL" }
+        - { name: ws_quantity, type: "INTEGER" }
+        - { name: ws_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: ws_list_price, type: "DECIMAL(7,2)" }
+        - { name: ws_sales_price, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_discount_amt, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_sales_price, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_wholesale_cost, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_list_price, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_tax, type: "DECIMAL(7,2)" }
+        - { name: ws_coupon_amt, type: "DECIMAL(7,2)" }
+        - { name: ws_ext_ship_cost, type: "DECIMAL(7,2)" }
+        - { name: ws_net_paid, type: "DECIMAL(7,2)" }
+        - { name: ws_net_paid_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: ws_net_paid_inc_ship, type: "DECIMAL(7,2)" }
+        - { name: ws_net_paid_inc_ship_tax, type: "DECIMAL(7,2)" }
+        - { name: ws_net_profit, type: "DECIMAL(7,2)" }
+      primary_key: [ws_item_sk, ws_order_number]
+
+    - name: web_returns
+      columns:
+        - { name: wr_returned_date_sk, type: "INTEGER" }
+        - { name: wr_returned_time_sk, type: "INTEGER" }
+        - { name: wr_item_sk, type: "INTEGER NOT NULL" }
+        - { name: wr_refunded_customer_sk, type: "INTEGER" }
+        - { name: wr_refunded_cdemo_sk, type: "INTEGER" }
+        - { name: wr_refunded_hdemo_sk, type: "INTEGER" }
+        - { name: wr_refunded_addr_sk, type: "INTEGER" }
+        - { name: wr_returning_customer_sk, type: "INTEGER" }
+        - { name: wr_returning_cdemo_sk, type: "INTEGER" }
+        - { name: wr_returning_hdemo_sk, type: "INTEGER" }
+        - { name: wr_returning_addr_sk, type: "INTEGER" }
+        - { name: wr_web_page_sk, type: "INTEGER" }
+        - { name: wr_reason_sk, type: "INTEGER" }
+        - { name: wr_order_number, type: "INTEGER NOT NULL" }
+        - { name: wr_return_quantity, type: "INTEGER" }
+        - { name: wr_return_amt, type: "DECIMAL(7,2)" }
+        - { name: wr_return_tax, type: "DECIMAL(7,2)" }
+        - { name: wr_return_amt_inc_tax, type: "DECIMAL(7,2)" }
+        - { name: wr_fee, type: "DECIMAL(7,2)" }
+        - { name: wr_return_ship_cost, type: "DECIMAL(7,2)" }
+        - { name: wr_refunded_cash, type: "DECIMAL(7,2)" }
+        - { name: wr_reversed_charge, type: "DECIMAL(7,2)" }
+        - { name: wr_account_credit, type: "DECIMAL(7,2)" }
+        - { name: wr_net_loss, type: "DECIMAL(7,2)" }
+      primary_key: [wr_item_sk, wr_order_number]
+
+    - name: inventory
+      columns:
+        - { name: inv_date_sk, type: "INTEGER NOT NULL" }
+        - { name: inv_item_sk, type: "INTEGER NOT NULL" }
+        - { name: inv_warehouse_sk, type: "INTEGER NOT NULL" }
+        - { name: inv_quantity_on_hand, type: "INTEGER" }
+      primary_key: [inv_date_sk, inv_item_sk, inv_warehouse_sk]
+
+  # -------------------------------------------------------------------------
+  # Foreign keys
+  # -------------------------------------------------------------------------
+  # The full snowflake referential graph. The loader generates every surrogate
+  # key within its dimension's cardinality (dates are Julian-day keys inside
+  # date_dim's calendar; each *_returns line reuses its parent sale's keys), so
+  # all of these validate cleanly after load. Use `init --no-fkey` to skip them.
+  foreign_keys:
+    # ---- dimension -> dimension ----
+    - { name: fk_customer_cdemo,        table: customer,        columns: [c_current_cdemo_sk],   references: { table: customer_demographics, columns: [cd_demo_sk] } }
+    - { name: fk_customer_hdemo,        table: customer,        columns: [c_current_hdemo_sk],   references: { table: household_demographics, columns: [hd_demo_sk] } }
+    - { name: fk_customer_addr,         table: customer,        columns: [c_current_addr_sk],    references: { table: customer_address,      columns: [ca_address_sk] } }
+    - { name: fk_customer_shipto_date,  table: customer,        columns: [c_first_shipto_date_sk], references: { table: date_dim,            columns: [d_date_sk] } }
+    - { name: fk_customer_sales_date,   table: customer,        columns: [c_first_sales_date_sk], references: { table: date_dim,             columns: [d_date_sk] } }
+    - { name: fk_hdemo_income_band,     table: household_demographics, columns: [hd_income_band_sk], references: { table: income_band,        columns: [ib_income_band_sk] } }
+    - { name: fk_store_closed_date,     table: store,           columns: [s_closed_date_sk],     references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_call_center_closed,    table: call_center,     columns: [cc_closed_date_sk],    references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_call_center_open,      table: call_center,     columns: [cc_open_date_sk],      references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_catalog_page_start,    table: catalog_page,    columns: [cp_start_date_sk],     references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_catalog_page_end,      table: catalog_page,    columns: [cp_end_date_sk],       references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_promotion_start,       table: promotion,       columns: [p_start_date_sk],      references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_promotion_end,         table: promotion,       columns: [p_end_date_sk],        references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_promotion_item,        table: promotion,       columns: [p_item_sk],            references: { table: item,                  columns: [i_item_sk] } }
+    - { name: fk_web_page_creation,     table: web_page,        columns: [wp_creation_date_sk],  references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_web_page_access,       table: web_page,        columns: [wp_access_date_sk],    references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_web_page_customer,     table: web_page,        columns: [wp_customer_sk],       references: { table: customer,              columns: [c_customer_sk] } }
+    - { name: fk_web_site_open,         table: web_site,        columns: [web_open_date_sk],     references: { table: date_dim,              columns: [d_date_sk] } }
+    - { name: fk_web_site_close,        table: web_site,        columns: [web_close_date_sk],    references: { table: date_dim,              columns: [d_date_sk] } }
+
+    # ---- store_sales / store_returns ----
+    - { name: fk_ss_sold_date,   table: store_sales, columns: [ss_sold_date_sk], references: { table: date_dim,               columns: [d_date_sk] } }
+    - { name: fk_ss_sold_time,   table: store_sales, columns: [ss_sold_time_sk], references: { table: time_dim,               columns: [t_time_sk] } }
+    - { name: fk_ss_item,        table: store_sales, columns: [ss_item_sk],      references: { table: item,                   columns: [i_item_sk] } }
+    - { name: fk_ss_customer,    table: store_sales, columns: [ss_customer_sk],  references: { table: customer,               columns: [c_customer_sk] } }
+    - { name: fk_ss_cdemo,       table: store_sales, columns: [ss_cdemo_sk],     references: { table: customer_demographics,  columns: [cd_demo_sk] } }
+    - { name: fk_ss_hdemo,       table: store_sales, columns: [ss_hdemo_sk],     references: { table: household_demographics, columns: [hd_demo_sk] } }
+    - { name: fk_ss_addr,        table: store_sales, columns: [ss_addr_sk],      references: { table: customer_address,       columns: [ca_address_sk] } }
+    - { name: fk_ss_store,       table: store_sales, columns: [ss_store_sk],     references: { table: store,                  columns: [s_store_sk] } }
+    - { name: fk_ss_promo,       table: store_sales, columns: [ss_promo_sk],     references: { table: promotion,              columns: [p_promo_sk] } }
+    - { name: fk_sr_returned_date, table: store_returns, columns: [sr_returned_date_sk], references: { table: date_dim,            columns: [d_date_sk] } }
+    - { name: fk_sr_return_time, table: store_returns, columns: [sr_return_time_sk], references: { table: time_dim,              columns: [t_time_sk] } }
+    - { name: fk_sr_customer,    table: store_returns, columns: [sr_customer_sk], references: { table: customer,               columns: [c_customer_sk] } }
+    - { name: fk_sr_cdemo,       table: store_returns, columns: [sr_cdemo_sk],   references: { table: customer_demographics,   columns: [cd_demo_sk] } }
+    - { name: fk_sr_hdemo,       table: store_returns, columns: [sr_hdemo_sk],   references: { table: household_demographics,  columns: [hd_demo_sk] } }
+    - { name: fk_sr_addr,        table: store_returns, columns: [sr_addr_sk],    references: { table: customer_address,        columns: [ca_address_sk] } }
+    - { name: fk_sr_store,       table: store_returns, columns: [sr_store_sk],   references: { table: store,                   columns: [s_store_sk] } }
+    - { name: fk_sr_reason,      table: store_returns, columns: [sr_reason_sk],  references: { table: reason,                  columns: [r_reason_sk] } }
+    - { name: fk_sr_sale,        table: store_returns, columns: [sr_item_sk, sr_ticket_number], references: { table: store_sales, columns: [ss_item_sk, ss_ticket_number] } }
+
+    # ---- catalog_sales / catalog_returns ----
+    - { name: fk_cs_sold_date,   table: catalog_sales, columns: [cs_sold_date_sk],  references: { table: date_dim,               columns: [d_date_sk] } }
+    - { name: fk_cs_sold_time,   table: catalog_sales, columns: [cs_sold_time_sk],  references: { table: time_dim,               columns: [t_time_sk] } }
+    - { name: fk_cs_ship_date,   table: catalog_sales, columns: [cs_ship_date_sk],  references: { table: date_dim,               columns: [d_date_sk] } }
+    - { name: fk_cs_bill_customer, table: catalog_sales, columns: [cs_bill_customer_sk], references: { table: customer,            columns: [c_customer_sk] } }
+    - { name: fk_cs_ship_customer, table: catalog_sales, columns: [cs_ship_customer_sk], references: { table: customer,            columns: [c_customer_sk] } }
+    - { name: fk_cs_call_center, table: catalog_sales, columns: [cs_call_center_sk], references: { table: call_center,            columns: [cc_call_center_sk] } }
+    - { name: fk_cs_catalog_page, table: catalog_sales, columns: [cs_catalog_page_sk], references: { table: catalog_page,          columns: [cp_catalog_page_sk] } }
+    - { name: fk_cs_ship_mode,   table: catalog_sales, columns: [cs_ship_mode_sk],  references: { table: ship_mode,              columns: [sm_ship_mode_sk] } }
+    - { name: fk_cs_warehouse,   table: catalog_sales, columns: [cs_warehouse_sk],  references: { table: warehouse,              columns: [w_warehouse_sk] } }
+    - { name: fk_cs_item,        table: catalog_sales, columns: [cs_item_sk],       references: { table: item,                   columns: [i_item_sk] } }
+    - { name: fk_cs_promo,       table: catalog_sales, columns: [cs_promo_sk],      references: { table: promotion,              columns: [p_promo_sk] } }
+    - { name: fk_cr_returned_date, table: catalog_returns, columns: [cr_returned_date_sk], references: { table: date_dim,          columns: [d_date_sk] } }
+    - { name: fk_cr_item,        table: catalog_returns, columns: [cr_item_sk],     references: { table: item,                   columns: [i_item_sk] } }
+    - { name: fk_cr_call_center, table: catalog_returns, columns: [cr_call_center_sk], references: { table: call_center,          columns: [cc_call_center_sk] } }
+    - { name: fk_cr_warehouse,   table: catalog_returns, columns: [cr_warehouse_sk], references: { table: warehouse,             columns: [w_warehouse_sk] } }
+    - { name: fk_cr_reason,      table: catalog_returns, columns: [cr_reason_sk],   references: { table: reason,                 columns: [r_reason_sk] } }
+    - { name: fk_cr_sale,        table: catalog_returns, columns: [cr_item_sk, cr_order_number], references: { table: catalog_sales, columns: [cs_item_sk, cs_order_number] } }
+
+    # ---- web_sales / web_returns ----
+    - { name: fk_ws_sold_date,   table: web_sales, columns: [ws_sold_date_sk],  references: { table: date_dim,               columns: [d_date_sk] } }
+    - { name: fk_ws_sold_time,   table: web_sales, columns: [ws_sold_time_sk],  references: { table: time_dim,               columns: [t_time_sk] } }
+    - { name: fk_ws_ship_date,   table: web_sales, columns: [ws_ship_date_sk],  references: { table: date_dim,               columns: [d_date_sk] } }
+    - { name: fk_ws_item,        table: web_sales, columns: [ws_item_sk],       references: { table: item,                   columns: [i_item_sk] } }
+    - { name: fk_ws_bill_customer, table: web_sales, columns: [ws_bill_customer_sk], references: { table: customer,            columns: [c_customer_sk] } }
+    - { name: fk_ws_ship_customer, table: web_sales, columns: [ws_ship_customer_sk], references: { table: customer,            columns: [c_customer_sk] } }
+    - { name: fk_ws_web_page,    table: web_sales, columns: [ws_web_page_sk],   references: { table: web_page,               columns: [wp_web_page_sk] } }
+    - { name: fk_ws_web_site,    table: web_sales, columns: [ws_web_site_sk],   references: { table: web_site,               columns: [web_site_sk] } }
+    - { name: fk_ws_ship_mode,   table: web_sales, columns: [ws_ship_mode_sk],  references: { table: ship_mode,              columns: [sm_ship_mode_sk] } }
+    - { name: fk_ws_warehouse,   table: web_sales, columns: [ws_warehouse_sk],  references: { table: warehouse,              columns: [w_warehouse_sk] } }
+    - { name: fk_ws_promo,       table: web_sales, columns: [ws_promo_sk],      references: { table: promotion,              columns: [p_promo_sk] } }
+    - { name: fk_wr_returned_date, table: web_returns, columns: [wr_returned_date_sk], references: { table: date_dim,            columns: [d_date_sk] } }
+    - { name: fk_wr_item,        table: web_returns, columns: [wr_item_sk],     references: { table: item,                   columns: [i_item_sk] } }
+    - { name: fk_wr_web_page,    table: web_returns, columns: [wr_web_page_sk], references: { table: web_page,                columns: [wp_web_page_sk] } }
+    - { name: fk_wr_reason,      table: web_returns, columns: [wr_reason_sk],   references: { table: reason,                 columns: [r_reason_sk] } }
+    - { name: fk_wr_sale,        table: web_returns, columns: [wr_item_sk, wr_order_number], references: { table: web_sales,     columns: [ws_item_sk, ws_order_number] } }
+
+    # ---- inventory ----
+    - { name: fk_inv_date,       table: inventory, columns: [inv_date_sk],      references: { table: date_dim,  columns: [d_date_sk] } }
+    - { name: fk_inv_item,       table: inventory, columns: [inv_item_sk],      references: { table: item,      columns: [i_item_sk] } }
+    - { name: fk_inv_warehouse,  table: inventory, columns: [inv_warehouse_sk], references: { table: warehouse, columns: [w_warehouse_sk] } }
+
+  # -------------------------------------------------------------------------
+  # Secondary indexes
+  # -------------------------------------------------------------------------
+  # Driven by the Q1..Q12 access paths rather than a blanket "index every FK".
+  # Leading-column lookups already served by a primary key (ss_item_sk,
+  # cs_item_sk, ws_item_sk, sr_item_sk, inv_date_sk) are deliberately omitted.
+  indexes:
+    # date_dim is the universal filter (d_year [+ d_moy]) for the star joins.
+    - { name: idx_date_year,        table: date_dim, columns: [d_year] }
+    - { name: idx_date_year_moy,    table: date_dim, columns: [d_year, d_moy] }
+    # item filter columns used by Q1..Q6/Q11.
+    - { name: idx_item_manufact,    table: item, columns: [i_manufact_id] }
+    - { name: idx_item_manager,     table: item, columns: [i_manager_id] }
+    - { name: idx_item_category,    table: item, columns: [i_category] }
+    # fact -> date / customer / store join columns not covered by a PK.
+    - { name: idx_ss_sold_date,     table: store_sales,    columns: [ss_sold_date_sk] }
+    - { name: idx_ss_customer,      table: store_sales,    columns: [ss_customer_sk] }
+    - { name: idx_ss_store,         table: store_sales,    columns: [ss_store_sk] }
+    - { name: idx_cs_sold_date,     table: catalog_sales,  columns: [cs_sold_date_sk] }
+    - { name: idx_cs_call_center,   table: catalog_sales,  columns: [cs_call_center_sk] }
+    - { name: idx_ws_sold_date,     table: web_sales,      columns: [ws_sold_date_sk] }
+    - { name: idx_inv_item,         table: inventory,      columns: [inv_item_sk] }
+    - { name: idx_sr_customer,      table: store_returns,  columns: [sr_customer_sk] }
+    - { name: idx_sr_returned_date, table: store_returns,  columns: [sr_returned_date_sk] }
+    # customer -> address join (Q4/Q5).
+    - { name: idx_customer_addr,    table: customer,       columns: [c_current_addr_sk] }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+# Phase 1: dimension tables only. pre_load_script populates the scale-factor-
+# independent dimensions (fixed cross-products and calendars); load_script
+# populates the SF-scaling dimensions (customer, customer_address, item, and
+# the small "scaling" tables). Fact tables land in a later phase.
+pre_load_script: scripts/tpcds_pre_load.lua
+load_script: scripts/tpcds_load.lua
+
+# ---------------------------------------------------------------------------
+# Query workload
+# ---------------------------------------------------------------------------
+# The query dispatch table is loaded once per thread as a shared module; it
+# defines the global Q[1]..Q[N], and each transaction below runs one Q[n]()
+# via an inline script.
+scripts:
+  modules:
+    - scripts/tpcds_queries.lua
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+# A representative subset of TPC-DS query shapes spanning all three sales
+# channels plus inventory and returns. Each transaction dispatches one query
+# function from the shared table.
+transactions:
+  - { id: 1,  weight: 10, name: "Q1-Store-Brand-Manufact", mode: script, script: "Q[1]()",  description: "Store sales by brand for a manufacturer/month (Q3 shape)" }
+  - { id: 2,  weight: 10, name: "Q2-Store-Category",       mode: script, script: "Q[2]()",  description: "Store sales by category for a manager/month/year (Q42 shape)" }
+  - { id: 3,  weight: 8,  name: "Q3-Store-Brand-Manager",  mode: script, script: "Q[3]()",  description: "Store sales by brand for a manager/month/year (Q52 shape)" }
+  - { id: 4,  weight: 6,  name: "Q4-Brand-Out-Of-Town",    mode: script, script: "Q[4]()",  description: "Brand revenue to out-of-town customers (Q19 shape)" }
+  - { id: 5,  weight: 6,  name: "Q5-States-Above-Avg",     mode: script, script: "Q[5]()",  description: "States buying above-average-priced items (Q6 shape)" }
+  - { id: 6,  weight: 6,  name: "Q6-Demographic-Promo",    mode: script, script: "Q[6]()",  description: "Average sale metrics by item for a demographic/promotion (Q7 shape)" }
+  - { id: 7,  weight: 8,  name: "Q7-Catalog-Call-Center",  mode: script, script: "Q[7]()",  description: "Catalog sales by call center and month" }
+  - { id: 8,  weight: 8,  name: "Q8-Web-Category-Profit",  mode: script, script: "Q[8]()",  description: "Web sales and profit by item category" }
+  - { id: 9,  weight: 6,  name: "Q9-Inventory-QOH",        mode: script, script: "Q[9]()",  description: "Inventory quantity on hand by warehouse and category" }
+  - { id: 10, weight: 8,  name: "Q10-Store-Returns",       mode: script, script: "Q[10]()", description: "Customers ranked by store-return amount" }
+  - { id: 11, weight: 8,  name: "Q11-Category-Sales",      mode: script, script: "Q[11]()", description: "Store sales for a single category" }
+  - { id: 12, weight: 4,  name: "Q12-Cross-Channel",       mode: script, script: "Q[12]()", description: "Total extended sales price per channel (cross-channel)" }
