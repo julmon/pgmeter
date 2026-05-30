@@ -40,7 +40,7 @@ if y <= 60 then
     c_last = gen_last(rand_int(1, 1000))
 end
 
-begin_tx()
+begin()
 
 -- Update warehouse year-to-date
 local w_rows = query(

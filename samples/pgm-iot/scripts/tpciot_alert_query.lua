@@ -3,7 +3,7 @@
 
 local substation_id = rand_int(min_id, max_id)
 
-begin_tx()
+begin()
 
 -- Get unacknowledged alerts
 local rows = query(

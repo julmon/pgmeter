@@ -39,7 +39,7 @@ for ol_number = 1, ol_cnt do
     table.insert(order_lines, {ol_number, ol_supply_w_id, ol_quantity, ol_i_id})
 end
 
-begin_tx()
+begin()
 
 -- Get warehouse tax
 query("SELECT w_tax FROM warehouse WHERE w_id = $1", warehouse_id)

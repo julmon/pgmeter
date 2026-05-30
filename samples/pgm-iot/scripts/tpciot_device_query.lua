@@ -5,7 +5,7 @@ local substation_id = rand_int(min_id, max_id)
 local sensor_base = (substation_id - 1) * const.sensors_per_substation
 local sensor_id = sensor_base + rand_int(1, const.sensors_per_substation)
 
-begin_tx()
+begin()
 
 -- Get sensor details
 query(

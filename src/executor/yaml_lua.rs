@@ -95,15 +95,15 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
     })?;
     lua.globals().set("rand_float", rand_float)?;
 
-    // Register begin_tx()
-    let begin_tx = lua.create_function(|_, ()| {
+    // Register begin()
+    let begin = lua.create_function(|_, ()| {
         with_client(|client| {
             client
                 .batch_execute("BEGIN")
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))
         })
     })?;
-    lua.globals().set("begin_tx", begin_tx)?;
+    lua.globals().set("begin", begin)?;
 
     // Register commit()
     let commit = lua.create_function(|_, ()| {

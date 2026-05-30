@@ -3,7 +3,7 @@
 
 local substation_id = rand_int(min_id, max_id)
 
-begin_tx()
+begin()
 
 query(
     "SELECT m_sn_id, AVG(m_value), MIN(m_value), MAX(m_value), COUNT(*) "

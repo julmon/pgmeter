@@ -19,7 +19,7 @@ local last_reading = values[#values]
 local create_alert = rand_int(1, 100) <= 10
 local alert_value = rand_float(150.0, 200.0)
 
-begin_tx()
+begin()
 
 -- Bulk insert using UNNEST
 exec(

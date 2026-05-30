@@ -4,7 +4,7 @@
 local warehouse_id = rand_int(min_id, max_id)
 local carrier_id = rand_int(1, 10)
 
-begin_tx()
+begin()
 
 for district_id = 1, 10 do
     -- Find oldest undelivered order

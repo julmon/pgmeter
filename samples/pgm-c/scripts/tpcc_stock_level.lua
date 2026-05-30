@@ -5,7 +5,7 @@ local warehouse_id = rand_int(min_id, max_id)
 local district_id = rand_int(1, 10)
 local threshold = rand_int(10, 20)
 
-begin_tx()
+begin()
 
 -- Get next order id for this district
 local next_o_id = query_one(

@@ -16,7 +16,7 @@ local function gen_last(n)
         .. syllables[tonumber(string.sub(s, 3, 3)) + 1]
 end
 
-begin_tx()
+begin()
 
 -- Customer lookup: 60% by last name, 40% by ID
 if y <= 60 then

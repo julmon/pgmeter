@@ -8,7 +8,7 @@ local sensor_id = sensor_base + rand_int(1, const.sensors_per_substation)
 local min_threshold = rand_float(10.0, 50.0)
 local max_threshold = rand_float(150.0, 200.0)
 
-begin_tx()
+begin()
 
 exec(
     "UPDATE sensor SET sn_min_threshold = $1, sn_max_threshold = $2 WHERE sn_id = $3",
