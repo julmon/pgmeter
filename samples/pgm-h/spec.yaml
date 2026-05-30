@@ -157,17 +157,17 @@ schema:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-pre_load_script: scripts/tpch_pre_load.lua
-load_script: scripts/tpch_load.lua
+pre_load_script: scripts/pgmh_pre_load.lua
+load_script: scripts/pgmh_load.lua
 
 # ---------------------------------------------------------------------------
 # Shared Lua modules
 # ---------------------------------------------------------------------------
-# The query dispatch table (Q[1]..Q[22]) is defined in tpch_queries.lua
+# The query dispatch table (Q[1]..Q[22]) is defined in pgmh_queries.lua
 # and loaded once per thread before any transaction executes.
 scripts:
   modules:
-    - scripts/tpch_queries.lua
+    - scripts/pgmh_queries.lua
 
 # ---------------------------------------------------------------------------
 # Transactions (workload)

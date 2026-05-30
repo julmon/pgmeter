@@ -3,7 +3,7 @@
 # All 24 tables (7 fact + 17 dimension) with columns, primary keys, the full
 # snowflake foreign-key graph, and workload-driven secondary indexes; data
 # generation (pre_load_script / load_script) for the dimensions and fact tables;
-# and a representative query workload (scripts/tpcds_queries.lua + the
+# and a representative query workload (scripts/pgmds_queries.lua + the
 # transactions below).
 #
 # PGM-DS is an open workload DERIVED FROM the TPC-DS specification. It is not an
@@ -698,8 +698,8 @@ schema:
 # independent dimensions (fixed cross-products and calendars); load_script
 # populates the SF-scaling dimensions (customer, customer_address, item, and
 # the small "scaling" tables). Fact tables land in a later phase.
-pre_load_script: scripts/tpcds_pre_load.lua
-load_script: scripts/tpcds_load.lua
+pre_load_script: scripts/pgmds_pre_load.lua
+load_script: scripts/pgmds_load.lua
 
 # ---------------------------------------------------------------------------
 # Query workload
@@ -709,7 +709,7 @@ load_script: scripts/tpcds_load.lua
 # via an inline script.
 scripts:
   modules:
-    - scripts/tpcds_queries.lua
+    - scripts/pgmds_queries.lua
 
 # ---------------------------------------------------------------------------
 # Transactions (workload)

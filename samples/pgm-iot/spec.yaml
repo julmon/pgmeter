@@ -116,7 +116,7 @@ schema:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-load_script: scripts/tpciot_load.lua
+load_script: scripts/pgmiot_load.lua
 
 # ---------------------------------------------------------------------------
 # Transactions (workload)
@@ -127,32 +127,32 @@ transactions:
     weight: 70
     description: Bulk insert of sensor measurements
     mode: script
-    script_file: scripts/tpciot_data_ingestion.lua
+    script_file: scripts/pgmiot_data_ingestion.lua
 
   - id: 2
     name: Scan-Query
     weight: 10
     description: Time-range aggregation query
     mode: script
-    script_file: scripts/tpciot_scan_query.lua
+    script_file: scripts/pgmiot_scan_query.lua
 
   - id: 3
     name: Device-Query
     weight: 10
     description: Single sensor data retrieval
     mode: script
-    script_file: scripts/tpciot_device_query.lua
+    script_file: scripts/pgmiot_device_query.lua
 
   - id: 4
     name: Alert-Query
     weight: 5
     description: Alert status query
     mode: script
-    script_file: scripts/tpciot_alert_query.lua
+    script_file: scripts/pgmiot_alert_query.lua
 
   - id: 5
     name: Threshold-Update
     weight: 5
     description: Sensor threshold configuration update
     mode: script
-    script_file: scripts/tpciot_threshold_update.lua
+    script_file: scripts/pgmiot_threshold_update.lua

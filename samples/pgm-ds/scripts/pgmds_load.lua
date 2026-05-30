@@ -33,7 +33,7 @@
 -- a real sale line without reading anything back from the database.
 --
 -- Surrogate-key references (cdemo/hdemo/addr/date) point into the dimensions
--- created by tpcds_pre_load.lua. Date references use date_sk = Julian Day Number
+-- created by pgmds_pre_load.lua. Date references use date_sk = Julian Day Number
 -- (the same convention date_dim uses), within the years below.
 
 local SF = scalefactor

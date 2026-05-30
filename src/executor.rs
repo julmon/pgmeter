@@ -821,7 +821,7 @@ impl Executor {
         let transactions = self.get_benchmark(0, 0, 0)
             .get_transactions_rw();
 
-        match data_agg::aggregate_tpcc_data(LOG_FILE, &self.target_dir, &transactions) {
+        match data_agg::aggregate_transaction_data(LOG_FILE, &self.target_dir, &transactions) {
             Ok(_) => (),
             Err(error) => {
                 terminal::err_msg(error_detail(error.as_ref()).as_str());

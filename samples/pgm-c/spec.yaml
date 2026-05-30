@@ -178,9 +178,9 @@ schema:
 # Data loading
 # ---------------------------------------------------------------------------
 # Pre-load: populate the item table (100K rows, shared across all warehouses)
-pre_load_script: scripts/tpcc_pre_load.lua
+pre_load_script: scripts/pgmc_pre_load.lua
 # Per-warehouse loading: warehouse, district, customer, history, stock, orders, new_order, order_line
-load_script: scripts/tpcc_load.lua
+load_script: scripts/pgmc_load.lua
 
 # ---------------------------------------------------------------------------
 # Transactions (workload)
@@ -192,32 +192,32 @@ transactions:
     weight: 4
     description: The Delivery transaction
     mode: script
-    script_file: scripts/tpcc_delivery.lua
+    script_file: scripts/pgmc_delivery.lua
 
   - id: 2
     name: New-Order
     weight: 45
     description: The New-Order transaction
     mode: script
-    script_file: scripts/tpcc_new_order.lua
+    script_file: scripts/pgmc_new_order.lua
 
   - id: 3
     name: Payment
     weight: 43
     description: The Payment transaction
     mode: script
-    script_file: scripts/tpcc_payment.lua
+    script_file: scripts/pgmc_payment.lua
 
   - id: 4
     name: Order-Status
     weight: 4
     description: The Order-Status transaction
     mode: script
-    script_file: scripts/tpcc_order_status.lua
+    script_file: scripts/pgmc_order_status.lua
 
   - id: 5
     name: Stock-Level
     weight: 4
     description: The Stock-Level transaction
     mode: script
-    script_file: scripts/tpcc_stock_level.lua
+    script_file: scripts/pgmc_stock_level.lua

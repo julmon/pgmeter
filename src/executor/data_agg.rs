@@ -38,7 +38,7 @@ fn safe_name(name: &str) -> String {
 }
 
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
-pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn aggregate_transaction_data(log_file: &str, target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>) -> Result<(), Box<dyn std::error::Error>> {
     // Transaction log file parsing
     let df = LazyCsvReader::new(target_dir.join(log_file))
         .with_delimiter(b' ')
