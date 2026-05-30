@@ -80,10 +80,10 @@ Initialize and run it:
 
 ```bash
 # load 1000 accounts (scale factor 1000)
-pgmeter -H localhost -d benchmark init yaml --spec my-bench.yaml -s 1000 -j 4
+pgmeter -H localhost -d benchmark init --spec my-bench.yaml -s 1000 -j 4
 
 # run 8 clients for 60s with a 10s ramp-up
-pgmeter -H localhost -d benchmark run yaml --spec my-bench.yaml -c 8 -T 60 -r 10
+pgmeter -H localhost -d benchmark run --spec my-bench.yaml -c 8 -T 60 -r 10
 ```
 
 That is the whole loop: define schema + how to fill it + what queries to run,
@@ -93,8 +93,11 @@ then `init` and `run`.
 
 ## 2. Command-line usage
 
-The YAML driver is exposed as the `yaml` subcommand under both `init` and `run`.
-The connection options are shared with all other pgmeter commands.
+A benchmark is driven by the `init` and `run` subcommands, each taking the spec
+via `--spec`. The connection options are shared with all other pgmeter commands.
+
+`--spec` accepts either a benchmark **directory** (containing a `spec.yaml`, like
+the bundled workloads under `samples/`) or a single spec file.
 
 ### Connection options (global, before the subcommand)
 
@@ -107,10 +110,10 @@ The connection options are shared with all other pgmeter commands.
 
 The password is taken from `PGPASSWORD`.
 
-### `init yaml`
+### `init`
 
 ```bash
-pgmeter [conn opts] init yaml --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
+pgmeter [conn opts] init --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
 ```
 
 | Option | Default | Description |
@@ -121,10 +124,10 @@ pgmeter [conn opts] init yaml --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--pos
 | `--no-fkey` | false | Skip foreign-key creation |
 | `--post-create-table` | — | Extra SQL file executed after table creation |
 
-### `run yaml`
+### `run`
 
 ```bash
-pgmeter [conn opts] run yaml --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [--min-id <N>] [--max-id <N>]
+pgmeter [conn opts] run --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [-P <N>] [--format <FMT>] [-q]
 ```
 
 | Option | Default | Description |
@@ -133,8 +136,9 @@ pgmeter [conn opts] run yaml --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [--min-id 
 | `-c, --client` | 1 | Concurrent clients |
 | `-T, --time` | 1 | Benchmark duration (seconds) |
 | `-r, --rampup` | 0 | Ramp-up period (clients start gradually) |
-| `--min-id` | 1 | Lowest scale-unit id to target |
-| `--max-id` | 0 | Highest id to target (0 = auto-detect via `max_id_query`) |
+| `-P, --progress` | 0 | Print live progress every N seconds (0 disables) |
+| `--format` | table | Results output format: `table`, `json`, or `csv` |
+| `-q, --quiet` | false | Suppress progress output; print only result data |
 
 > **Use the same `--spec` file for `init` and `run`.** The spec is the single
 > source of truth for both the schema and the workload.
@@ -180,7 +184,7 @@ scaling:
 | Field | Required | Meaning |
 |-------|----------|---------|
 | `unit` | no | A human label for the scale-factor entity (e.g. `branch`, `warehouse`). **Descriptive only** — it is not used by the engine. |
-| `max_id_query` | yes | SQL returning a single integer: the largest scale-unit id present. Used at run time when `--max-id 0` (auto-detect). Must return an `int`. |
+| `max_id_query` | yes | SQL returning a single integer: the largest scale-unit id present. Run once at the start of each `run` to set `max_id`. Must return an `int`. |
 | `constants` | no | Scalar values (number / string / bool) exposed to expressions and scripts as `const.<name>`. |
 
 ### The scale-factor model
@@ -204,8 +208,8 @@ templates, and scripts:
 
 | Variable | Available in | Value |
 |----------|-------------|-------|
-| `min_id` | bindings, templates, scripts | from `--min-id` (default 1) |
-| `max_id` | bindings, templates, scripts | from `--max-id`, or auto-detected at run time |
+| `min_id` | bindings, templates, scripts | always `1` |
+| `max_id` | bindings, templates, scripts | auto-detected at the start of each run via `max_id_query` |
 | `scalefactor` | **loading only** | from `-s` at init time. **`0` during a run** — do not rely on it in transactions. |
 | `const.<name>` | everywhere | values from `scaling.constants` |
 | `ids` | load scripts only | array of unit ids assigned to the current job |
@@ -507,7 +511,7 @@ Best for multi-statement transactions with control flow, reads that feed writes,
 conditional rollback, etc. The Lua source (inline `script` or `script_file`)
 becomes the transaction body and runs with the full [Lua API](#9-the-lua-api-reference).
 
-You manage the transaction boundary explicitly with `begin_tx()` / `commit()` /
+You manage the transaction boundary explicitly with `begin()` / `commit()` /
 `rollback()`, and use `query`/`query_one`/`exec` for SQL.
 
 ```lua
@@ -515,7 +519,7 @@ You manage the transaction boundary explicitly with `begin_tx()` / `commit()` /
 local w_id = rand_int(min_id, max_id)
 local d_id = rand_int(1, 10)
 
-begin_tx()
+begin()
 
 local d = query(
   "UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_w_id = $1 AND d_id = $2 RETURNING d_next_o_id",
@@ -636,11 +640,11 @@ local total = query_one("SELECT count(*) FROM orders WHERE o_c_id = $1", cid)  -
 
 | Function | SQL issued |
 |----------|-----------|
-| `begin_tx()` | `BEGIN` |
+| `begin()` | `BEGIN` |
 | `commit()` | `COMMIT` |
 | `rollback()` | `ROLLBACK` |
 
-A `script` transaction that should be atomic must call `begin_tx()` at the start
+A `script` transaction that should be atomic must call `begin()` at the start
 and `commit()` at the end. To abort, call `rollback()`.
 
 ### 9.6 Error handling
@@ -686,7 +690,7 @@ copy_end()
 
 ## 10. The init lifecycle
 
-`init yaml` performs these steps in order (you can see each in the console
+`init` performs these steps in order (you can see each in the console
 output):
 
 1. **Database DDLs** — `pre_ddls`, then `DROP/CREATE TABLE` for every table
@@ -810,7 +814,7 @@ local ws = rand_int(min_id, max_id)
 local slug = rand_string(6, 10)
 local target = "https://example.com/" .. rand_string(8, 20)
 
-begin_tx()
+begin()
 -- next id = current max + 1 (simple approach for the example)
 local next_id = (query_one("SELECT COALESCE(MAX(id), 0) FROM link") or 0) + 1
 exec("INSERT INTO link (id, workspace_id, slug, target) VALUES ($1, $2, $3, $4)",
@@ -821,8 +825,8 @@ commit()
 ### Step 4 — run it
 
 ```bash
-pgmeter -d benchmark init yaml --spec linkshortener.yaml -s 500 -j 4
-pgmeter -d benchmark run  yaml --spec linkshortener.yaml -c 16 -T 120 -r 15
+pgmeter -d benchmark init --spec linkshortener.yaml -s 500 -j 4
+pgmeter -d benchmark run  --spec linkshortener.yaml -c 16 -T 120 -r 15
 ```
 
 That's a complete, original benchmark — no Rust, no recompile.
@@ -926,7 +930,7 @@ rand_string(min_len, max_len)      -> string
 rand_strings(count, min_len, max_len) -> array
 
 -- transactions
-begin_tx()   commit()   rollback()
+begin()   commit()   rollback()
 
 -- SQL (simple protocol; params -> $1,$2,... as literals)
 exec(sql, ...params)               -> nil
