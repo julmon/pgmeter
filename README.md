@@ -112,6 +112,9 @@ It includes a worked from-scratch example.
 | `-c, --client` | 1 | Number of concurrent database clients |
 | `-T, --time` | 1 | Duration of benchmark in seconds |
 | `-r, --rampup` | 0 | Ramp-up period in seconds (clients start gradually) |
+| `-P, --progress` | 0 | Print live progress every N seconds (0 disables) |
+| `--format` | table | Results output format: `table`, `json`, or `csv` |
+| `-q, --quiet` | false | Suppress progress output; print only result data |
 
 ## Example Workflow
 
