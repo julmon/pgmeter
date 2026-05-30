@@ -1,8 +1,8 @@
-# pgmtr
+# pgmeter
 
-A next-generation PostgreSQL benchmarking tool written in Rust. pgmtr runs
+A next-generation PostgreSQL benchmarking tool written in Rust. pgmeter runs
 **user-defined benchmarks described in YAML + Lua**: you declare your schema,
-data loading, and transaction mix in a spec file, and pgmtr initializes the
+data loading, and transaction mix in a spec file, and pgmeter initializes the
 database and drives the workload — no Rust code or recompilation required.
 
 Reference workloads (PGM-B, PGM-C, PGM-H, PGM-DS, PGM-IoT) ship as ready-to-run
@@ -40,11 +40,11 @@ cd pg_meter
 cargo build --release
 ```
 
-The binary will be available at `target/release/pgmtr`.
+The binary will be available at `target/release/pgmeter`.
 
 ## Usage
 
-pgmtr uses PostgreSQL connection parameters similar to standard PostgreSQL tools
+pgmeter uses PostgreSQL connection parameters similar to standard PostgreSQL tools
 (psql, pgbench). Every workload is driven by a YAML spec passed with `--spec`.
 
 ### Connection Options
@@ -65,10 +65,10 @@ workload:
 
 ```bash
 # 1. Initialize: create schema and load data (scale factor 10, 4 loader threads)
-pgmtr -H localhost -d benchmark init --spec samples/pgm-b -s 10 -j 4
+pgmeter -H localhost -d benchmark init --spec samples/pgm-b -s 10 -j 4
 
 # 2. Run: 8 clients for 60 seconds with a 10 second ramp-up
-pgmtr -H localhost -d benchmark run --spec samples/pgm-b -c 8 -T 60 -r 10
+pgmeter -H localhost -d benchmark run --spec samples/pgm-b -c 8 -T 60 -r 10
 ```
 
 Swap the `--spec` file to run a different workload — the same `init`/`run` flow
@@ -123,28 +123,28 @@ export PGPASSWORD='your_password'
 psql -h localhost -U postgres -c "CREATE DATABASE benchmark;"
 
 # Initialize PGM-C with 5 warehouses using 4 loader threads
-pgmtr -H localhost -U postgres -d benchmark init --spec samples/pgm-c -s 5 -j 4
+pgmeter -H localhost -U postgres -d benchmark init --spec samples/pgm-c -s 5 -j 4
 
 # Run a 5-minute benchmark with 10 clients and a 30 second ramp-up
-pgmtr -H localhost -U postgres -d benchmark run --spec samples/pgm-c -c 10 -T 300 -r 30
+pgmeter -H localhost -U postgres -d benchmark run --spec samples/pgm-c -c 10 -T 300 -r 30
 ```
 
 ## Output
 
 ### Results Directory
 
-Each benchmark run creates a timestamped directory (e.g., `pgmtr-2024-01-15T10:30:00/`) containing:
+Each benchmark run creates a timestamped directory (e.g., `pgmeter-2024-01-15T10:30:00/`) containing:
 
 - `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
 - `transaction.log` - Raw transaction data (timestamp, client, transaction type, response time)
 - `error.log` - Error details for failed transactions
-- `pgmtr-tpm-*.csv` - Transactions per minute over time for each transaction type
-- `pgmtr-response-time-*.csv` - Response times over time
-- `pgmtr-stats-*.csv` - Statistical summary (mean, std, min, max, percentiles)
+- `pgmeter-tpm-*.csv` - Transactions per minute over time for each transaction type
+- `pgmeter-response-time-*.csv` - Response times over time
+- `pgmeter-stats-*.csv` - Statistical summary (mean, std, min, max, percentiles)
 
 ### Console Output
 
-After benchmark completion, pgmtr displays:
+After benchmark completion, pgmeter displays:
 
 **Results Summary**
 - Transaction name
@@ -208,7 +208,7 @@ docs/yaml-benchmarks.md        # Benchmark authoring guide
 
 ## Trademark notice
 
-pgmtr ships workloads (PGM-B, PGM-C, PGM-H, PGM-DS, PGM-IoT) **derived from** the
+pgmeter ships workloads (PGM-B, PGM-C, PGM-H, PGM-DS, PGM-IoT) **derived from** the
 corresponding TPC and TPCx benchmark specifications. They implement a
 representative subset of each specification for relative comparison (for
 example, comparing two table access methods under the same workload). **They are

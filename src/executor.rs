@@ -100,7 +100,7 @@ pub fn get_target_dir_path() -> PathBuf {
          }
     };
     let now: DateTime<Utc> = Utc::now();
-    let target_dir_path = current_dir.join(format!("pgmtr-{}", now.format("%Y-%m-%dT%H:%M:%S")));
+    let target_dir_path = current_dir.join(format!("pgmeter-{}", now.format("%Y-%m-%dT%H:%M:%S")));
 
     target_dir_path
 }
@@ -227,7 +227,7 @@ impl Executor {
         let spec_name = self.get_benchmark(0, 0, 0).spec.name.clone();
         let started: DateTime<Utc> = Utc::now();
         eprintln!();
-        eprintln!("pgmtr {} - {}", env!("CARGO_PKG_VERSION"), spec_name);
+        eprintln!("pgmeter {} - {}", env!("CARGO_PKG_VERSION"), spec_name);
         eprintln!("  spec:     {}", self.spec_file);
         eprintln!("  target:   {}", redact_dsn(&self.dsn));
         eprintln!("  clients:  {}", args.client);

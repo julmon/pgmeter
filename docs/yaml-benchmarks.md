@@ -1,9 +1,9 @@
 # Writing Benchmarks in YAML + Lua
 
-pgmtr can run a complete benchmark — schema, data loading, and the transaction
+pgmeter can run a complete benchmark — schema, data loading, and the transaction
 workload — entirely from a YAML specification file, with Lua for any logic that
 is too dynamic to express declaratively. You do **not** need to modify or
-recompile pgmtr to add a new benchmark.
+recompile pgmeter to add a new benchmark.
 
 This document is the complete reference for benchmark authors. It covers every
 field of the spec file, the row-template mini-language, the binding mechanism,
@@ -80,10 +80,10 @@ Initialize and run it:
 
 ```bash
 # load 1000 accounts (scale factor 1000)
-pgmtr -H localhost -d benchmark init yaml --spec my-bench.yaml -s 1000 -j 4
+pgmeter -H localhost -d benchmark init yaml --spec my-bench.yaml -s 1000 -j 4
 
 # run 8 clients for 60s with a 10s ramp-up
-pgmtr -H localhost -d benchmark run yaml --spec my-bench.yaml -c 8 -T 60 -r 10
+pgmeter -H localhost -d benchmark run yaml --spec my-bench.yaml -c 8 -T 60 -r 10
 ```
 
 That is the whole loop: define schema + how to fill it + what queries to run,
@@ -94,7 +94,7 @@ then `init` and `run`.
 ## 2. Command-line usage
 
 The YAML driver is exposed as the `yaml` subcommand under both `init` and `run`.
-The connection options are shared with all other pgmtr commands.
+The connection options are shared with all other pgmeter commands.
 
 ### Connection options (global, before the subcommand)
 
@@ -110,7 +110,7 @@ The password is taken from `PGPASSWORD`.
 ### `init yaml`
 
 ```bash
-pgmtr [conn opts] init yaml --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
+pgmeter [conn opts] init yaml --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
 ```
 
 | Option | Default | Description |
@@ -124,7 +124,7 @@ pgmtr [conn opts] init yaml --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-
 ### `run yaml`
 
 ```bash
-pgmtr [conn opts] run yaml --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [--min-id <N>] [--max-id <N>]
+pgmeter [conn opts] run yaml --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [--min-id <N>] [--max-id <N>]
 ```
 
 | Option | Default | Description |
@@ -185,7 +185,7 @@ scaling:
 
 ### The scale-factor model
 
-pgmtr loads `-s N` **units**, numbered `1..N`. The unit id is the partitioning
+pgmeter loads `-s N` **units**, numbered `1..N`. The unit id is the partitioning
 key for everything:
 
 - During loading, each unit id (`id`) is processed once, and you generate the
@@ -645,7 +645,7 @@ and `commit()` at the end. To abort, call `rollback()`.
 
 ### 9.6 Error handling
 
-Raising a Lua error (via `error("...")`) aborts the current transaction; pgmtr
+Raising a Lua error (via `error("...")`) aborts the current transaction; pgmeter
 records it as an **error** in the results (the per-transaction error count and
 rate). The standard pattern for an intentional abort is to roll back first, then
 error:
@@ -821,8 +821,8 @@ commit()
 ### Step 4 — run it
 
 ```bash
-pgmtr -d benchmark init yaml --spec linkshortener.yaml -s 500 -j 4
-pgmtr -d benchmark run  yaml --spec linkshortener.yaml -c 16 -T 120 -r 15
+pgmeter -d benchmark init yaml --spec linkshortener.yaml -s 500 -j 4
+pgmeter -d benchmark run  yaml --spec linkshortener.yaml -c 16 -T 120 -r 15
 ```
 
 That's a complete, original benchmark — no Rust, no recompile.

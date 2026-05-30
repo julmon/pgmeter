@@ -67,21 +67,21 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
                 Series::new("time_s", Vec::<i64>::new()),
                 Series::new("tpm", Vec::<i64>::new()),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", safe)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-tpm-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_tpm.clone())?;
 
             let empty_rt = DataFrame::new(vec![
                 Series::new("time_s", Vec::<i64>::new()),
                 Series::new("response_time_ms", Vec::<f64>::new()),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", safe)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-response-time-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_rt.clone())?;
 
             let empty_stats = DataFrame::new(vec![
                 Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
                 Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
             ])?;
-            let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", safe)))?;
+            let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-stats-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_stats.clone())?;
 
             continue;
@@ -102,7 +102,7 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
             .collect()?;
 
         // Save data as a CSV file
-        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-tpm-{}.csv", safe)))?;
+        let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-tpm-{}.csv", safe)))?;
         CsvWriter::new(&mut file).finish(&mut tpm_df)?;
 
         // Calculate the average (mean) response time over a period of time
@@ -140,10 +140,10 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
         };
 
         // Save data as a CSV file
-        let mut file = std::fs::File::create(target_dir.join(format!("pgmtr-response-time-{}.csv", safe)))?;
+        let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-response-time-{}.csv", safe)))?;
         CsvWriter::new(&mut file).finish(&mut response_time_df)?;
         // Save statistics
-        let mut file_stats = std::fs::File::create(target_dir.join(format!("pgmtr-stats-{}.csv", safe)))?;
+        let mut file_stats = std::fs::File::create(target_dir.join(format!("pgmeter-stats-{}.csv", safe)))?;
         CsvWriter::new(&mut file_stats).finish(&mut stats)?;
     }
 
@@ -161,7 +161,7 @@ pub fn aggregate_tpcc_data(log_file: &str, target_dir: &PathBuf, transactions: &
         .collect()?;
 
     // Save data as a CSV file
-    let mut file = std::fs::File::create(target_dir.join("pgmtr-tpm-all.csv"))?;
+    let mut file = std::fs::File::create(target_dir.join("pgmeter-tpm-all.csv"))?;
     CsvWriter::new(&mut file).finish(&mut tpm_all_df)?;
 
     Ok(())
@@ -185,7 +185,7 @@ pub fn get_stats(target_dir: &PathBuf, transactions: &Vec<BenchmarkTransaction>)
             percentile_99: 0.0,
         };
 
-        let stats_file = target_dir.join(format!("pgmtr-stats-{}.csv", safe));
+        let stats_file = target_dir.join(format!("pgmeter-stats-{}.csv", safe));
 
         // Check if stats file exists and has data
         if !stats_file.exists() {
@@ -478,11 +478,11 @@ mod tests {
 
     #[test]
     fn get_stats_reads_csv_and_defaults_when_missing() {
-        let dir = std::env::temp_dir().join(format!("pgmtr-stats-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pgmeter-stats-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // safe_name("tx/one") == "tx_one" -> file must use the sanitized name.
-        let mut f = File::create(dir.join("pgmtr-stats-tx_one.csv")).unwrap();
+        let mut f = File::create(dir.join("pgmeter-stats-tx_one.csv")).unwrap();
         writeln!(f, "describe,response_time_ms").unwrap();
         writeln!(f, "mean,1.5").unwrap();
         writeln!(f, "std,0.5").unwrap();

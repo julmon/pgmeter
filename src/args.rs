@@ -353,7 +353,7 @@ impl PgMtrArgs {
             .subcommand(spec_list);
 
         // Basic app information
-        let cmd = Command::new("pgmtr")
+        let cmd = Command::new("pgmeter")
             .version(env!("CARGO_PKG_VERSION"))
             .color(ColorChoice::Auto)
             .about("Postgres new generation benchmarking tool")
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn lookup_returns_first_matching_entry() {
-        let path = std::env::temp_dir().join(format!("pgmtr-pgpass-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("pgmeter-pgpass-{}", std::process::id()));
         {
             let mut f = File::create(&path).unwrap();
             writeln!(f, "# comment").unwrap();
