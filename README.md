@@ -166,7 +166,14 @@ After benchmark completion, pgmeter displays:
 
 Every `run` also writes a `report.html` into the results directory. It is fully
 self-contained (charts library inlined, no network required) — just open it in a
-browser. It includes:
+browser.
+
+**▶ [View a live sample report](https://julmon.github.io/pgmeter/sample-report.html)**
+(a PGM-C run: 10 warehouses, 8 clients for 60s) — hover the charts, toggle dark/light.
+
+![pgmeter HTML report — charts](docs/images/report-charts.png)
+
+It includes:
 
 - Environment header: benchmark name/description, PostgreSQL version and key
   server settings (`shared_buffers`, `work_mem`, `max_wal_size`,
@@ -175,6 +182,13 @@ browser. It includes:
 - Per-transaction results table.
 - Charts: throughput over time, latency over time, response-time percentiles,
   response-time distribution, committed transaction mix, and errors over time.
+
+<details>
+<summary>Full report screenshot</summary>
+
+![pgmeter HTML report — full page](docs/images/report-overview.png)
+
+</details>
 
 ## Development
 
