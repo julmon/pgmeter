@@ -1,4 +1,4 @@
--- TPC-DS Data Loading Script (Phases 1 & 2)
+-- PGM-DS Data Loading Script (Phases 1 & 2)
 -- Populates the scale-factor-DEPENDENT dimension tables AND the fact tables.
 --
 -- Multi-job model: each id in `ids` is one "scale unit" (1 SF worth of data).
@@ -14,7 +14,7 @@
 --   customer_address   50,000 * SF
 --   customer          100,000 * SF
 --   item               18,000 * SF
---   catalog_page       11,718         (kept fixed; grows ~log in real TPC-DS)
+--   catalog_page       11,718         (kept fixed; grows ~log at larger scale)
 --   promotion             300         (fixed)
 --   store                  12         (fixed)
 --   call_center             6         (fixed)
@@ -136,7 +136,7 @@ local N_WAREHOUSE = 5
 local N_PROMO = 300
 local N_REASON = 35
 
--- Per-unit sales row targets and coupled-return rates (real TPC-DS ratios).
+-- Per-unit sales row targets and coupled-return rates (realistic ratios).
 local SS_TARGET = 2880000
 local CS_TARGET = 1440000
 local WS_TARGET = 720000

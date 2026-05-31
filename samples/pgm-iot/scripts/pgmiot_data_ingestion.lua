@@ -1,4 +1,4 @@
--- TPCx-IoT Data Ingestion Transaction
+-- PGM-IoT Data Ingestion Transaction
 -- Bulk insert of sensor measurements (100 readings per transaction)
 
 local substation_id = rand_int(min_id, max_id)

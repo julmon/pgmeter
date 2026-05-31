@@ -1,4 +1,4 @@
--- TPCx-IoT Per-Substation Data Loading Script
+-- PGM-IoT Per-Substation Data Loading Script
 -- Populates substation, sensor, measurement, alert for each substation ID in `ids`.
 
 local SENSORS_PER_SS = const.sensors_per_substation       -- 100

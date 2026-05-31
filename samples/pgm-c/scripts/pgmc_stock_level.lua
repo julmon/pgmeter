@@ -1,4 +1,4 @@
--- TPC-C Stock-Level Transaction
+-- PGM-C Stock-Level Transaction
 -- Checks stock levels for recently ordered items
 
 local warehouse_id = rand_int(min_id, max_id)

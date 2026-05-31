@@ -1,4 +1,4 @@
--- TPC-C Delivery Transaction
+-- PGM-C Delivery Transaction
 -- Processes pending orders for all 10 districts of a warehouse
 
 local warehouse_id = rand_int(min_id, max_id)

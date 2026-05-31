@@ -1,4 +1,4 @@
--- TPC-C New-Order Transaction
+-- PGM-C New-Order Transaction
 -- Creates a new order with 5-15 order lines
 
 local warehouse_id = rand_int(min_id, max_id)

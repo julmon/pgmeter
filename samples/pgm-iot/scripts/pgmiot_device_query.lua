@@ -1,4 +1,4 @@
--- TPCx-IoT Device Query Transaction
+-- PGM-IoT Device Query Transaction
 -- Single sensor data retrieval
 
 local substation_id = rand_int(min_id, max_id)

@@ -1,4 +1,4 @@
--- TPC-C Per-Warehouse Data Loading Script
+-- PGM-C Per-Warehouse Data Loading Script
 -- Populates warehouse, district, customer, history, stock, orders, new_order, order_line
 -- for each warehouse ID in the `ids` table.
 
@@ -7,7 +7,7 @@ local CUSTOMERS_PER_DIST = 3000
 local N_ITEMS = 100000
 local BATCH_SIZE = 500
 
--- TPC-C last name generation
+-- PGM-C last name generation
 local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
 local function gen_last(n)
     if n >= 1000 then n = rand_int(0, 999) end

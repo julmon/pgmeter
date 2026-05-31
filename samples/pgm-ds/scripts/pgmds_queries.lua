@@ -1,9 +1,9 @@
--- TPC-DS Query Workload (Phase 3) -- representative subset.
+-- PGM-DS Query Workload (Phase 3) -- representative subset.
 --
 -- Loaded once per thread as a shared module; defines the global dispatch table
 -- Q[1]..Q[N]. Each transaction in spec.yaml runs `Q[n]()` via an inline script.
 --
--- These are shaped after real TPC-DS query templates but simplified to this
+-- These are shaped after representative decision-support query templates but simplified to this
 -- port's schema and data ranges (sales fall in d_year 1998..2002; inventory
 -- snapshots span ~1998..2000). They exercise the star-schema join/aggregate
 -- patterns across every channel -- the access paths a custom Table Access
@@ -22,7 +22,7 @@ local function rmoy() return rand_int(1, 12) end
 
 Q = {}
 
--- Q1: store sales by brand for one manufacturer in a month (TPC-DS Q3 shape).
+-- Q1: store sales by brand for one manufacturer in a month.
 Q[1] = function()
     exec(string.format(
         "SELECT dt.d_year, i.i_brand_id, i.i_brand, SUM(ss.ss_ext_sales_price) sum_agg "
@@ -34,7 +34,7 @@ Q[1] = function()
         rand_int(1, 9), rmoy()))
 end
 
--- Q2: store sales by category/year for one manager+month (TPC-DS Q42 shape).
+-- Q2: store sales by category/year for one manager+month.
 Q[2] = function()
     exec(string.format(
         "SELECT dt.d_year, i.i_category_id, i.i_category, SUM(ss.ss_ext_sales_price) ext "
@@ -46,7 +46,7 @@ Q[2] = function()
         rand_int(1, 100), rmoy(), ryear()))
 end
 
--- Q3: store sales by brand for one manager+month (TPC-DS Q52 shape).
+-- Q3: store sales by brand for one manager+month.
 Q[3] = function()
     exec(string.format(
         "SELECT dt.d_year, i.i_brand_id, i.i_brand, SUM(ss.ss_ext_sales_price) ext "
@@ -58,7 +58,7 @@ Q[3] = function()
         rand_int(1, 100), rmoy(), ryear()))
 end
 
--- Q4: brand revenue by manager, sold to out-of-town customers (TPC-DS Q19).
+-- Q4: brand revenue by manager, sold to out-of-town customers.
 Q[4] = function()
     exec(string.format(
         "SELECT i.i_brand_id, i.i_brand, i.i_manufact_id, i.i_manufact, "
@@ -74,7 +74,7 @@ Q[4] = function()
         rand_int(1, 100), rmoy(), ryear()))
 end
 
--- Q5: states where buyers bought above-average-priced items (TPC-DS Q6 shape).
+-- Q5: states where buyers bought above-average-priced items.
 -- The per-category average is computed once in a derived table and joined,
 -- rather than as a per-row correlated subquery -- same result, but it avoids a
 -- re-scan of item for every qualifying sale (which is ruinous without indexes).
@@ -93,7 +93,7 @@ Q[5] = function()
         ryear(), rmoy()))
 end
 
--- Q6: average sale metrics by item for a demographic + promotion (TPC-DS Q7).
+-- Q6: average sale metrics by item for a demographic + promotion.
 Q[6] = function()
     exec(string.format(
         "SELECT i.i_item_id, AVG(ss.ss_quantity) agg1, AVG(ss.ss_list_price) agg2, "
