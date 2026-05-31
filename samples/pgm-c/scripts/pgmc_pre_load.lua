@@ -1,4 +1,4 @@
--- TPC-C Pre-Load Script
+-- PGM-C Pre-Load Script
 -- Populates the item table (100,000 rows, shared across all warehouses).
 -- Runs once before per-warehouse loading.
 

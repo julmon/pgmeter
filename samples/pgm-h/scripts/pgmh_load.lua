@@ -1,4 +1,4 @@
--- TPC-H Data Loading Script
+-- PGM-H Data Loading Script
 -- Populates part, supplier, partsupp, customer, orders, lineitem.
 --
 -- Parallel model: `ids` is this job's slice of 1..scalefactor. Each id is one

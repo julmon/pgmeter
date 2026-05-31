@@ -1,4 +1,4 @@
--- TPC-C Payment Transaction
+-- PGM-C Payment Transaction
 -- Processes a customer payment
 
 local warehouse_id = rand_int(min_id, max_id)
@@ -25,7 +25,7 @@ end
 local c_id = rand_int(1, const.customers_per_district)
 local h_amount = rand_float(1.00, 5000.00)
 
--- TPC-C last name generation (matches Rust implementation)
+-- PGM-C last name generation (matches Rust implementation)
 local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
 local function gen_last(n)
     if n >= 1000 then n = rand_int(0, 999) end

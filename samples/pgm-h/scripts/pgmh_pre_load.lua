@@ -1,4 +1,4 @@
--- TPC-H Pre-Load Script
+-- PGM-H Pre-Load Script
 -- Populates region (5 rows) and nation (25 rows) reference tables.
 
 local REGIONS = {"AFRICA", "AMERICA", "ASIA", "EUROPE", "MIDDLE EAST"}

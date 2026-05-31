@@ -1,4 +1,4 @@
--- TPC-C Order-Status Transaction
+-- PGM-C Order-Status Transaction
 -- Queries the status of a customer's last order
 
 local warehouse_id = rand_int(min_id, max_id)
@@ -6,7 +6,7 @@ local district_id = rand_int(1, 10)
 local y = rand_int(1, 100)
 local c_id = rand_int(1, const.customers_per_district)
 
--- TPC-C last name generation (matches Rust implementation)
+-- PGM-C last name generation (matches Rust implementation)
 local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
 local function gen_last(n)
     if n >= 1000 then n = rand_int(0, 999) end

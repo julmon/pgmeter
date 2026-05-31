@@ -1,4 +1,4 @@
--- TPC-H Query Implementations
+-- PGM-H Query Implementations
 -- This file is loaded once per transaction ID. The script body runs the query
 -- corresponding to the transaction ID that was dispatched to it.
 -- Since we don't know which ID we are at script level, we define all queries

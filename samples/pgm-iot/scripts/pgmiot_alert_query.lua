@@ -1,4 +1,4 @@
--- TPCx-IoT Alert Query Transaction
+-- PGM-IoT Alert Query Transaction
 -- Retrieves and acknowledges unacknowledged alerts
 
 local substation_id = rand_int(min_id, max_id)

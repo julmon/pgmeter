@@ -1,4 +1,4 @@
--- TPCx-IoT Threshold Update Transaction
+-- PGM-IoT Threshold Update Transaction
 -- Updates sensor threshold settings
 
 local substation_id = rand_int(min_id, max_id)

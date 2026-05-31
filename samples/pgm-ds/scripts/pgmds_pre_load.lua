@@ -1,4 +1,4 @@
--- TPC-DS Pre-Load Script (Phase 1)
+-- PGM-DS Pre-Load Script (Phase 1)
 -- Populates the scale-factor-INDEPENDENT dimension tables. These have fixed
 -- cardinalities by definition (deterministic cross-products or fixed calendars),
 -- so they load once here regardless of scale factor:
