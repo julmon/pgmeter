@@ -35,8 +35,8 @@ below — they are not audited, full-specification TPC benchmarks.
 ### From Source
 
 ```bash
-git clone https://github.com/julmon/pg_meter.git
-cd pg_meter
+git clone https://github.com/julmon/pgmeter.git
+cd pgmeter
 cargo build --release
 ```
 
