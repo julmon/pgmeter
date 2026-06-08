@@ -748,8 +748,13 @@ impl Executor {
         self
     }
 
-    // Execute foreign keys DDLs using multiple concurrent jobs
-    pub fn add_foreign_keys(&mut self, n_jobs: u32, no_fkey: bool) -> &mut Self {
+    // Execute foreign keys DDLs serially.
+    //
+    // FK creation is intentionally not parallelized: ALTER TABLE ... ADD FOREIGN KEY
+    // takes a ShareRowExclusiveLock on both the referencing and the referenced table,
+    // so concurrent adds touching a shared parent serialize on its lock anyway and can
+    // deadlock when two FKs reference each other's tables in opposite order across jobs.
+    pub fn add_foreign_keys(&mut self, _n_jobs: u32, no_fkey: bool) -> &mut Self {
         // Don't do anything if no_fkey is true
         if no_fkey {
             return self;
@@ -760,7 +765,7 @@ impl Executor {
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Foreign keys creation");
-        self.exec_stmts(n_jobs, benchmark.get_fkey_ddls(), true);
+        self.exec_stmts(1, benchmark.get_fkey_ddls(), true);
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
 
         self
