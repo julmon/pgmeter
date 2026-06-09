@@ -5,7 +5,9 @@ use std::io::Write;
 use mlua::prelude::*;
 use postgres::Client;
 use rand::Rng;
+use rand::SeedableRng;
 use rand::distributions::Alphanumeric;
+use rand::rngs::SmallRng;
 
 /// Raw pointer wrapper for postgres::Client.
 /// SAFETY: This is only used within a single thread. The pointer is set before
@@ -39,6 +41,21 @@ thread_local! {
 
     /// Thread-local active COPY writer (only one at a time).
     static COPY_WRITER: RefCell<CopyWriterHolder> = RefCell::new(CopyWriterHolder(None));
+
+    /// Thread-local non-cryptographic RNG for data generation. Seeded once per
+    /// thread from the OS, then reused across the millions of rand_int/rand_float
+    /// calls a load script makes. Avoids rand::thread_rng()'s per-call handle
+    /// clone + reseed check and its crypto-grade ChaCha generator, neither of
+    /// which we need for synthetic benchmark data.
+    static FAST_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_entropy());
+}
+
+/// Run a closure with a mutable borrow of the thread-local fast RNG.
+fn with_rng<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut SmallRng) -> R,
+{
+    FAST_RNG.with(|cell| f(&mut cell.borrow_mut()))
 }
 
 /// Set the postgres client pointer for the current thread.
@@ -83,15 +100,13 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
 
     // Register rand_int(min, max) -> integer
     let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
-        let val: i64 = rand::thread_rng().gen_range(min..=max);
-        Ok(val)
+        Ok(with_rng(|rng| rng.gen_range(min..=max)))
     })?;
     lua.globals().set("rand_int", rand_int)?;
 
     // Register rand_float(min, max) -> number
     let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
-        let val: f64 = rand::thread_rng().gen_range(min..max);
-        Ok(val)
+        Ok(with_rng(|rng| rng.gen_range(min..max)))
     })?;
     lua.globals().set("rand_float", rand_float)?;
 
@@ -261,21 +276,22 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
     // Batched version to reduce Lua↔Rust boundary crossings for bulk data loading.
     let rand_strings_fn = lua.create_function(|lua, (count, min_len, max_len): (usize, usize, usize)| {
         let table = lua.create_table_with_capacity(count, 0)?;
-        let mut rng = rand::thread_rng();
-        for i in 1..=count {
-            let len = if min_len < max_len {
-                rng.gen_range(min_len..=max_len)
-            } else {
-                max_len
-            };
-            let s: String = (&mut rng)
-                .sample_iter(&Alphanumeric)
-                .take(len)
-                .map(char::from)
-                .collect();
-            table.set(i, s)?;
-        }
-        Ok(table)
+        with_rng(|rng| {
+            for i in 1..=count {
+                let len = if min_len < max_len {
+                    rng.gen_range(min_len..=max_len)
+                } else {
+                    max_len
+                };
+                let s: String = (&mut *rng)
+                    .sample_iter(&Alphanumeric)
+                    .take(len)
+                    .map(char::from)
+                    .collect();
+                table.set(i, s)?;
+            }
+            Ok(table)
+        })
     })?;
     lua.globals().set("rand_strings", rand_strings_fn)?;
 
@@ -590,14 +606,12 @@ pub fn create_eval_vm_with_context(
 
 fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
     let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
-        let val: i64 = rand::thread_rng().gen_range(min..=max);
-        Ok(val)
+        Ok(with_rng(|rng| rng.gen_range(min..=max)))
     })?;
     lua.globals().set("rand_int", rand_int)?;
 
     let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
-        let val: f64 = rand::thread_rng().gen_range(min..max);
-        Ok(val)
+        Ok(with_rng(|rng| rng.gen_range(min..max)))
     })?;
     lua.globals().set("rand_float", rand_float)?;
     Ok(())
