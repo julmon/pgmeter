@@ -160,6 +160,13 @@ pub fn run_bar(total_s: u64) -> ProgressBar {
 // `progress_s` seconds (suppressed entirely when progress_s is 0). The caller
 // flips `stop` once the clients are done, then joins the handle and calls
 // finish_run_bar on the returned bar.
+/// How the live rate is displayed: the spec's throughput unit label and the
+/// per-second factor that turns commits/s into it (60 for a per-minute unit).
+pub struct RateUnit {
+    pub unit: String,
+    pub factor: f64,
+}
+
 pub fn spawn_workload_monitor(
     total_s: u64,
     start: Instant,
@@ -167,6 +174,7 @@ pub fn spawn_workload_monitor(
     live_latency_us: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     progress_s: u16,
+    rate: RateUnit,
 ) -> (ProgressBar, JoinHandle<()>) {
     let bar = run_bar(total_s);
     let pb = bar.clone();
@@ -194,7 +202,8 @@ pub fn spawn_workload_monitor(
             let (t0, c0, l0) = *window.front().unwrap();
             let dt = (elapsed - t0).max(1e-6);
             let dc = commits - c0;
-            let tps = dc as f64 / dt;
+            // Instantaneous rate in the spec's unit (commits/s x time-base factor).
+            let rate_now = dc as f64 / dt * rate.factor;
             let lat_ms = if dc > 0 {
                 (latency_us - l0) as f64 / dc as f64 / 1000.0
             } else {
@@ -204,14 +213,15 @@ pub fn spawn_workload_monitor(
             if tty {
                 pb.set_position(elapsed.min(total_s as f64) as u64);
                 pb.set_message(format!(
-                    "{} tps · lat {:.2} ms",
-                    fmt_int(tps as u64),
+                    "{} {} · lat {:.2} ms",
+                    fmt_int(rate_now.round() as u64),
+                    rate.unit,
                     lat_ms
                 ));
             } else if !quiet && progress_s > 0 && elapsed >= next_progress {
                 eprintln!(
-                    "progress: {:.1} s, {:.1} tps, lat {:.3} ms",
-                    elapsed, tps, lat_ms
+                    "progress: {:.1} s, {:.1} {}, lat {:.3} ms",
+                    elapsed, rate_now, rate.unit, lat_ms
                 );
                 next_progress += progress_s as f64;
             }

@@ -42,7 +42,7 @@ pub(super) fn safe_name(name: &str) -> String {
 
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
 //
-// The per-second time series (`pgmeter-tpm-*.csv`, `pgmeter-response-time-*.csv`)
+// The per-second time series (`pgmeter-throughput-*.csv`, `pgmeter-response-time-*.csv`)
 // cover the whole run, ramp-up included, so they line up with the report's
 // charts. The response-time statistics (`pgmeter-stats-*.csv`) only use samples
 // logged at or after `rampup_end_ts`, matching the committed counts and the
@@ -52,6 +52,7 @@ pub fn aggregate_transaction_data(
     target_dir: &Path,
     transactions: &[BenchmarkTransaction],
     rampup_end_ts: Option<i64>,
+    throughput_factor: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Transaction log file parsing
     let df = LazyCsvReader::new(target_dir.join(log_file))
@@ -89,10 +90,10 @@ pub fn aggregate_transaction_data(
             // No data for this transaction - create empty files
             let empty_tpm = DataFrame::new(vec![
                 Series::new("time_s", Vec::<i64>::new()),
-                Series::new("tpm", Vec::<i64>::new()),
+                Series::new("throughput", Vec::<i64>::new()),
             ])?;
             let mut file =
-                std::fs::File::create(target_dir.join(format!("pgmeter-tpm-{}.csv", safe)))?;
+                std::fs::File::create(target_dir.join(format!("pgmeter-throughput-{}.csv", safe)))?;
             CsvWriter::new(&mut file).finish(&mut empty_tpm.clone())?;
 
             let empty_rt = DataFrame::new(vec![
@@ -115,22 +116,28 @@ pub fn aggregate_transaction_data(
             continue;
         }
 
-        // Calculate transaction throughput: number of transaction over a period of time
+        // Throughput per second, expressed in the spec's unit (count x factor),
+        // rounded to the nearest integer (+0.5 then truncating cast: polars 0.26's
+        // Expr::round needs an extra feature).
         let mut tpm_df = filtered_df
             .clone()
             // Group by timestamp (in second) and transaction_id
             .groupby([col("column_1"), col("column_3")])
-            // We want to calculate the number of transaction per minute
-            .agg([col("column_4").count() * lit(60)])
+            .agg([
+                (col("column_4").count().cast(DataType::Float64) * lit(throughput_factor)
+                    + lit(0.5))
+                .cast(DataType::Int64),
+            ])
             .select([
                 col("column_1").alias("time_s") - col("column_1").min(),
-                col("column_4").alias("tpm"),
+                col("column_4").alias("throughput"),
             ])
             .sort("time_s", Default::default())
             .collect()?;
 
         // Save data as a CSV file
-        let mut file = std::fs::File::create(target_dir.join(format!("pgmeter-tpm-{}.csv", safe)))?;
+        let mut file =
+            std::fs::File::create(target_dir.join(format!("pgmeter-throughput-{}.csv", safe)))?;
         CsvWriter::new(&mut file).finish(&mut tpm_df)?;
 
         // Calculate the average (mean) response time over a period of time
@@ -178,21 +185,24 @@ pub fn aggregate_transaction_data(
         CsvWriter::new(&mut file_stats).finish(&mut stats)?;
     }
 
-    // Produce total TPM data, including data from all transaction types
+    // Total throughput per second across all transaction types, same unit.
     let mut tpm_all_df = df
         .clone()
         // Group by timestamp (in second) only
         .groupby([col("column_1")])
-        .agg([col("column_4").count() * lit(60)])
+        .agg([
+            (col("column_4").count().cast(DataType::Float64) * lit(throughput_factor) + lit(0.5))
+                .cast(DataType::Int64),
+        ])
         .select([
             col("column_1").alias("time_s") - col("column_1").min(),
-            col("column_4").alias("tpm"),
+            col("column_4").alias("throughput"),
         ])
         .sort("time_s", Default::default())
         .collect()?;
 
     // Save data as a CSV file
-    let mut file = std::fs::File::create(target_dir.join("pgmeter-tpm-all.csv"))?;
+    let mut file = std::fs::File::create(target_dir.join("pgmeter-throughput-all.csv"))?;
     CsvWriter::new(&mut file).finish(&mut tpm_all_df)?;
 
     Ok(())
@@ -544,7 +554,8 @@ mod tests {
         drop(f);
         let transactions = vec![tx(1, "only")];
 
-        aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102)).unwrap();
+        aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102), 60.0)
+            .unwrap();
 
         let stats = get_stats(&dir, &transactions).unwrap();
         let only = &stats[&1];
@@ -552,17 +563,24 @@ mod tests {
         assert_eq!(only.max, 4.0);
         assert_eq!(only.min, 2.0);
 
-        // The per-second series still start at the first ramp-up second.
-        let tpm = std::fs::read_to_string(dir.join("pgmeter-tpm-only.csv")).unwrap();
+        // The per-second series still start at the first ramp-up second, and
+        // carry the spec's unit: one commit in second 0 x factor 60 = 60.
+        let tpm = std::fs::read_to_string(dir.join("pgmeter-throughput-only.csv")).unwrap();
         let lines: Vec<&str> = tpm.lines().collect();
-        assert_eq!(lines[0], "time_s,tpm");
+        assert_eq!(lines[0], "time_s,throughput");
         assert_eq!(lines.len(), 5, "four seconds of data: {tpm}");
         assert_eq!(lines[1], "0,60");
 
-        // Without a boundary, every sample counts.
-        aggregate_transaction_data("transaction.log", &dir, &transactions, None).unwrap();
+        // Without a boundary, every sample counts. RELEASE_REVIEW C7: with a
+        // per-second unit (factor 1) the series is a plain count, not x60.
+        aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
         let stats = get_stats(&dir, &transactions).unwrap();
         assert_eq!(stats[&1].max, 50.0);
+        let tps = std::fs::read_to_string(dir.join("pgmeter-throughput-only.csv")).unwrap();
+        assert_eq!(tps.lines().nth(1), Some("0,1"));
+        assert_eq!(tps.lines().nth(3), Some("2,2"));
+        let all = std::fs::read_to_string(dir.join("pgmeter-throughput-all.csv")).unwrap();
+        assert_eq!(all.lines().nth(3), Some("2,2"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
