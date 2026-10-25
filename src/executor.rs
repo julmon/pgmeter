@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::env::current_dir;
 use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
@@ -517,7 +517,9 @@ impl Executor {
         Ok(thread::spawn(move || {
             // Initialize the counters with expected capacity
             let mut counters: HashMap<u16, Counter> = HashMap::with_capacity(16);
-            let mut client_ids = BTreeMap::new();
+            // Distinct clients seen so far; its size is the "active clients"
+            // column of both logs.
+            let mut client_ids: BTreeSet<u32> = BTreeSet::new();
 
             let mut ramping_up: bool = true;
             let mut rampup_end_ts: Option<i64> = None;
@@ -528,7 +530,6 @@ impl Executor {
             let start_time = Utc::now().timestamp();
             let start_instant = Instant::now();
 
-            let mut n_client: u32 = 0;
             // Wait for messages from the clients. A closed channel means the
             // run was abandoned before Terminate could be sent (every sender
             // dropped): flush and finish like a normal shutdown instead of
@@ -543,12 +544,7 @@ impl Executor {
                     // Committed transaction
                     TXMessageKind::Committed => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        if let std::collections::btree_map::Entry::Vacant(e) =
-                            client_ids.entry(msg.client_id)
-                        {
-                            e.insert(true);
-                            n_client += 1;
-                        }
+                        client_ids.insert(msg.client_id);
 
                         let duration_ms = msg.tx_duration_us as f64 / 1000.0;
 
@@ -581,7 +577,7 @@ impl Executor {
                         // Format and write the line to the log file
                         let _ = log_file.write(buffer_i.format(tx_timestamp).as_bytes());
                         let _ = log_file.write(b" ");
-                        let _ = log_file.write(buffer_i.format(n_client).as_bytes());
+                        let _ = log_file.write(buffer_i.format(client_ids.len()).as_bytes());
                         let _ = log_file.write(b" ");
                         let _ = log_file.write(buffer_i.format(msg.tx_id).as_bytes());
                         let _ = log_file.write(b" ");
@@ -590,12 +586,7 @@ impl Executor {
                     }
                     TXMessageKind::Error => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        if let std::collections::btree_map::Entry::Vacant(e) =
-                            client_ids.entry(msg.client_id)
-                        {
-                            e.insert(true);
-                            n_client += 1;
-                        }
+                        client_ids.insert(msg.client_id);
 
                         // Counters calculation
                         if !ramping_up {
@@ -618,7 +609,7 @@ impl Executor {
                         // Format and write the line to the error log file
                         let _ = error_file.write(buffer_i.format(tx_timestamp).as_bytes());
                         let _ = error_file.write(b" ");
-                        let _ = error_file.write(buffer_i.format(n_client).as_bytes());
+                        let _ = error_file.write(buffer_i.format(client_ids.len()).as_bytes());
                         let _ = error_file.write(b" ");
                         let _ = error_file.write(buffer_i.format(msg.tx_id).as_bytes());
                         let _ = error_file.write(b" ");

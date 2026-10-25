@@ -41,6 +41,15 @@ pub(super) fn safe_name(name: &str) -> String {
         .collect()
 }
 
+/// The statistics frame for a transaction without samples: every statistic
+/// at zero, in the layout `get_stats` reads back.
+fn empty_stats_frame() -> PolarsResult<DataFrame> {
+    DataFrame::new(vec![
+        Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
+        Series::new("response_time_ms", vec![0.0f64; 6]),
+    ])
+}
+
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
 //
 // The per-second time series (`pgmeter-throughput-*.csv`, `pgmeter-response-time-*.csv`)
@@ -106,13 +115,10 @@ pub fn aggregate_transaction_data(
             )?;
             CsvWriter::new(&mut file).finish(&mut empty_rt.clone())?;
 
-            let empty_stats = DataFrame::new(vec![
-                Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
-                Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            ])?;
+            let mut empty_stats = empty_stats_frame()?;
             let mut file =
                 std::fs::File::create(target_dir.join(format!("pgmeter-stats-{}.csv", safe)))?;
-            CsvWriter::new(&mut file).finish(&mut empty_stats.clone())?;
+            CsvWriter::new(&mut file).finish(&mut empty_stats)?;
 
             continue;
         }
@@ -163,17 +169,8 @@ pub fn aggregate_transaction_data(
             Ok(stats_df) => stats_df
                 .describe(Some(&[0.95, 0.99]))
                 .select(["describe", "response_time_ms"])
-                .unwrap_or_else(|_| {
-                    DataFrame::new(vec![
-                        Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
-                        Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                    ])
-                    .unwrap()
-                }),
-            Err(_) => DataFrame::new(vec![
-                Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
-                Series::new("response_time_ms", vec![0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0]),
-            ])?,
+                .or_else(|_| empty_stats_frame())?,
+            Err(_) => empty_stats_frame()?,
         };
 
         // Save data as a CSV file
