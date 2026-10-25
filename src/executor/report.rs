@@ -526,6 +526,9 @@ fn fetch_data_info(client: &mut Client, spec: &BenchmarkSpec) -> serde_json::Val
 
     let table_names: Vec<String> = spec.schema.tables.iter().map(|t| t.name.clone()).collect();
 
+    // Both queries restrict the match to the schemas on the connection's
+    // search_path (what the benchmark's unqualified table names resolve to),
+    // so a same-named table in another schema is not listed.
     let tables_sql = "SELECT c.relname, \
             pg_table_size(c.oid)::int8, \
             pg_indexes_size(c.oid)::int8, \
@@ -536,6 +539,7 @@ fn fetch_data_info(client: &mut Client, spec: &BenchmarkSpec) -> serde_json::Val
         JOIN pg_namespace n ON n.oid = c.relnamespace \
         LEFT JOIN pg_am am ON am.oid = c.relam \
         WHERE c.relkind IN ('r', 'p') AND c.relname = ANY($1) \
+          AND n.nspname = ANY(current_schemas(false)) \
         ORDER BY pg_table_size(c.oid) DESC";
     let mut tables = Vec::new();
     if let Ok(rows) = client.query(tables_sql, &[&table_names]) {
@@ -559,8 +563,10 @@ fn fetch_data_info(client: &mut Client, spec: &BenchmarkSpec) -> serde_json::Val
         FROM pg_index idx \
         JOIN pg_class i ON i.oid = idx.indexrelid \
         JOIN pg_class t ON t.oid = idx.indrelid \
+        JOIN pg_namespace n ON n.oid = t.relnamespace \
         LEFT JOIN pg_am am ON am.oid = i.relam \
         WHERE t.relname = ANY($1) \
+          AND n.nspname = ANY(current_schemas(false)) \
         ORDER BY pg_relation_size(i.oid) DESC";
     let mut indexes = Vec::new();
     if let Ok(rows) = client.query(indexes_sql, &[&table_names]) {
@@ -1326,6 +1332,54 @@ transactions:
                 rest = &rest[expr_end + 1..];
             }
         }
+    }
+
+    // Regression for RELEASE_REVIEW B14 (needs PGMETER_TEST_DSN): a table with
+    // the same name in another schema must not appear in the Data section.
+    #[test]
+    fn data_info_only_lists_tables_on_the_search_path() {
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        client
+            .batch_execute(
+                "DROP SCHEMA IF EXISTS b14_other CASCADE; \
+                 DROP TABLE IF EXISTS b14_t; \
+                 CREATE TABLE b14_t (id int PRIMARY KEY); \
+                 CREATE SCHEMA b14_other; \
+                 CREATE TABLE b14_other.b14_t (id int PRIMARY KEY); \
+                 CREATE INDEX b14_other_ix ON b14_other.b14_t (id);",
+            )
+            .unwrap();
+
+        let mut spec = minimal_spec();
+        spec.schema
+            .tables
+            .push(crate::executor::yaml_types::TableSpec {
+                name: "b14_t".into(),
+                columns: vec![],
+                primary_key: vec![],
+                access_method: None,
+                storage: HashMap::new(),
+            });
+        let info = fetch_data_info(&mut client, &spec);
+
+        let tables = info["tables"].as_array().unwrap();
+        assert_eq!(tables.len(), 1, "one b14_t expected, got {tables:?}");
+        let indexes = info["indexes"].as_array().unwrap();
+        let names: Vec<&str> = indexes
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["b14_t_pkey"], "{indexes:?}");
+
+        client
+            .batch_execute("DROP SCHEMA b14_other CASCADE; DROP TABLE b14_t")
+            .unwrap();
     }
 
     #[test]
