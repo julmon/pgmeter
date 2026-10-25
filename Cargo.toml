@@ -29,7 +29,7 @@ exclude = [
 
 [dependencies]
 clap = { version = "4.0.18", features = ["derive", "env", "string"] }
-users = "0.11"
+whoami = "2"
 postgres = "0.19.4"
 chrono = "0.4.10"
 crossbeam-channel = "0.5.6"

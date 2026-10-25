@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use urlencoding::encode;
-use users::{get_current_uid, get_user_by_uid};
 
 // clap value parser for --spec: accept either a benchmark directory (resolved
 // to <dir>/spec.yaml) or a single spec file, and fail fast at parse time if
@@ -513,12 +512,27 @@ impl PgMtrArgs {
     }
 }
 
-// Returns current username
+/// Default database user name, mirroring libpq: the OS account name. Looked
+/// up through whoami (passwd entry / OS API); when that fails, for example in
+/// a container running under a UID that has no passwd entry, fall back to
+/// `$USER`, then `$LOGNAME`, then `postgres`, so the tool starts and `--help`
+/// and `-U` keep working. `$PGUSER` is handled by clap as the option's env.
 pub fn get_os_username() -> String {
-    let os_user = get_user_by_uid(get_current_uid()).unwrap();
-    let os_username = os_user.name().to_str().unwrap();
+    pick_username([
+        whoami::username().ok(),
+        std::env::var("USER").ok(),
+        std::env::var("LOGNAME").ok(),
+    ])
+}
 
-    String::from(os_username)
+/// First non-blank candidate, or `postgres`.
+fn pick_username(candidates: impl IntoIterator<Item = Option<String>>) -> String {
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| "postgres".to_string())
 }
 
 // Returns the database connection string based on CLI args. Every user-supplied
@@ -631,6 +645,27 @@ fn split_pgpass_line(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression for RELEASE_REVIEW C1: the lookup used to `unwrap()` the
+    // passwd entry and panicked before argument parsing when the UID had none
+    // (containers with `--user 12345`). The fallback chain must always yield
+    // a name.
+    #[test]
+    fn username_falls_back_through_candidates_then_postgres() {
+        assert_eq!(pick_username([None, None]), "postgres");
+        assert_eq!(pick_username([]), "postgres");
+        assert_eq!(
+            pick_username([Some(String::new()), Some("  ".into()), None]),
+            "postgres"
+        );
+        assert_eq!(
+            pick_username([None, Some(" alice ".into()), Some("bob".into())]),
+            "alice"
+        );
+        assert_eq!(pick_username([Some("carol".into()), None]), "carol");
+        // The real lookup must not panic either, whatever the environment.
+        assert!(!get_os_username().is_empty());
+    }
     use std::io::Write;
 
     #[test]
