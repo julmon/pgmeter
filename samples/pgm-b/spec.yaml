@@ -136,8 +136,9 @@ transactions:
       delta: "rand_int(-5000, 5000)"
 
     # Execution mode:
-    #   "simple" = send as one batch_execute string (1 round-trip, like pgbench simple protocol)
-    #   "extended" = use parameterised queries ($1, $2, ...) with individual execute calls
+    #   "simple" = bindings substituted into the SQL template below, sent as one
+    #              batch (1 round-trip, like pgbench's simple protocol)
+    #   "script" = a Lua script drives the transaction (see PGM-C)
     mode: simple
 
     # SQL executed inside a single transaction.
