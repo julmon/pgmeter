@@ -78,6 +78,19 @@ mod tests {
         assert_eq!(env!("CARGO_PKG_README"), "README.md");
     }
 
+    // CHANGELOG.md must exist and carry either an "Unreleased" section or an
+    // entry for the version being built, so a release cannot ship without
+    // release notes.
+    #[test]
+    fn changelog_has_an_entry_for_this_version() {
+        let changelog = include_str!("../CHANGELOG.md");
+        let version_heading = format!("## [{}]", env!("CARGO_PKG_VERSION"));
+        assert!(
+            changelog.contains("## [Unreleased]") || changelog.contains(&version_heading),
+            "CHANGELOG.md needs a `## [Unreleased]` or {version_heading:?} section"
+        );
+    }
+
     // The MSRV is declared once in Cargo.toml and repeated in the README's
     // Requirements section; both must agree.
     #[test]
