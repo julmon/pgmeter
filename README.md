@@ -141,15 +141,16 @@ pgmeter -H localhost -U postgres -d benchmark run --spec samples/pgm-c -c 10 -T 
 Each benchmark run creates a timestamped directory (e.g., `pgmeter-2024-01-15T10:30:00/`) containing:
 
 - `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
-- `run.json` - Run parameters, elapsed and ramp-up times, and `rampup_end_ts`, the
-  `transaction.log` timestamp at which ramp-up ended
+- `run.json` - Run parameters, elapsed and ramp-up times, the throughput unit, and
+  `rampup_end_ts`, the `transaction.log` timestamp at which ramp-up ended
 - `transaction.log` - One line per committed transaction, ramp-up included:
   `<unix_timestamp> <active_clients> <transaction_id> <response_time_ms>`, space-separated
 - `error.log` - One line per failed transaction:
   `<unix_timestamp> <active_clients> <transaction_id> <message>`. Line breaks, tabs and
   backslashes inside the message are escaped as `\n`, `\r`, `\t` and `\\`, so a Lua
   traceback or a multi-line PostgreSQL error stays on one line
-- `pgmeter-tpm-*.csv` - Transactions per minute over time for each transaction type (whole run)
+- `pgmeter-throughput-*.csv` - Throughput per second over time for each transaction type and
+  `all`, in the spec's throughput unit (recorded as `throughput_unit` in `run.json`; whole run)
 - `pgmeter-response-time-*.csv` - Response times over time (whole run)
 - `pgmeter-stats-*.csv` - Statistical summary (mean, std, min, max, percentiles) of the
   steady-state window only, i.e. samples logged after ramp-up

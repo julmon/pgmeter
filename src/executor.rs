@@ -50,6 +50,11 @@ pub struct Executor {
     n_clients: u16,
     duration_s: u16,
     rampup_s: u16,
+    /// Headline throughput unit and per-second factor from the spec's
+    /// `metrics` block, shared by the live progress line, the per-second
+    /// CSVs, run.json and the results.
+    throughput_unit: String,
+    throughput_factor: f64,
     // Target directory used to store collected and aggregated data
     target_dir: PathBuf,
 }
@@ -140,6 +145,8 @@ impl Executor {
             n_clients: 0,
             duration_s: 0,
             rampup_s: 0,
+            throughput_unit: "TPM".to_string(),
+            throughput_factor: 60.0,
             target_dir: get_target_dir_path(),
         }
     }
@@ -206,9 +213,11 @@ impl Executor {
         // max is auto-detected from the dataset at run time.
         let min_id: u32 = 1;
         terminal::start_msg(command, "Fetching maximum ID value");
+        let benchmark_client = self.get_benchmark(0, 0, 0);
+        self.throughput_unit = benchmark_client.spec.metrics.throughput_unit.clone();
+        self.throughput_factor = benchmark_client.spec.metrics.per.factor();
         let max_id: u32 = {
             let mut client = Executor::connect(self.dsn.clone());
-            let benchmark_client = self.get_benchmark(0, 0, 0);
 
             let max_id = match benchmark_client.get_default_max_id(&mut client) {
                 Ok(max_id) => max_id,
@@ -275,6 +284,8 @@ impl Executor {
             "rampup_time_ms": self.rampup_time_ms,
             "workload_secs": summary::workload_secs(self.total_time_ms, self.rampup_time_ms),
             "rampup_end_ts": self.rampup_end_ts,
+            "throughput_unit": self.throughput_unit,
+            "throughput_factor": self.throughput_factor,
         });
         let path = self.target_dir.join(RUN_FILE);
         if let Err(error) = std::fs::write(&path, format!("{:#}\n", doc)) {
@@ -420,6 +431,10 @@ impl Executor {
             live_latency_us,
             Arc::clone(&monitor_stop),
             progress,
+            terminal::RateUnit {
+                unit: self.throughput_unit.clone(),
+                factor: self.throughput_factor,
+            },
         );
 
         // Send end-of-rampup message
@@ -922,6 +937,7 @@ impl Executor {
             &self.target_dir,
             &transactions,
             self.rampup_end_ts,
+            self.throughput_factor,
         ) {
             Ok(_) => (),
             Err(error) => {
