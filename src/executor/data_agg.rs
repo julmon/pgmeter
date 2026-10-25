@@ -305,7 +305,7 @@ pub fn print_transactions_tables(
             super::terminal::fmt_int(row.n_commits),
             super::terminal::fmt_int(row.n_errors),
             format!("{:.3}", row.error_rate),
-            super::terminal::fmt_int(row.throughput as u64),
+            super::terminal::fmt_int(row.throughput.round() as u64),
         ]);
     }
     let mut summary_table = builder.build();
@@ -348,11 +348,13 @@ pub fn print_transactions_tables(
 
 // Render the results as a pretty-printed JSON document for machine consumption.
 // `summary` and `stats` are aligned by index (same transaction order).
+// `workload_secs` is the steady-state window (elapsed minus ramp-up) that the
+// throughput figures are computed over; it is emitted as `duration_s`.
 pub fn results_json(
     summary: &[TransactionSummary],
     stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
-    duration_s: u64,
+    workload_secs: f64,
 ) -> String {
     let transactions: Vec<serde_json::Value> = summary
         .iter()
@@ -363,7 +365,7 @@ pub fn results_json(
                 "committed": s.n_commits,
                 "errors": s.n_errors,
                 "error_rate": s.error_rate,
-                "throughput": s.throughput,
+                "throughput": s.throughput.round() as u64,
                 "latency_ms": {
                     "avg": st.mean,
                     "min": st.min,
@@ -378,7 +380,7 @@ pub fn results_json(
 
     let doc = serde_json::json!({
         "throughput_unit": throughput_unit,
-        "duration_s": duration_s,
+        "duration_s": workload_secs.round() as u64,
         "transactions": transactions,
     });
 
@@ -404,7 +406,7 @@ pub fn results_csv(
             s.n_commits,
             s.n_errors,
             s.error_rate,
-            s.throughput,
+            s.throughput.round() as u64,
             st.mean,
             st.min,
             st.max,
@@ -455,7 +457,7 @@ mod tests {
             100,
             2,
             1.961,
-            3150,
+            3150.4,
         )];
         let stats = vec![ResponseTimeStatistics {
             name: "Debit/credit".to_string(),
@@ -472,7 +474,7 @@ mod tests {
     #[test]
     fn results_json_includes_unit_and_latency() {
         let (summary, stats) = sample_results();
-        let out = results_json(&summary, &stats, "TPS", 30);
+        let out = results_json(&summary, &stats, "TPS", 30.2);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["throughput_unit"], "TPS");
         assert_eq!(v["duration_s"], 30);
@@ -487,7 +489,7 @@ mod tests {
     #[test]
     fn results_csv_has_header_and_quotes_commas() {
         let (mut summary, mut stats) = sample_results();
-        summary.push(TransactionSummary::new("a,b".to_string(), 1, 0, 0.0, 5));
+        summary.push(TransactionSummary::new("a,b".to_string(), 1, 0, 0.0, 5.0));
         stats.push(ResponseTimeStatistics {
             name: "a,b".to_string(),
             mean: 0.0,
