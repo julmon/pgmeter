@@ -114,7 +114,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         with_client(|client| {
             client
                 .batch_execute("BEGIN")
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+                .map_err(|e| db_err("begin", &e))
         })
     })?;
     lua.globals().set("begin", begin)?;
@@ -124,7 +124,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         with_client(|client| {
             client
                 .batch_execute("COMMIT")
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+                .map_err(|e| db_err("commit", &e))
         })
     })?;
     lua.globals().set("commit", commit)?;
@@ -134,7 +134,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         with_client(|client| {
             client
                 .batch_execute("ROLLBACK")
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+                .map_err(|e| db_err("rollback", &e))
         })
     })?;
     lua.globals().set("rollback", rollback)?;
@@ -153,9 +153,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
 
         let params = collect_params_as_literals(args_iter)?;
 
-        with_client(|client| {
-            execute_simple(client, &sql, &params).map_err(|e| LuaError::RuntimeError(e.to_string()))
-        })
+        with_client(|client| execute_simple(client, &sql, &params).map_err(|e| db_err("exec", &e)))
     })?;
     lua.globals().set("exec", exec_fn)?;
 
@@ -174,8 +172,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         let params = collect_params_as_literals(args_iter)?;
 
         with_client(|client| {
-            let rows = query_simple(client, &sql, &params)
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let rows = query_simple(client, &sql, &params).map_err(|e| db_err("query", &e))?;
             simple_rows_to_lua(lua, &rows)
         })
     })?;
@@ -196,8 +193,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         let params = collect_params_as_literals(args_iter)?;
 
         with_client(|client| {
-            let rows = query_simple(client, &sql, &params)
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
+            let rows = query_simple(client, &sql, &params).map_err(|e| db_err("query", &e))?;
 
             if rows.is_empty() {
                 return Ok(LuaValue::Nil);
@@ -219,7 +215,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         with_client(|client| {
             let writer = client
                 .copy_in(&sql_str)
-                .map_err(|e| LuaError::RuntimeError(format!("copy_start: {}", e)))?;
+                .map_err(|e| db_err("copy_start", &e))?;
             // SAFETY: The writer borrows client, but we know client lives for the
             // duration of the Lua script execution. We transmute the lifetime to 'static
             // and store in thread-local. The writer is finished (copy_end) or dropped
@@ -242,7 +238,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
                 Some(writer) => {
                     writer
                         .write_all(&bytes)
-                        .map_err(|e| LuaError::RuntimeError(format!("copy_write: {}", e)))?;
+                        .map_err(|e| db_err("copy_write", &e))?;
                     Ok(())
                 }
                 None => Err(LuaError::RuntimeError(
@@ -259,9 +255,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
             let mut holder = cell.borrow_mut();
             match holder.0.take() {
                 Some(writer) => {
-                    writer
-                        .finish()
-                        .map_err(|e| LuaError::RuntimeError(format!("copy_end: {}", e)))?;
+                    writer.finish().map_err(|e| db_err("copy_end", &e))?;
                     Ok(())
                 }
                 None => Err(LuaError::RuntimeError(
@@ -853,6 +847,14 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
 
 fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::other(e.to_string()))
+}
+
+/// Turn a database-bridge failure into a Lua runtime error that carries the
+/// full message. `postgres::Error`'s Display is only a category such as
+/// "db error"; the server's message (`division by zero`, the constraint name,
+/// `DETAIL:` lines) lives in its source chain, which `error_detail` flattens.
+fn db_err(context: &str, e: &dyn std::error::Error) -> LuaError {
+    LuaError::RuntimeError(format!("{}: {}", context, super::error_detail(e)))
 }
 
 #[cfg(test)]

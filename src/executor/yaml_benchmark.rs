@@ -659,10 +659,21 @@ transactions:
             let err = benchmark
                 .execute_rw_transaction_sync(&mut client, &prepared, &tx)
                 .expect_err("division by zero must fail");
-            // postgres::Error displays only "db error" (the server message is
-            // in its source chain), and the Lua bridge currently flattens it
-            // to that text (RELEASE_REVIEW B16), so only check that it failed.
-            assert!(!err.to_string().is_empty(), "{}: empty error", tx.name);
+            // The server message must survive in both modes (RELEASE_REVIEW
+            // B16): directly in the Lua runtime error for script mode, and in
+            // the postgres::Error source chain for simple mode.
+            let mut chain = err.to_string();
+            let mut source = err.source();
+            while let Some(cause) = source {
+                chain.push_str(": ");
+                chain.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            assert!(
+                chain.contains("division by zero"),
+                "{}: server message lost, got: {chain}",
+                tx.name
+            );
             // The connection must be out of the aborted block again.
             let row = client
                 .query_one("SELECT 42", &[])
