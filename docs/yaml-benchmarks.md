@@ -491,7 +491,7 @@ transactions:
 | `description` | no | free text |
 | `mode` | no | `simple` (default) or `script` |
 | `bindings` | simple | map of variable → Lua expression |
-| `sql` | simple | SQL template with `{{var}}` holes |
+| `sql` | simple | SQL template with `{{var}}` holes: one string (sent in one round trip) or a list of statements (one round trip each) |
 | `script` | script | inline Lua source |
 | `script_file` | script | path to a `.lua` file (relative to the spec) |
 
@@ -500,13 +500,22 @@ transactions:
 
 ### 7.1 `simple` mode
 
-Best for fixed SQL with a few random parameters. The whole `sql` block is sent
-to the server in **one round-trip** (`batch_execute`), so:
+Best for fixed SQL with a few random parameters. `sql` takes two shapes:
 
-- You may include several statements separated by `;`.
-- If you want them to be atomic, wrap them yourself in `BEGIN; ... COMMIT;`.
-  Otherwise each statement autocommits.
-- No result rows are returned to the client (this mode is fire-and-measure).
+- **One string**: the whole block is sent to the server in **one round trip**
+  (`batch_execute`). You may include several statements separated by `;`; wrap
+  them in `BEGIN; ... COMMIT;` if they must be atomic, otherwise each statement
+  autocommits.
+- **A list of statements**: each element is sent in **its own round trip**, in
+  order, inside the same measured transaction. This is how pgbench runs its
+  scripts, so use the list form when your numbers must be comparable with
+  pgbench's or when the client/server round trips are part of what you measure.
+  On a fast network a 7-statement transaction runs about twice as fast in the
+  batched form, which is why the two are not comparable.
+
+In both shapes no result rows are returned to the client (this mode is
+fire-and-measure); use `script` mode when a later statement depends on an
+earlier result.
 
 **Bindings** are evaluated just before the SQL is rendered. Each binding value
 is a Lua expression evaluated against the context (`min_id`, `max_id`,
@@ -960,7 +969,7 @@ load:                     (template loaders; ignored if load_script set)
 pre_load_script           Lua (inline or path), runs once
 load_script               Lua (inline or path), runs per job over `ids`
 transactions:
-  - { id, name, weight, description, mode, bindings, sql, script, script_file }
+  - { id, name, weight, description, mode, bindings, sql (string | [statements]), script, script_file }
 scripts:
   modules: [path]         Lua preloaded into every VM
 ```

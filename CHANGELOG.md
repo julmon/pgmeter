@@ -21,9 +21,10 @@ First public release.
   (`--client`, `--time`, `--rampup`), prints live progress (`--progress`) and
   a results summary as a table, JSON or CSV (`--format`, `--quiet`).
 - Benchmarks are YAML specifications plus Lua (Luau) scripts. Transactions run
-  in `simple` mode (SQL templates with Lua bindings) or `script` mode (Lua with
-  a database bridge: `exec`, `query`, `query_one`, `begin`, `commit`,
-  `rollback`, `copy_*`, `rand_*`). Data loading uses either row templates or
+  in `simple` mode (SQL templates with Lua bindings, sent as one batch or, with
+  the list form of `sql`, one round trip per statement like pgbench) or
+  `script` mode (Lua with a database bridge: `exec`, `query`, `query_one`,
+  `begin`, `commit`, `rollback`, `copy_*`, `rand_*`). Data loading uses either row templates or
   Lua load scripts, with shared modules and a pre-load script.
 - Bundled reference workloads derived from the public TPC specifications:
   PGM-B, PGM-C, PGM-H, PGM-DS and PGM-IoT, plus a minimal `custom-simple`
