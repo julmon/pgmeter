@@ -86,7 +86,7 @@ pub struct InitArgs {
 }
 
 // CLI arguments
-pub struct PgMtrArgs {
+pub struct CliArgs {
     // Database host address
     pub host: String,
     // TCP connection port
@@ -137,7 +137,7 @@ impl InitArgs {
     }
 }
 
-impl PgMtrArgs {
+impl CliArgs {
     pub fn new(default_username: String) -> Self {
         Self::new_from(default_username, std::env::args_os()).unwrap_or_else(|e| e.exit())
     }
@@ -313,7 +313,7 @@ impl PgMtrArgs {
             .required(false)
             .value_name("FILE");
 
-        // yaml: Define the --spec command line option
+        // Define the --spec command line option, shared by init and run
         let spec_option = Arg::new("spec")
             .long("spec")
             .action(ArgAction::Set)
@@ -520,7 +520,7 @@ impl PgMtrArgs {
         // .pgpass lookup can match on host/port/database/user.
         let password = resolve_password(host, port, dbname, username);
 
-        Ok(PgMtrArgs {
+        Ok(CliArgs {
             host: host.to_string(),
             port,
             username: username.to_string(),
@@ -607,7 +607,7 @@ impl SslMode {
 // Returns the database connection string based on CLI args. Every user-supplied
 // component is percent-encoded so special characters (e.g. '@', ':', '/' in a
 // password or a socket-directory host path) don't corrupt the URL.
-pub fn get_dsn(args: &PgMtrArgs) -> String {
+pub fn get_dsn(args: &CliArgs) -> String {
     format!(
         "postgresql://{}:{}@{}:{}/{}?sslmode={}",
         encode(&args.username),
@@ -760,7 +760,7 @@ mod tests {
         }
         assert_eq!(SslMode::parse("allow"), None);
 
-        let args = PgMtrArgs::new_from(
+        let args = CliArgs::new_from(
             "u".to_string(),
             ["pgmeter", "run", "--spec", "samples/pgm-b"].into_iter(),
         )
@@ -772,7 +772,7 @@ mod tests {
             get_dsn(&args)
         );
 
-        let args = PgMtrArgs::new_from(
+        let args = CliArgs::new_from(
             "u".to_string(),
             [
                 "pgmeter",
@@ -792,7 +792,7 @@ mod tests {
             get_dsn(&args)
         );
 
-        let err = PgMtrArgs::new_from(
+        let err = CliArgs::new_from(
             "u".to_string(),
             [
                 "pgmeter",
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn init_help_warns_that_tables_are_dropped() {
         let Err(err) =
-            PgMtrArgs::new_from("u".to_string(), ["pgmeter", "init", "--help"].into_iter())
+            CliArgs::new_from("u".to_string(), ["pgmeter", "init", "--help"].into_iter())
         else {
             panic!("--help must exit through a clap error");
         };

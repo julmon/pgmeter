@@ -17,7 +17,7 @@ fn main() {
 /// one place that prints it and sets the exit status.
 fn run() -> Result<(), Error> {
     // Parse command arguments
-    let env = args::PgMtrArgs::new(args::get_os_username());
+    let env = args::CliArgs::new(args::get_os_username());
 
     // `spec` subcommands operate purely on the embedded templates and never
     // touch the database, so handle them before resolving a DSN or --spec.
