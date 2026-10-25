@@ -123,7 +123,9 @@ pub fn get_target_dir_path() -> PathBuf {
         }
     };
     let now: DateTime<Utc> = Utc::now();
-    let target_dir_path = current_dir.join(format!("pgmeter-{}", now.format("%Y-%m-%dT%H:%M:%S")));
+    // Basic ISO 8601 (no `:`), so the name is valid on every filesystem and
+    // needs no quoting in a shell.
+    let target_dir_path = current_dir.join(format!("pgmeter-{}", now.format("%Y%m%dT%H%M%SZ")));
 
     target_dir_path
 }

@@ -31,6 +31,7 @@ below — they are not audited, full-specification TPC benchmarks.
 
 - Rust 1.85 or later (declared as `rust-version` in `Cargo.toml`)
 - PostgreSQL 12 or later
+- Linux or macOS (developed and tested on Linux; Windows is not supported)
 
 ## Installation
 
@@ -159,7 +160,8 @@ pgmeter -H localhost -U postgres -d benchmark run --spec samples/pgm-c -c 10 -T 
 
 ### Results Directory
 
-Each benchmark run creates a timestamped directory (e.g., `pgmeter-2024-01-15T10:30:00/`) containing:
+Each benchmark run creates a timestamped directory in the current directory
+(UTC, e.g. `pgmeter-20240115T103000Z/`) containing:
 
 - `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
 - `run.json` - Run parameters, elapsed and ramp-up times, and `rampup_end_ts`, the
