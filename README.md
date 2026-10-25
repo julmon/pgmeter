@@ -58,8 +58,13 @@ pgmeter uses PostgreSQL connection parameters similar to standard PostgreSQL too
 | `-p, --port` | `PGPORT` | 5432 | Database server port |
 | `-U, --username` | `PGUSER` | (current user) | Database user name |
 | `-d, --dbname` | `PGDATABASE` | (current user) | Database name to connect to |
+| `--sslmode` | `PGSSLMODE` | prefer | TLS: `disable`, `prefer`, `require` (encrypt, no certificate check), `verify-ca` or `verify-full` (encrypt and check the server certificate against the system CA store) |
 
 The password can be provided via the `PGPASSWORD` environment variable.
+TLS uses rustls, so nothing has to be installed; `sslmode=require` matches
+libpq in encrypting without authenticating the server, and the `verify-*`
+modes need the server's CA in the system store (a custom CA file is not
+supported yet).
 
 ### Workflow
 

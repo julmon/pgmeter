@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use postgres::{Client, NoTls};
+use postgres::Client;
 use rand::prelude::*;
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 mod benchmark;
 mod data_agg;
@@ -20,12 +21,13 @@ pub mod error;
 mod report;
 mod summary;
 mod terminal;
+mod tls;
 mod txmessage;
 mod yaml_benchmark;
 mod yaml_lua;
 mod yaml_types;
 
-use super::args::{OutputFormat, RunArgs};
+use super::args::{OutputFormat, RunArgs, SslMode};
 use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
 use error::{error_detail, Error};
 use txmessage::{TXMessage, TXMessageKind};
@@ -41,6 +43,9 @@ use yaml_benchmark::YamlBenchmark;
 
 pub struct Executor {
     dsn: String,
+    /// TLS connector matching the requested sslmode, cloned into every
+    /// connection (RELEASE_REVIEW C4).
+    tls: MakeRustlsConnect,
     spec_file: String,
     /// The spec, its scripts and modules, parsed once at construction and
     /// shared by every pipeline step and client thread (RELEASE_REVIEW C3).
@@ -127,10 +132,12 @@ pub fn exit_with_error(error: &Error) -> ! {
 }
 
 impl Executor {
-    pub fn new(dsn: String, spec_file: String) -> Result<Executor, Error> {
+    pub fn new(dsn: String, sslmode: SslMode, spec_file: String) -> Result<Executor, Error> {
         let benchmark = Arc::new(YamlBenchmark::from_file(&spec_file, 0, 0, 0)?);
+        let tls = tls::connector(sslmode)?;
         Ok(Executor {
             dsn,
+            tls,
             spec_file,
             benchmark,
             counters: HashMap::new(),
@@ -199,7 +206,7 @@ impl Executor {
         self.throughput_unit = benchmark_client.spec.metrics.throughput_unit.clone();
         self.throughput_factor = benchmark_client.spec.metrics.per.factor();
         let max_id: u32 = {
-            let mut client = Executor::connect(self.dsn.clone())?;
+            let mut client = self.connect()?;
             let max_id = benchmark_client.get_default_max_id(&mut client)?;
             terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
             max_id
@@ -361,6 +368,7 @@ impl Executor {
             }
 
             let dsn = self.dsn.clone();
+            let tls = self.tls.clone();
             let benchmark = Arc::clone(&benchmark);
             let tx_clone = tx.clone();
             let abort = Arc::clone(&abort);
@@ -368,7 +376,7 @@ impl Executor {
 
             let handle = thread::spawn(move || -> Result<(), Error> {
                 let setup = (|| {
-                    let mut client = Client::connect(&dsn, NoTls).map_err(|e| {
+                    let mut client = Client::connect(&dsn, tls).map_err(|e| {
                         Error::Other(format!(
                             "client {}: connection failed: {}",
                             client_id,
@@ -642,8 +650,8 @@ impl Executor {
     }
 
     // Open a new connection to the database and returns a Client
-    fn connect(dsn: String) -> Result<Client, Error> {
-        Client::connect(&dsn, NoTls).map_err(Error::from)
+    fn connect(&self) -> Result<Client, Error> {
+        Client::connect(&self.dsn, self.tls.clone()).map_err(Error::from)
     }
 
     // Initialize database schemabenchmark: create tables
@@ -654,7 +662,7 @@ impl Executor {
         terminal::start_msg(command, message);
 
         // New database connection
-        let mut client = Executor::connect(self.dsn.clone())?;
+        let mut client = self.connect()?;
 
         // Load the corresponding benchmark client
         let benchmark_client = self.get_benchmark(0, 0, 0);
@@ -689,7 +697,7 @@ impl Executor {
             .map_err(|e| Error::io(format!("Failed to read script file '{}'", path), e))?;
 
         // Execute the script
-        let mut client = Executor::connect(self.dsn.clone())?;
+        let mut client = self.connect()?;
         client.batch_execute(&sql)?;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
@@ -708,7 +716,7 @@ impl Executor {
         terminal::start_msg(command, message);
 
         // New database connection
-        let mut client = Executor::connect(self.dsn.clone())?;
+        let mut client = self.connect()?;
 
         // Execute PreLoadData
         let duration_us = benchmark_client.pre_load_data(&mut client)?;
@@ -741,6 +749,7 @@ impl Executor {
             // Cloning values before passing them to the thread
             let job_ids = ids[(j - 1) as usize].clone();
             let dsn = self.dsn.clone();
+            let tls = self.tls.clone();
 
             // Load the corresponding benchmark client
             let job_benchmark_client = self.get_benchmark(scalefactor, 0, 0);
@@ -748,7 +757,7 @@ impl Executor {
             // Starting a new job into its dedicated thread
             let job = thread::spawn(move || -> Result<(), Error> {
                 // New database connection
-                let mut job_client = Executor::connect(dsn)?;
+                let mut job_client = Client::connect(&dsn, tls)?;
                 job_benchmark_client.load_data(&mut job_client, job_ids)?;
                 Ok(())
             });
@@ -785,11 +794,12 @@ impl Executor {
             // Cloning values before passing them to the thread
             let job_stmts = rows[(j - 1) as usize].clone();
             let dsn = self.dsn.clone();
+            let tls = self.tls.clone();
 
             // Starting a new job into its dedicated thread
             let job = thread::spawn(move || -> Result<(), Error> {
                 // New database connection
-                let mut client = Executor::connect(dsn)?;
+                let mut client = Client::connect(&dsn, tls)?;
 
                 for stmt in job_stmts.iter() {
                     if use_transaction {
@@ -884,7 +894,7 @@ impl Executor {
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Forcing checkpoint");
-        let mut client = Executor::connect(self.dsn.clone())?;
+        let mut client = self.connect()?;
         client.batch_execute("CHECKPOINT")?;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
@@ -1008,7 +1018,7 @@ impl Executor {
             }
         };
 
-        let mut client = match Executor::connect(self.dsn.clone()) {
+        let mut client = match self.connect() {
             Ok(client) => client,
             Err(error) => {
                 terminal::err_msg(&error.to_string());
@@ -1084,6 +1094,7 @@ mod tests {
 
         let executor = Executor::new(
             "postgresql://u@localhost:5432/db".to_string(),
+            crate::args::SslMode::Disable,
             spec_path.to_string_lossy().into_owned(),
         )
         .unwrap();

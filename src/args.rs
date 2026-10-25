@@ -97,6 +97,8 @@ pub struct PgMtrArgs {
     pub password: String,
     // Database name
     pub dbname: String,
+    // TLS requirement for the connections (libpq's sslmode)
+    pub sslmode: SslMode,
     // Sub-command selected on the command line
     pub action: Action,
     // Suppress decorative progress output; emit only result data
@@ -194,6 +196,22 @@ impl PgMtrArgs {
             .required(false)
             .value_name("DBNAME")
             .default_value(&default_username);
+
+        // Define the global --sslmode command line option
+        let sslmode_option = Arg::new("sslmode")
+            .long("sslmode")
+            .action(ArgAction::Set)
+            .global(true)
+            .env("PGSSLMODE")
+            .help(
+                "TLS requirement, as libpq's sslmode: disable, prefer, require \
+                 (encrypt, no certificate check), verify-ca or verify-full \
+                 (encrypt and verify the server certificate against the system CAs)",
+            )
+            .required(false)
+            .value_name("MODE")
+            .value_parser(["disable", "prefer", "require", "verify-ca", "verify-full"])
+            .default_value("prefer");
 
         // run options
         // run: Define the --client/-c command line option
@@ -385,7 +403,8 @@ impl PgMtrArgs {
             .arg(host_option)
             .arg(port_option)
             .arg(username_option)
-            .arg(dbname_option);
+            .arg(dbname_option)
+            .arg(sslmode_option);
 
         // Extract the matches
         let matches = cmd.try_get_matches_from(args)?;
@@ -395,6 +414,8 @@ impl PgMtrArgs {
         let port = *matches.get_one::<u16>("port").unwrap();
         let username = matches.get_one::<String>("username").unwrap();
         let dbname = matches.get_one::<String>("dbname").unwrap();
+        let sslmode = SslMode::parse(matches.get_one::<String>("sslmode").unwrap())
+            .expect("clap restricts --sslmode to the known values");
 
         // Helper function to parse init arguments
         fn parse_init_args(bm_m: &clap::ArgMatches) -> InitArgs {
@@ -505,6 +526,7 @@ impl PgMtrArgs {
             username: username.to_string(),
             password,
             dbname: dbname.to_string(),
+            sslmode,
             action,
             quiet,
             run_args,
@@ -538,17 +560,62 @@ fn pick_username(candidates: impl IntoIterator<Item = Option<String>>) -> String
         .unwrap_or_else(|| "postgres".to_string())
 }
 
+/// libpq's `sslmode`, as accepted by `--sslmode` / `PGSSLMODE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SslMode {
+    /// Plain connection only.
+    Disable,
+    /// Try TLS, fall back to plain if the server has no TLS (libpq's default).
+    Prefer,
+    /// TLS required, server certificate not checked.
+    Require,
+    /// TLS required, certificate checked against the system CA store.
+    VerifyCa,
+    /// TLS required, certificate and host name checked against the system CA store.
+    VerifyFull,
+}
+
+impl SslMode {
+    pub fn parse(value: &str) -> Option<SslMode> {
+        Some(match value {
+            "disable" => SslMode::Disable,
+            "prefer" => SslMode::Prefer,
+            "require" => SslMode::Require,
+            "verify-ca" => SslMode::VerifyCa,
+            "verify-full" => SslMode::VerifyFull,
+            _ => return None,
+        })
+    }
+
+    /// The value handed to the postgres driver. It only knows disable, prefer
+    /// and require; whether the certificate is verified is decided by the
+    /// TLS connector built for the mode (see `executor::tls`).
+    pub fn driver_value(self) -> &'static str {
+        match self {
+            SslMode::Disable => "disable",
+            SslMode::Prefer => "prefer",
+            SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => "require",
+        }
+    }
+
+    /// Whether the server certificate must chain to a trusted CA.
+    pub fn verifies_certificate(self) -> bool {
+        matches!(self, SslMode::VerifyCa | SslMode::VerifyFull)
+    }
+}
+
 // Returns the database connection string based on CLI args. Every user-supplied
 // component is percent-encoded so special characters (e.g. '@', ':', '/' in a
 // password or a socket-directory host path) don't corrupt the URL.
 pub fn get_dsn(args: &PgMtrArgs) -> String {
     format!(
-        "postgresql://{}:{}@{}:{}/{}",
+        "postgresql://{}:{}@{}:{}/{}?sslmode={}",
         encode(&args.username),
         encode(&args.password),
         encode(&args.host),
         args.port,
         encode(&args.dbname),
+        args.sslmode.driver_value(),
     )
 }
 
@@ -675,6 +742,72 @@ fn split_pgpass_line(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // RELEASE_REVIEW C4: --sslmode / PGSSLMODE reach the DSN and the connector.
+    #[test]
+    fn sslmode_parses_defaults_to_prefer_and_maps_to_the_driver() {
+        for (text, mode, driver, verifies) in [
+            ("disable", SslMode::Disable, "disable", false),
+            ("prefer", SslMode::Prefer, "prefer", false),
+            ("require", SslMode::Require, "require", false),
+            ("verify-ca", SslMode::VerifyCa, "require", true),
+            ("verify-full", SslMode::VerifyFull, "require", true),
+        ] {
+            let parsed = SslMode::parse(text).unwrap();
+            assert_eq!(parsed, mode);
+            assert_eq!(parsed.driver_value(), driver);
+            assert_eq!(parsed.verifies_certificate(), verifies);
+        }
+        assert_eq!(SslMode::parse("allow"), None);
+
+        let args = PgMtrArgs::new_from(
+            "u".to_string(),
+            ["pgmeter", "run", "--spec", "samples/pgm-b"].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(args.sslmode, SslMode::Prefer);
+        assert!(
+            get_dsn(&args).ends_with("?sslmode=prefer"),
+            "{}",
+            get_dsn(&args)
+        );
+
+        let args = PgMtrArgs::new_from(
+            "u".to_string(),
+            [
+                "pgmeter",
+                "--sslmode",
+                "verify-full",
+                "run",
+                "--spec",
+                "samples/pgm-b",
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(args.sslmode, SslMode::VerifyFull);
+        assert!(
+            get_dsn(&args).ends_with("?sslmode=require"),
+            "{}",
+            get_dsn(&args)
+        );
+
+        let err = PgMtrArgs::new_from(
+            "u".to_string(),
+            [
+                "pgmeter",
+                "--sslmode",
+                "allow",
+                "run",
+                "--spec",
+                "samples/pgm-b",
+            ]
+            .into_iter(),
+        )
+        .err()
+        .expect("unknown sslmode must be rejected");
+        assert!(err.to_string().contains("sslmode"), "{err}");
+    }
 
     // Regression for RELEASE_REVIEW C1: the lookup used to `unwrap()` the
     // passwd entry and panicked before argument parsing when the UID had none
