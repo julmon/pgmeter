@@ -1,3 +1,6 @@
 /target
 /data
+# Benchmark result directories written by `pgmeter run` into the current
+# directory (`pgmtr-` is the prefix used by pre-rename builds).
 /pgmeter-*/
+/pgmtr-*/
