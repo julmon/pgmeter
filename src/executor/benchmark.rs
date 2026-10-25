@@ -1,46 +1,23 @@
-use super::error::Error;
-use postgres::Client;
 use tabled::Tabled;
 
-// Transaction specifications
+/// A transaction of the workload, as the executor sees it: the id used in
+/// the logs and counters, the display name and the selection weight.
 #[derive(Clone)]
 pub struct BenchmarkTransaction {
     // Must be unique and greater than 0
     pub id: u16,
     // Transaction name
     pub name: String,
-    // Probability of the transaction to be executed. From 0 (never) to 100 (alaways executed).
+    // Probability of the transaction to be executed. From 0 (never) to 100 (always executed).
     pub weight: u16,
-    // Description of the transaction, useful for the report
-    #[allow(dead_code)]
-    pub description: String,
 }
 
-/// Prepared statements holder for synchronous benchmark execution
-/// This allows reusing prepared statements across multiple transactions
-pub struct PreparedStatements {
-    #[allow(dead_code)]
-    pub statements: Vec<postgres::Statement>,
-}
-
-impl PreparedStatements {
-    pub fn new() -> Self {
-        PreparedStatements {
-            statements: Vec::new(),
-        }
-    }
-}
-
+/// Post-ramp-up counters kept by the data collector for one transaction.
 #[derive(Clone)]
 pub struct Counter {
     pub n_commits: u64,
     pub n_total: u64,
     pub total_duration_ms: f64,
-}
-
-#[derive(Clone)]
-pub struct BenchmarkStmt {
-    pub sql: String,
 }
 
 #[derive(Tabled, Clone, Debug)]
@@ -59,21 +36,6 @@ pub struct ResponseTimeStatistics {
     pub percentile_95: f64,
     #[tabled(rename = "99% (ms)")]
     pub percentile_99: f64,
-}
-
-/// Synchronous ReadWrite trait for high-performance benchmark execution
-/// Uses prepared statements and synchronous I/O (matches pgbench architecture)
-pub trait ReadWriteSync: Send + Sync {
-    /// Prepare all statements needed for transactions (called once per connection)
-    fn prepare_statements(&self, client: &mut Client) -> Result<PreparedStatements, Error>;
-
-    /// Execute a transaction using prepared statements (hot path)
-    fn execute_rw_transaction_sync(
-        &self,
-        client: &mut Client,
-        prepared: &PreparedStatements,
-        transaction: &BenchmarkTransaction,
-    ) -> Result<u128, Error>;
 }
 
 // Per-transaction headline results. The throughput is expressed in the unit
@@ -104,16 +66,4 @@ impl TransactionSummary {
             throughput,
         }
     }
-}
-
-pub trait Benchmark {
-    fn initialize_schema(&self, client: &mut Client) -> Result<u128, Error>;
-    fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error>;
-    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error>;
-    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, Error>;
-    fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction>;
-    fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt>;
-    fn get_fkey_ddls(&self) -> Vec<BenchmarkStmt>;
-    fn get_index_ddls(&self) -> Vec<BenchmarkStmt>;
-    fn get_vacuum_stmts(&self) -> Vec<BenchmarkStmt>;
 }

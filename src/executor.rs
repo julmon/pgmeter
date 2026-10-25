@@ -28,7 +28,7 @@ mod yaml_lua;
 mod yaml_types;
 
 use super::args::{OutputFormat, RunArgs, SslMode};
-use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
+use benchmark::{Counter, ResponseTimeStatistics};
 use error::{error_detail, Error};
 use txmessage::{TXMessage, TXMessageKind};
 
@@ -376,17 +376,16 @@ impl Executor {
 
             let handle = thread::spawn(move || -> Result<(), Error> {
                 let setup = (|| {
-                    let mut client = Client::connect(&dsn, tls).map_err(|e| {
+                    let client = Client::connect(&dsn, tls).map_err(|e| {
                         Error::Other(format!(
                             "client {}: connection failed: {}",
                             client_id,
                             error_detail(&e)
                         ))
                     })?;
-                    let prepared = benchmark.prepare_statements(&mut client)?;
-                    Ok::<_, Error>((client, prepared))
+                    Ok::<_, Error>(client)
                 })();
-                let (mut client, prepared) = match setup {
+                let mut client = match setup {
                     Ok(ready) => ready,
                     Err(error) => {
                         abort.store(true, Ordering::Relaxed);
@@ -420,9 +419,8 @@ impl Executor {
                     };
                     let transaction = &transactions[tx_idx];
 
-                    // Execute transaction using prepared statements
-                    match benchmark.execute_rw_transaction_sync(&mut client, &prepared, transaction)
-                    {
+                    // Execute the transaction
+                    match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
                         Ok(duration) => {
                             let m =
                                 TXMessage::committed(transaction.id, client_id as u32, duration);
@@ -631,9 +629,6 @@ impl Executor {
                         ramping_up = false;
                         rampup_end_ts = Some(start_time + start_instant.elapsed().as_secs() as i64);
                     }
-                    TXMessageKind::Default => {
-                        // Should not happen
-                    }
                 }
             }
             // Flush buffers before sending counters
@@ -777,7 +772,7 @@ impl Executor {
     pub fn exec_stmts(
         &mut self,
         n_jobs: u32,
-        stmts: Vec<BenchmarkStmt>,
+        stmts: Vec<String>,
         use_transaction: bool,
     ) -> Result<(), Error> {
         // We want to get one row per job and the ids balanced across the rowss.
@@ -786,7 +781,7 @@ impl Executor {
             rows.push(Vec::new());
         }
         for (n, stmt) in stmts.iter().enumerate() {
-            rows[(n + 1) % n_jobs as usize].push(stmt.sql.clone());
+            rows[(n + 1) % n_jobs as usize].push(stmt.clone());
         }
         let mut jobs = Vec::new();
 
@@ -1072,7 +1067,7 @@ fn join_jobs(jobs: Vec<JoinHandle<Result<(), Error>>>) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_log_message, Benchmark, Executor};
+    use super::{escape_log_message, Executor};
 
     // Regression for RELEASE_REVIEW C3: the spec is read and parsed once, at
     // construction. Before, every pipeline step and every client thread

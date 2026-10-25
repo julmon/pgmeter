@@ -103,7 +103,6 @@ mod tests {
             id,
             name: name.to_string(),
             weight: 1,
-            description: String::new(),
         }
     }
 
