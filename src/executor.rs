@@ -42,6 +42,9 @@ use yaml_benchmark::YamlBenchmark;
 pub struct Executor {
     dsn: String,
     spec_file: String,
+    /// The spec, its scripts and modules, parsed once at construction and
+    /// shared by every pipeline step and client thread (RELEASE_REVIEW C3).
+    benchmark: Arc<YamlBenchmark>,
     counters: HashMap<u16, Counter>,
     /// Log timestamp at which ramp-up ended; samples before it are excluded
     /// from the statistics and the histogram (RELEASE_REVIEW B2).
@@ -122,9 +125,11 @@ pub fn exit_with_error(error: &Error) -> ! {
 
 impl Executor {
     pub fn new(dsn: String, spec_file: String) -> Result<Executor, Error> {
+        let benchmark = Arc::new(YamlBenchmark::from_file(&spec_file, 0, 0, 0)?);
         Ok(Executor {
             dsn,
             spec_file,
+            benchmark,
             counters: HashMap::new(),
             rampup_end_ts: None,
             total_time_ms: 0,
@@ -186,7 +191,7 @@ impl Executor {
         // max is auto-detected from the dataset at run time.
         let min_id: u32 = 1;
         terminal::start_msg(command, "Fetching maximum ID value");
-        let benchmark_client = self.get_benchmark(0, 0, 0)?;
+        let benchmark_client = self.get_benchmark(0, 0, 0);
         self.throughput_unit = benchmark_client.spec.metrics.throughput_unit.clone();
         self.throughput_factor = benchmark_client.spec.metrics.per.factor();
         let max_id: u32 = {
@@ -278,7 +283,7 @@ impl Executor {
         if terminal::is_quiet() {
             return Ok(());
         }
-        let spec_name = self.get_benchmark(0, 0, 0)?.spec.name.clone();
+        let spec_name = self.get_benchmark(0, 0, 0).spec.name.clone();
         let started: DateTime<Utc> = Utc::now();
         eprintln!();
         eprintln!("pgmeter {} - {}", env!("CARGO_PKG_VERSION"), spec_name);
@@ -319,6 +324,9 @@ impl Executor {
         // failure) so the other clients stop instead of running out the clock.
         let abort = Arc::new(AtomicBool::new(false));
 
+        // The parsed spec with this run's id range, shared by every client.
+        let benchmark = Arc::new(self.benchmark.with_context(0, min_id, max_id));
+
         // Start the clients using std::thread
         for client_id in 1..=n_clients {
             let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
@@ -328,7 +336,7 @@ impl Executor {
             }
 
             let dsn = self.dsn.clone();
-            let spec_file = self.spec_file.clone();
+            let benchmark = Arc::clone(&benchmark);
             let tx_clone = tx.clone();
             let abort = Arc::clone(&abort);
 
@@ -341,11 +349,10 @@ impl Executor {
                             error_detail(&e)
                         ))
                     })?;
-                    let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id)?;
                     let prepared = benchmark.prepare_statements(&mut client)?;
-                    Ok::<_, Error>((client, benchmark, prepared))
+                    Ok::<_, Error>((client, prepared))
                 })();
-                let (mut client, benchmark, prepared) = match setup {
+                let (mut client, prepared) = match setup {
                     Ok(ready) => ready,
                     Err(error) => {
                         abort.store(true, Ordering::Relaxed);
@@ -623,7 +630,7 @@ impl Executor {
         let mut client = Executor::connect(self.dsn.clone())?;
 
         // Load the corresponding benchmark client
-        let benchmark_client = self.get_benchmark(0, 0, 0)?;
+        let benchmark_client = self.get_benchmark(0, 0, 0);
 
         // Initialize the database model/schema
         let duration_us = benchmark_client.initialize_schema(&mut client)?;
@@ -666,7 +673,7 @@ impl Executor {
     // Generate benchmark data
     pub fn load_data(&mut self, scalefactor: u32, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark client
-        let benchmark_client = self.get_benchmark(scalefactor, 0, 0)?;
+        let benchmark_client = self.get_benchmark(scalefactor, 0, 0);
 
         let command = "INIT";
         let message = "Pre-loading operations";
@@ -709,7 +716,7 @@ impl Executor {
             let dsn = self.dsn.clone();
 
             // Load the corresponding benchmark client
-            let job_benchmark_client = self.get_benchmark(scalefactor, 0, 0)?;
+            let job_benchmark_client = self.get_benchmark(scalefactor, 0, 0);
 
             // Starting a new job into its dedicated thread
             let job = thread::spawn(move || -> Result<(), Error> {
@@ -778,19 +785,15 @@ impl Executor {
         join_jobs(jobs)
     }
 
-    fn get_benchmark(
-        &mut self,
-        scalefactor: u32,
-        min_id: u32,
-        max_id: u32,
-    ) -> Result<YamlBenchmark, Error> {
-        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id)
+    /// The parsed benchmark with the given scale factor and id range applied.
+    fn get_benchmark(&self, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
+        self.benchmark.with_context(scalefactor, min_id, max_id)
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs
     pub fn add_primary_keys(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Primary keys creation");
@@ -813,7 +816,7 @@ impl Executor {
         }
 
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Foreign keys creation");
@@ -826,7 +829,7 @@ impl Executor {
     // Execute additional indexes DDLs using multiple concurrent jobs
     pub fn add_indexes(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Additional indexes creation");
@@ -839,7 +842,7 @@ impl Executor {
     // Execute VACUUM statementsusing multiple concurrent jobs
     pub fn vacuum(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Vacuuming tables");
@@ -868,7 +871,7 @@ impl Executor {
 
         terminal::start_msg("RUN", "Aggregating data");
 
-        let transactions = self.get_benchmark(0, 0, 0)?.get_transactions_rw();
+        let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
 
         data_agg::aggregate_transaction_data(
             LOG_FILE,
@@ -885,7 +888,7 @@ impl Executor {
 
     pub fn print_results(&mut self, format: OutputFormat) -> Result<&mut Self, Error> {
         // Get transactions details and the headline throughput metric from the spec.
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let transactions = benchmark.get_transactions_rw();
         let throughput_unit = benchmark.spec.metrics.throughput_unit.clone();
         let throughput_factor = benchmark.spec.metrics.per.factor();
@@ -965,7 +968,7 @@ impl Executor {
         let start = Instant::now();
         terminal::start_msg("RUN", "Generating HTML report");
 
-        let benchmark = self.get_benchmark(0, 0, 0)?;
+        let benchmark = self.get_benchmark(0, 0, 0);
         let transactions = benchmark.get_transactions_rw();
         let spec = benchmark.spec.clone();
 
@@ -1030,7 +1033,44 @@ fn join_jobs(jobs: Vec<JoinHandle<Result<(), Error>>>) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_log_message;
+    use super::{escape_log_message, Benchmark, Executor};
+
+    // Regression for RELEASE_REVIEW C3: the spec is read and parsed once, at
+    // construction. Before, every pipeline step and every client thread
+    // re-read the YAML and the Lua files, so removing the file here would
+    // have failed the first `get_benchmark`.
+    #[test]
+    fn spec_is_parsed_once_at_construction() {
+        let dir = std::env::temp_dir().join(format!("pgmeter-c3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec_path = dir.join("spec.yaml");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/samples/custom-simple/spec.yaml"
+            ),
+            &spec_path,
+        )
+        .unwrap();
+
+        let executor = Executor::new(
+            "postgresql://u@localhost:5432/db".to_string(),
+            spec_path.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let benchmark = executor.get_benchmark(3, 1, 7);
+        assert_eq!(
+            (benchmark.scalefactor, benchmark.min_id, benchmark.max_id),
+            (3, 1, 7)
+        );
+        assert_eq!(benchmark.spec.name, "my-app-benchmark");
+        assert_eq!(
+            executor.get_benchmark(0, 0, 0).get_transactions_rw().len(),
+            3
+        );
+    }
 
     // Regression for RELEASE_REVIEW B11: a Lua traceback or a multi-line
     // PostgreSQL error used to be written raw, breaking the one-record-per-line

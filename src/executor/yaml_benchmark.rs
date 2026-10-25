@@ -12,6 +12,7 @@ use super::error::Error;
 use super::yaml_lua;
 use super::yaml_types::{BenchmarkSpec, TransactionMode};
 
+#[derive(Clone)]
 pub struct YamlBenchmark {
     pub spec: BenchmarkSpec,
     pub scalefactor: u32,
@@ -71,6 +72,18 @@ impl YamlBenchmark {
         })?;
 
         Self::from_spec(spec, spec_dir, scalefactor, min_id, max_id)
+    }
+
+    /// The same parsed spec and scripts with another scale factor and id
+    /// range. Cloning the parsed data is cheap next to re-reading and
+    /// re-parsing the YAML and every Lua file, which is what each pipeline
+    /// step and client thread used to do.
+    pub fn with_context(&self, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
+        let mut benchmark = self.clone();
+        benchmark.scalefactor = scalefactor;
+        benchmark.min_id = min_id;
+        benchmark.max_id = max_id;
+        benchmark
     }
 
     /// Build the benchmark from an already parsed spec. Script and module
