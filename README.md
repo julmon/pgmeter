@@ -240,6 +240,9 @@ are trademarks of the Transaction Processing Performance Council. See
 
 pgmeter is released under the [PostgreSQL License](LICENSE).
 
+The binary and the generated reports embed third-party components (Chart.js,
+Luau) under their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.

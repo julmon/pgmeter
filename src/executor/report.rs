@@ -822,6 +822,45 @@ transactions:
         assert!(html.contains("id=\"histogram\""));
         assert!(html.contains("Chart")); // inlined chart.js present
     }
+
+    // Returns the version string from the vendored Chart.js license header,
+    // e.g. "4.4.1" from " * Chart.js v4.4.1".
+    fn chart_js_version() -> &'static str {
+        let marker = "Chart.js v";
+        let start = CHART_JS.find(marker).expect("Chart.js header missing") + marker.len();
+        let rest = &CHART_JS[start..];
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    // Chart.js is MIT licensed: its copyright and permission notice must
+    // survive in every generated report, which inlines the file verbatim.
+    #[test]
+    fn inlined_chart_js_keeps_license_header_in_reports() {
+        let html = render_html("{}");
+        for needle in ["Chart.js v", "Chart.js Contributors", "Released under the MIT License"] {
+            assert!(CHART_JS.contains(needle), "vendored asset lacks {needle:?}");
+            assert!(html.contains(needle), "rendered report lacks {needle:?}");
+        }
+    }
+
+    // THIRD_PARTY_NOTICES.md must exist (include_str! fails to compile
+    // otherwise) and name the exact Chart.js version that is vendored, so a
+    // future asset bump also updates the notice.
+    #[test]
+    fn third_party_notices_cover_embedded_components() {
+        let notices = include_str!("../../THIRD_PARTY_NOTICES.md");
+        let version = chart_js_version();
+        assert!(!version.is_empty());
+        assert!(
+            notices.contains(&format!("Chart.js {version}")),
+            "THIRD_PARTY_NOTICES.md does not mention Chart.js {version}"
+        );
+        assert!(notices.contains("Chart.js Contributors"));
+        assert!(notices.contains("## Luau"));
+        assert!(notices.contains("Roblox Corporation"));
+        assert!(notices.contains("Lua.org, PUC-Rio"));
+    }
 }
 
 const APP_JS: &str = r##"
