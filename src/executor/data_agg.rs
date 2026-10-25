@@ -380,6 +380,7 @@ pub fn results_json(
     stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
     workload_secs: f64,
+    interrupted: bool,
 ) -> String {
     let transactions: Vec<serde_json::Value> = summary
         .iter()
@@ -406,6 +407,7 @@ pub fn results_json(
     let doc = serde_json::json!({
         "throughput_unit": throughput_unit,
         "duration_s": workload_secs.round() as u64,
+        "interrupted": interrupted,
         "transactions": transactions,
     });
 
@@ -499,10 +501,14 @@ mod tests {
     #[test]
     fn results_json_includes_unit_and_latency() {
         let (summary, stats) = sample_results();
-        let out = results_json(&summary, &stats, "TPS", 30.2);
+        let out = results_json(&summary, &stats, "TPS", 30.2, false);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["throughput_unit"], "TPS");
         assert_eq!(v["duration_s"], 30);
+        assert_eq!(v["interrupted"], false);
+        let v: serde_json::Value =
+            serde_json::from_str(&results_json(&summary, &stats, "TPS", 1.0, true)).unwrap();
+        assert_eq!(v["interrupted"], true);
         let t = &v["transactions"][0];
         assert_eq!(t["name"], "Debit/credit");
         assert_eq!(t["committed"], 100);

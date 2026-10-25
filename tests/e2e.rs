@@ -313,6 +313,100 @@ fn pgm_b_init_then_run_with_csv_output() {
     fs::remove_dir_all(&cwd).ok();
 }
 
+/// Ctrl-C during the workload (RELEASE_REVIEW C5): the clients stop, the
+/// collector flushes, and the partial run is aggregated and reported with
+/// an `interrupted` marker, instead of the process dying with nothing on
+/// disk.
+#[test]
+fn ctrl_c_ends_the_run_with_partial_results() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let cwd = workdir("ctrl-c");
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-ctrl-c
+scaling:
+  unit: thing
+  max_id_query: "SELECT MAX(id) FROM e2e_ctrlc"
+schema:
+  tables:
+    - name: e2e_ctrlc
+      columns: [{name: id, type: int}]
+      primary_key: [id]
+load:
+  - table: e2e_ctrlc
+    copy_columns: [id]
+    rows_per_id: 1
+    row: "{{id}}\n"
+transactions:
+  - id: 1
+    name: ping
+    weight: 100
+    bindings:
+      tid: "rand_int(min_id, max_id)"
+    sql: "SELECT id FROM e2e_ctrlc WHERE id = {{tid}}"
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+    assert_success(
+        &pgmeter(&env, &cwd, &["init", "--spec", spec, "-s", "4"]),
+        "init ctrl-c",
+    );
+
+    // A run far longer than we wait, interrupted after ~3 s.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pgmeter"));
+    cmd.args([
+        "run", "--spec", spec, "-c", "2", "-T", "60", "--format", "json",
+    ])
+    .current_dir(&cwd)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn().expect("spawn pgmeter run");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let started = std::time::Instant::now();
+    let killed = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    assert!(killed.success());
+    let out = child.wait_with_output().expect("wait for pgmeter");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "run did not stop promptly after SIGINT"
+    );
+    assert_success(&out, "interrupted run");
+
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("JSON results");
+    assert_eq!(doc["interrupted"], true, "{doc}");
+    assert!(doc["duration_s"].as_u64().unwrap() < 60, "{doc}");
+    assert!(
+        doc["transactions"][0]["committed"].as_u64().unwrap() > 0,
+        "{doc}"
+    );
+
+    let dir = result_dir(&cwd);
+    assert!(dir.join("report.html").is_file());
+    let run_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(run_json["interrupted"], true, "{run_json}");
+    let log = fs::read_to_string(dir.join("transaction.log")).unwrap();
+    assert!(
+        log.lines().count() > 0,
+        "transaction.log must have been flushed"
+    );
+
+    fs::remove_dir_all(&cwd).ok();
+}
+
 #[test]
 fn failing_transactions_are_counted_and_the_run_completes() {
     let Some(env) = connection_env() else {
