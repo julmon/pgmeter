@@ -138,8 +138,7 @@ impl InitArgs {
 
 impl PgMtrArgs {
     pub fn new(default_username: String) -> Self {
-        Self::new_from(default_username, std::env::args_os().into_iter())
-            .unwrap_or_else(|e| e.exit())
+        Self::new_from(default_username, std::env::args_os()).unwrap_or_else(|e| e.exit())
     }
 
     fn new_from<I, T>(default_username: String, args: I) -> Result<Self, clap::Error>
@@ -500,16 +499,16 @@ impl PgMtrArgs {
 
         Ok(PgMtrArgs {
             host: host.to_string(),
-            port: port,
+            port,
             username: username.to_string(),
-            password: password,
+            password,
             dbname: dbname.to_string(),
-            action: action,
-            quiet: quiet,
-            run_args: run_args,
-            init_args: init_args,
-            spec_file: spec_file,
-            output_format: output_format,
+            action,
+            quiet,
+            run_args,
+            init_args,
+            spec_file,
+            output_format,
         })
     }
 }
@@ -581,7 +580,7 @@ fn lookup_pgpass(host: &str, port: u16, dbname: &str, username: &str) -> Option<
     }
 
     let port = port.to_string();
-    for line in BufReader::new(file).lines().flatten() {
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
         let line = line.trim_end();
         if line.is_empty() || line.starts_with('#') {
             continue;

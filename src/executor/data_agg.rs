@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, TransactionSummary};
 use polars::prelude::*;
@@ -43,8 +43,8 @@ fn safe_name(name: &str) -> String {
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
 pub fn aggregate_transaction_data(
     log_file: &str,
-    target_dir: &PathBuf,
-    transactions: &Vec<BenchmarkTransaction>,
+    target_dir: &Path,
+    transactions: &[BenchmarkTransaction],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Transaction log file parsing
     let df = LazyCsvReader::new(target_dir.join(log_file))
@@ -186,10 +186,10 @@ pub fn aggregate_transaction_data(
 
 // Reads the CSV file containing statistics and returns them as the following structure: HashMap<transaction_id: u16, ResponseTimeStatistices>
 pub fn get_stats(
-    target_dir: &PathBuf,
-    transactions: &Vec<BenchmarkTransaction>,
+    target_dir: &Path,
+    transactions: &[BenchmarkTransaction],
 ) -> Result<HashMap<u16, ResponseTimeStatistics>, Box<dyn std::error::Error>> {
-    let labels = vec!["mean", "std", "min", "95%", "99%", "max"];
+    let labels = ["mean", "std", "min", "95%", "99%", "max"];
 
     let mut stats_map: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
 
@@ -280,8 +280,8 @@ pub fn get_stats(
 // column counts (hence different natural widths), so the narrower one is grown
 // to match via `Width::increase`.
 pub fn print_transactions_tables(
-    summary: &Vec<TransactionSummary>,
-    stats: &Vec<ResponseTimeStatistics>,
+    summary: &[TransactionSummary],
+    stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
 ) {
     let header_rule = || {
@@ -349,8 +349,8 @@ pub fn print_transactions_tables(
 // Render the results as a pretty-printed JSON document for machine consumption.
 // `summary` and `stats` are aligned by index (same transaction order).
 pub fn results_json(
-    summary: &Vec<TransactionSummary>,
-    stats: &Vec<ResponseTimeStatistics>,
+    summary: &[TransactionSummary],
+    stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
     duration_s: u64,
 ) -> String {
@@ -388,8 +388,8 @@ pub fn results_json(
 // Render the results as CSV (one row per transaction). The throughput column is
 // labeled with the spec's configured unit, matching the table output.
 pub fn results_csv(
-    summary: &Vec<TransactionSummary>,
-    stats: &Vec<ResponseTimeStatistics>,
+    summary: &[TransactionSummary],
+    stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
 ) -> String {
     let mut out = String::new();
@@ -418,7 +418,7 @@ pub fn results_csv(
 
 // Quote a CSV field if it contains a comma, double-quote or newline.
 fn csv_field(s: &str) -> String {
-    if s.contains(|c| c == ',' || c == '"' || c == '\n') {
+    if s.contains([',', '"', '\n']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()

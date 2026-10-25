@@ -3,11 +3,11 @@
 #[repr(u8)]
 pub enum TXMessageKind {
     #[allow(dead_code)]
-    DEFAULT = 0,
-    COMMITTED = 1,
-    ERROR = 2,
-    TERMINATE = 3,
-    ENDOFRAMPUP = 4,
+    Default = 0,
+    Committed = 1,
+    Error = 2,
+    Terminate = 3,
+    EndOfRampup = 4,
 }
 
 /// Transaction message for communication between benchmark clients and data collector.
@@ -17,7 +17,7 @@ pub struct TXMessage {
     pub tx_id: u16,
     pub client_id: u32,
     pub tx_duration_us: u128,
-    /// Error message - only populated for ERROR kind (avoids allocation for commits)
+    /// Error message - only populated for the Error kind (avoids allocation for commits)
     pub error: Option<String>,
 }
 
@@ -26,7 +26,7 @@ impl TXMessage {
     #[inline]
     pub fn committed(tx_id: u16, client_id: u32, tx_duration_us: u128) -> TXMessage {
         TXMessage {
-            kind: TXMessageKind::COMMITTED,
+            kind: TXMessageKind::Committed,
             tx_id,
             client_id,
             tx_duration_us,
@@ -38,7 +38,7 @@ impl TXMessage {
     #[inline]
     pub fn error(tx_id: u16, client_id: u32, error: String) -> TXMessage {
         TXMessage {
-            kind: TXMessageKind::ERROR,
+            kind: TXMessageKind::Error,
             tx_id,
             client_id,
             tx_duration_us: 0,
@@ -50,7 +50,7 @@ impl TXMessage {
     #[inline]
     pub fn terminate_data_collector() -> TXMessage {
         TXMessage {
-            kind: TXMessageKind::TERMINATE,
+            kind: TXMessageKind::Terminate,
             tx_id: 0,
             client_id: 0,
             tx_duration_us: 0,
@@ -62,7 +62,7 @@ impl TXMessage {
     #[inline]
     pub fn end_of_rampup() -> TXMessage {
         TXMessage {
-            kind: TXMessageKind::ENDOFRAMPUP,
+            kind: TXMessageKind::EndOfRampup,
             tx_id: 0,
             client_id: 0,
             tx_duration_us: 0,
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn committed_carries_ids_and_duration_without_error() {
         let m = TXMessage::committed(7, 42, 1234);
-        assert!(matches!(m.kind, TXMessageKind::COMMITTED));
+        assert!(matches!(m.kind, TXMessageKind::Committed));
         assert_eq!(m.tx_id, 7);
         assert_eq!(m.client_id, 42);
         assert_eq!(m.tx_duration_us, 1234);
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn error_populates_message_and_zeroes_duration() {
         let m = TXMessage::error(3, 9, "deadlock".to_string());
-        assert!(matches!(m.kind, TXMessageKind::ERROR));
+        assert!(matches!(m.kind, TXMessageKind::Error));
         assert_eq!(m.tx_id, 3);
         assert_eq!(m.client_id, 9);
         assert_eq!(m.tx_duration_us, 0);
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn terminate_is_zeroed_control_message() {
         let m = TXMessage::terminate_data_collector();
-        assert!(matches!(m.kind, TXMessageKind::TERMINATE));
+        assert!(matches!(m.kind, TXMessageKind::Terminate));
         assert_eq!(m.tx_id, 0);
         assert_eq!(m.client_id, 0);
         assert_eq!(m.tx_duration_us, 0);
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn end_of_rampup_is_zeroed_control_message() {
         let m = TXMessage::end_of_rampup();
-        assert!(matches!(m.kind, TXMessageKind::ENDOFRAMPUP));
+        assert!(matches!(m.kind, TXMessageKind::EndOfRampup));
         assert_eq!(m.tx_id, 0);
         assert_eq!(m.client_id, 0);
         assert_eq!(m.tx_duration_us, 0);

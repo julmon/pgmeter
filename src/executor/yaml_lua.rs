@@ -28,19 +28,19 @@ unsafe impl Sync for CopyWriterHolder {}
 
 thread_local! {
     /// Thread-local Lua VM for script-mode transactions (has DB bridge functions).
-    static LUA_VM: RefCell<Option<Lua>> = RefCell::new(None);
+    static LUA_VM: RefCell<Option<Lua>> = const { RefCell::new(None) };
 
     /// Thread-local Lua VM for simple-mode binding evaluation (lightweight, no DB functions).
-    static EVAL_VM: RefCell<Option<Lua>> = RefCell::new(None);
+    static EVAL_VM: RefCell<Option<Lua>> = const { RefCell::new(None) };
 
     /// Transaction ids whose binding function has been compiled into EVAL_VM.
     static EVAL_FUNCS: RefCell<HashSet<u16>> = RefCell::new(HashSet::new());
 
     /// Thread-local pointer to the current postgres client.
-    static PG_CLIENT: RefCell<PgClientPtr> = RefCell::new(PgClientPtr(std::ptr::null_mut()));
+    static PG_CLIENT: RefCell<PgClientPtr> = const { RefCell::new(PgClientPtr(std::ptr::null_mut())) };
 
     /// Thread-local active COPY writer (only one at a time).
-    static COPY_WRITER: RefCell<CopyWriterHolder> = RefCell::new(CopyWriterHolder(None));
+    static COPY_WRITER: RefCell<CopyWriterHolder> = const { RefCell::new(CopyWriterHolder(None)) };
 
     /// Thread-local non-cryptographic RNG for data generation. Seeded once per
     /// thread from the OS, then reused across the millions of rand_int/rand_float
@@ -353,6 +353,8 @@ pub fn inject_context(
 
 /// Execute a Lua script on the current thread's VM, using the given client.
 /// Creates the VM lazily if it doesn't exist yet.
+// TODO(RELEASE_REVIEW D3): bundle the scaling context into a struct.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_script(
     client: &mut Client,
     script: &str,
@@ -380,10 +382,10 @@ pub fn execute_script(
             for (i, module_src) in modules.iter().enumerate() {
                 lua.load(module_src).exec().map_err(
                     |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Failed to load module {}: {}", i, e),
-                        ))
+                        Box::new(std::io::Error::other(format!(
+                            "Failed to load module {}: {}",
+                            i, e
+                        )))
                     },
                 )?;
             }
@@ -394,10 +396,10 @@ pub fn execute_script(
                 let chunk = format!("function {}()\n{}\nend", func_name, script_src);
                 lua.load(&chunk).exec().map_err(
                     |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Failed to load script for tx {}: {}", id, e),
-                        ))
+                        Box::new(std::io::Error::other(format!(
+                            "Failed to load script for tx {}: {}",
+                            id, e
+                        )))
                     },
                 )?;
             }
@@ -420,20 +422,14 @@ pub fn execute_script(
             Ok(f) => {
                 f.call::<()>(())
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        ))
+                        Box::new(std::io::Error::other(e.to_string()))
                     })?;
             }
             Err(_) => {
                 // Fallback: execute inline script directly
                 lua.load(script).exec().map_err(
                     |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        ))
+                        Box::new(std::io::Error::other(e.to_string()))
                     },
                 )?;
             }
@@ -856,10 +852,7 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
 }
 
 fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
-    Box::new(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        e.to_string(),
-    ))
+    Box::new(std::io::Error::other(e.to_string()))
 }
 
 #[cfg(test)]
