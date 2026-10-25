@@ -19,7 +19,9 @@ description: >
 # ---------------------------------------------------------------------------
 scaling:
   unit: scalefactor
-  max_id_query: "SELECT COUNT(*)::int / 10000 AS max_id FROM supplier"
+  # GREATEST(1, ...) so an empty or partially loaded supplier table yields 1,
+  # not 0 (which would make every rand_int(min_id, max_id) range empty).
+  max_id_query: "SELECT GREATEST(1, COUNT(*)::int / 10000) AS max_id FROM supplier"
   constants:
     suppliers_per_sf: 10000
 
