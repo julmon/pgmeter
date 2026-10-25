@@ -432,6 +432,7 @@ pub fn execute_load_script(
     script: &str,
     scalefactor: u32,
     constants: &HashMap<String, serde_yaml::Value>,
+    modules: &[String],
     ids: &[u32],
 ) -> Result<u128, Error> {
     let _bound = bind_client(client);
@@ -442,6 +443,15 @@ pub fn execute_load_script(
 
         lua.globals().set("scalefactor", scalefactor)?;
         inject_constants(&lua, constants)?;
+
+        // Shared modules (`scripts.modules`) are available to load scripts
+        // too, so helpers need not be duplicated between loaders and
+        // transactions (RELEASE_REVIEW E5).
+        for (i, module_src) in modules.iter().enumerate() {
+            lua.load(module_src)
+                .exec()
+                .map_err(|e| Error::lua(format!("Failed to load module {}: {}", i, e)))?;
+        }
 
         // Pass the list of IDs to load as a Lua table
         let ids_table = lua.create_table()?;

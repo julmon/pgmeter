@@ -586,7 +586,8 @@ scripts:
 ```
 
 Each listed file is loaded **once per worker thread**, at global scope, before
-any transaction runs. Use modules for:
+any transaction runs, and also into the VM of `pre_load_script` and
+`load_script`, so loaders and transactions can share helpers. Use modules for:
 
 - Helper functions shared across transactions.
 - Dispatch tables (e.g. `Q[1]..Q[22]` for PGM-H).
