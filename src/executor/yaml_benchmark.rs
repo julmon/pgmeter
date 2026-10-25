@@ -5,12 +5,10 @@ use std::time::Instant;
 
 use postgres::Client;
 
-use super::benchmark::{
-    Benchmark, BenchmarkStmt, BenchmarkTransaction, PreparedStatements, ReadWriteSync,
-};
+use super::benchmark::BenchmarkTransaction;
 use super::error::Error;
 use super::yaml_lua;
-use super::yaml_types::{BenchmarkSpec, TransactionMode};
+use super::yaml_types::{BenchmarkSpec, LoadMethod, TransactionMode};
 
 #[derive(Clone)]
 pub struct YamlBenchmark {
@@ -18,11 +16,11 @@ pub struct YamlBenchmark {
     pub scalefactor: u32,
     pub min_id: u32,
     pub max_id: u32,
-    pub table_ddls: Vec<BenchmarkStmt>,
-    pub pkey_ddls: Vec<BenchmarkStmt>,
-    pub fkey_ddls: Vec<BenchmarkStmt>,
-    pub index_ddls: Vec<BenchmarkStmt>,
-    pub vacuum_stmts: Vec<BenchmarkStmt>,
+    pub table_ddls: Vec<String>,
+    pub pkey_ddls: Vec<String>,
+    pub fkey_ddls: Vec<String>,
+    pub index_ddls: Vec<String>,
+    pub vacuum_stmts: Vec<String>,
     pub transactions_rw: Vec<BenchmarkTransaction>,
     /// Lua scripts keyed by transaction id
     pub lua_scripts: HashMap<u16, String>,
@@ -32,9 +30,6 @@ pub struct YamlBenchmark {
     pub pre_load_script: Option<String>,
     /// Lua script for per-id data loading (replaces template-based load section)
     pub load_script_src: Option<String>,
-    /// Base directory for resolving relative script_file paths
-    #[allow(dead_code)]
-    pub spec_dir: PathBuf,
 }
 
 impl YamlBenchmark {
@@ -129,23 +124,20 @@ impl YamlBenchmark {
             lua_modules,
             pre_load_script,
             load_script_src,
-            spec_dir,
         })
     }
 
-    fn generate_table_ddls(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
+    fn generate_table_ddls(spec: &BenchmarkSpec) -> Vec<String> {
         let mut ddls = Vec::new();
 
         // Pre-DDLs (sequences, extensions, etc.)
         for sql in &spec.schema.pre_ddls {
-            ddls.push(BenchmarkStmt { sql: sql.clone() });
+            ddls.push(sql.clone());
         }
 
         for table in &spec.schema.tables {
             // Drop table if exists
-            ddls.push(BenchmarkStmt {
-                sql: format!("DROP TABLE IF EXISTS {} CASCADE", table.name),
-            });
+            ddls.push(format!("DROP TABLE IF EXISTS {} CASCADE", table.name));
 
             // Build CREATE TABLE
             let columns: Vec<String> = table
@@ -180,48 +172,46 @@ impl YamlBenchmark {
                 sql.push_str(&format!(" WITH ({})", opts.join(", ")));
             }
 
-            ddls.push(BenchmarkStmt { sql });
+            ddls.push(sql);
         }
 
         ddls
     }
 
-    fn generate_pkey_ddls(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
+    fn generate_pkey_ddls(spec: &BenchmarkSpec) -> Vec<String> {
         let mut ddls = Vec::new();
 
         for table in &spec.schema.tables {
             if !table.primary_key.is_empty() {
-                ddls.push(BenchmarkStmt {
-                    sql: format!(
-                        "ALTER TABLE {} ADD PRIMARY KEY ({})",
-                        table.name,
-                        table.primary_key.join(", ")
-                    ),
-                });
+                ddls.push(format!(
+                    "ALTER TABLE {} ADD PRIMARY KEY ({})",
+                    table.name,
+                    table.primary_key.join(", ")
+                ));
             }
         }
 
         ddls
     }
 
-    fn generate_fkey_ddls(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
+    fn generate_fkey_ddls(spec: &BenchmarkSpec) -> Vec<String> {
         spec.schema
             .foreign_keys
             .iter()
-            .map(|fk| BenchmarkStmt {
-                sql: format!(
+            .map(|fk| {
+                format!(
                     "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
                     fk.table,
                     fk.name,
                     fk.columns.join(", "),
                     fk.references.table,
                     fk.references.columns.join(", ")
-                ),
+                )
             })
             .collect()
     }
 
-    fn generate_index_ddls(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
+    fn generate_index_ddls(spec: &BenchmarkSpec) -> Vec<String> {
         spec.schema
             .indexes
             .iter()
@@ -240,35 +230,31 @@ impl YamlBenchmark {
                     Some(p) => format!(" WHERE {}", p),
                     None => String::new(),
                 };
-                BenchmarkStmt {
-                    sql: format!(
-                        "CREATE {}INDEX {} ON {} {}({}){}{}",
-                        unique,
-                        idx.name,
-                        idx.table,
-                        using,
-                        idx.columns.join(", "),
-                        include,
-                        predicate
-                    ),
-                }
+                format!(
+                    "CREATE {}INDEX {} ON {} {}({}){}{}",
+                    unique,
+                    idx.name,
+                    idx.table,
+                    using,
+                    idx.columns.join(", "),
+                    include,
+                    predicate
+                )
             })
             .collect()
     }
 
-    fn generate_vacuum_stmts(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
-        let mut stmts: Vec<BenchmarkStmt> = spec
+    fn generate_vacuum_stmts(spec: &BenchmarkSpec) -> Vec<String> {
+        let mut stmts: Vec<String> = spec
             .schema
             .tables
             .iter()
-            .map(|t| BenchmarkStmt {
-                sql: format!("VACUUM FREEZE ANALYZE {}", t.name),
-            })
+            .map(|t| format!("VACUUM FREEZE ANALYZE {}", t.name))
             .collect();
 
         // Post-DDLs (sequence resets, etc.)
         for sql in &spec.schema.post_ddls {
-            stmts.push(BenchmarkStmt { sql: sql.clone() });
+            stmts.push(sql.clone());
         }
 
         stmts
@@ -281,7 +267,6 @@ impl YamlBenchmark {
                 id: tx.id,
                 name: tx.name.clone(),
                 weight: tx.weight,
-                description: tx.description.clone(),
             })
             .collect()
     }
@@ -418,11 +403,15 @@ impl YamlBenchmark {
         let batch_func = yaml_lua::compile_batch_row_template(&lua, &load_spec.row)
             .map_err(|e| format!("Failed to compile row template: {}", e))?;
 
-        let copy_sql = format!(
-            "COPY {} ({}) FROM stdin",
-            load_spec.table,
-            load_spec.copy_columns.join(", ")
-        );
+        // `method` is an enum with a single variant today; matching on it keeps
+        // the loader honest when another method is added.
+        let copy_sql = match load_spec.method {
+            LoadMethod::Copy => format!(
+                "COPY {} ({}) FROM stdin",
+                load_spec.table,
+                load_spec.copy_columns.join(", ")
+            ),
+        };
 
         for &id in ids {
             let batch_size = load_spec.batch_size;
@@ -627,15 +616,12 @@ fn max_id_from_value(value: Option<i64>) -> Result<u32, String> {
     }
 }
 
-impl ReadWriteSync for YamlBenchmark {
-    fn prepare_statements(&self, _client: &mut Client) -> Result<PreparedStatements, Error> {
-        Ok(PreparedStatements::new())
-    }
-
-    fn execute_rw_transaction_sync(
+impl YamlBenchmark {
+    /// Run one transaction on `client` and return its duration in
+    /// microseconds (the hot path of the client threads).
+    pub fn execute_rw_transaction_sync(
         &self,
         client: &mut Client,
-        _prepared: &PreparedStatements,
         transaction: &BenchmarkTransaction,
     ) -> Result<u128, Error> {
         // Find the transaction spec
@@ -694,20 +680,20 @@ impl ReadWriteSync for YamlBenchmark {
     }
 }
 
-impl Benchmark for YamlBenchmark {
-    fn initialize_schema(&self, client: &mut Client) -> Result<u128, Error> {
+impl YamlBenchmark {
+    pub fn initialize_schema(&self, client: &mut Client) -> Result<u128, Error> {
         let start = Instant::now();
 
         let mut transaction = client.transaction()?;
         for ddl in &self.table_ddls {
-            transaction.batch_execute(&ddl.sql)?;
+            transaction.batch_execute(ddl)?;
         }
         transaction.commit()?;
 
         Ok(start.elapsed().as_micros())
     }
 
-    fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error> {
+    pub fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error> {
         match &self.pre_load_script {
             Some(script) => yaml_lua::execute_load_script(
                 client,
@@ -720,7 +706,7 @@ impl Benchmark for YamlBenchmark {
         }
     }
 
-    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error> {
+    pub fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error> {
         let start = Instant::now();
 
         // If a load_script is defined, use it (Lua-based loading)
@@ -746,7 +732,7 @@ impl Benchmark for YamlBenchmark {
     /// bound of the id range. Accepts smallint, integer and bigint; NULL
     /// (`MAX()` over an empty table), no rows, or a value below 1 mean the
     /// dataset has not been loaded and are reported as errors, not panics.
-    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, Error> {
+    pub fn get_default_max_id(&self, client: &mut Client) -> Result<u32, Error> {
         let query = &self.spec.scaling.max_id_query;
         let rows = client.query(query, &[])?;
         let Some(row) = rows.first() else {
@@ -768,23 +754,23 @@ impl Benchmark for YamlBenchmark {
         max_id_from_value(value).map_err(|e| Error::spec(format!("{e}: {query}")))
     }
 
-    fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction> {
+    pub fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction> {
         self.transactions_rw.clone()
     }
 
-    fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt> {
+    pub fn get_pkey_ddls(&self) -> Vec<String> {
         self.pkey_ddls.clone()
     }
 
-    fn get_fkey_ddls(&self) -> Vec<BenchmarkStmt> {
+    pub fn get_fkey_ddls(&self) -> Vec<String> {
         self.fkey_ddls.clone()
     }
 
-    fn get_index_ddls(&self) -> Vec<BenchmarkStmt> {
+    pub fn get_index_ddls(&self) -> Vec<String> {
         self.index_ddls.clone()
     }
 
-    fn get_vacuum_stmts(&self) -> Vec<BenchmarkStmt> {
+    pub fn get_vacuum_stmts(&self) -> Vec<String> {
         self.vacuum_stmts.clone()
     }
 }
@@ -1008,7 +994,6 @@ transactions:
     // from COUNT(*), smallint, and a non-integer column.
     #[test]
     fn max_id_query_handles_null_and_integer_widths() {
-        use crate::executor::benchmark::Benchmark;
         use postgres::{Client, NoTls};
 
         let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
@@ -1074,7 +1059,6 @@ transactions:
     // ignored until end of transaction block", in both transaction modes.
     #[test]
     fn failed_transaction_leaves_connection_usable() {
-        use crate::executor::benchmark::{Benchmark, ReadWriteSync};
         use postgres::{Client, NoTls};
 
         let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
@@ -1117,11 +1101,9 @@ transactions:
 
         let benchmark = YamlBenchmark::from_file(spec_path.to_str().unwrap(), 1, 1, 1).unwrap();
         let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
-        let prepared = benchmark.prepare_statements(&mut client).unwrap();
-
         for tx in benchmark.get_transactions_rw() {
             let err = benchmark
-                .execute_rw_transaction_sync(&mut client, &prepared, &tx)
+                .execute_rw_transaction_sync(&mut client, &tx)
                 .expect_err("division by zero must fail");
             // The server message must survive in both modes (RELEASE_REVIEW
             // B16): the Lua runtime error carries it for script mode, and
@@ -1203,7 +1185,6 @@ transactions:
         let spec = sample_spec();
         let ddls: Vec<String> = YamlBenchmark::generate_table_ddls(&spec)
             .into_iter()
-            .map(|s| s.sql)
             .collect();
         assert_eq!(
             ddls,
@@ -1222,7 +1203,6 @@ transactions:
         let spec = sample_spec();
         let ddls: Vec<String> = YamlBenchmark::generate_pkey_ddls(&spec)
             .into_iter()
-            .map(|s| s.sql)
             .collect();
         // Only t1 declares a primary key.
         assert_eq!(
@@ -1236,7 +1216,6 @@ transactions:
         let spec = sample_spec();
         let ddls: Vec<String> = YamlBenchmark::generate_fkey_ddls(&spec)
             .into_iter()
-            .map(|s| s.sql)
             .collect();
         assert_eq!(
             ddls,
@@ -1252,7 +1231,6 @@ transactions:
         let spec = sample_spec();
         let ddls: Vec<String> = YamlBenchmark::generate_index_ddls(&spec)
             .into_iter()
-            .map(|s| s.sql)
             .collect();
         assert_eq!(
             ddls,
@@ -1268,7 +1246,6 @@ transactions:
         let spec = sample_spec();
         let stmts: Vec<String> = YamlBenchmark::generate_vacuum_stmts(&spec)
             .into_iter()
-            .map(|s| s.sql)
             .collect();
         assert_eq!(
             stmts,
@@ -1288,7 +1265,6 @@ transactions:
         assert_eq!(txs[0].id, 1);
         assert_eq!(txs[0].name, "tx-one");
         assert_eq!(txs[0].weight, 70);
-        assert_eq!(txs[0].description, "first");
         assert_eq!(txs[1].id, 2);
         assert_eq!(txs[1].weight, 30);
     }

@@ -2,7 +2,6 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 #[serde(deny_unknown_fields)]
 pub struct BenchmarkSpec {
     pub name: String,
@@ -79,7 +78,6 @@ impl ThroughputPer {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 #[serde(deny_unknown_fields)]
 pub struct ScalingSpec {
     pub unit: String,
@@ -168,7 +166,6 @@ pub struct IndexSpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 #[serde(deny_unknown_fields)]
 pub struct LoadSpec {
     pub table: String,

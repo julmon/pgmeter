@@ -2,8 +2,6 @@
 /// Using repr(u8) for smaller memory footprint
 #[repr(u8)]
 pub enum TXMessageKind {
-    #[allow(dead_code)]
-    Default = 0,
     Committed = 1,
     Error = 2,
     Terminate = 3,

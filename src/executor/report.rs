@@ -50,6 +50,8 @@ pub struct ReportInput<'a> {
 #[derive(Serialize)]
 struct TxRow {
     name: String,
+    /// The spec's free-text description, shown as the row's tooltip.
+    description: String,
     committed: u64,
     errors: u64,
     error_rate: f64,
@@ -105,6 +107,13 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
             let stats = input.stats.get(&tx.id).unwrap_or(&default_stats);
             TxRow {
                 name: tx.name.clone(),
+                description: input
+                    .spec
+                    .transactions
+                    .iter()
+                    .find(|t| t.id == tx.id)
+                    .map(|t| t.description.clone())
+                    .unwrap_or_default(),
                 committed: s.n_commits,
                 errors: s.n_errors,
                 error_rate: s.error_rate,
@@ -884,6 +893,8 @@ for (const t of DATA.transactions) {
   tr.innerHTML = `<td>${esc(t.name)}</td><td>${fmt(t.committed)}</td><td>${fmt(t.errors)}</td>` +
     `<td>${fmt(t.error_rate, 2)}</td><td>${fmt(t.throughput)}</td>` +
     `<td>${fmt(t.mean, 2)}</td><td>${fmt(t.p95, 2)}</td><td>${fmt(t.p99, 2)}</td><td>${fmt(t.max, 2)}</td>`;
+  // The spec's description, if any, as a tooltip (a property, not markup).
+  if (t.description) tr.title = t.description;
   txbody.appendChild(tr);
 }
 
@@ -1250,13 +1261,11 @@ transactions:
                 id: 1,
                 name: "alpha".into(),
                 weight: 50,
-                description: String::new(),
             },
             BenchmarkTransaction {
                 id: 2,
                 name: "beta".into(),
                 weight: 50,
-                description: String::new(),
             },
         ];
         let counters: HashMap<u16, Counter> = HashMap::new();
