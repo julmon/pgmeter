@@ -2,7 +2,7 @@
 -- Populates the item table (100,000 rows, shared across all warehouses).
 -- Runs once before per-warehouse loading.
 
-local N_ITEMS = 100000
+local N_ITEMS = const.items
 local BATCH_SIZE = 500
 
 local function make_original(s)

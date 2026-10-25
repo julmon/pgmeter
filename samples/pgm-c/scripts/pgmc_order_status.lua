@@ -6,15 +6,7 @@ local district_id = rand_int(1, 10)
 local y = rand_int(1, 100)
 local c_id = rand_int(1, const.customers_per_district)
 
--- PGM-C last name generation (matches Rust implementation)
-local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
-local function gen_last(n)
-    if n >= 1000 then n = rand_int(0, 999) end
-    local s = string.format("%03d", n)
-    return syllables[tonumber(string.sub(s, 1, 1)) + 1]
-        .. syllables[tonumber(string.sub(s, 2, 2)) + 1]
-        .. syllables[tonumber(string.sub(s, 3, 3)) + 1]
-end
+-- gen_last() comes from scripts/pgmc_common.lua (scripts.modules)
 
 begin()
 

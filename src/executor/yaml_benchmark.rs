@@ -700,6 +700,7 @@ impl YamlBenchmark {
                 script,
                 self.scalefactor,
                 &self.spec.scaling.constants,
+                &self.lua_modules,
                 &[],
             ),
             None => Ok(0),
@@ -716,6 +717,7 @@ impl YamlBenchmark {
                 script,
                 self.scalefactor,
                 &self.spec.scaling.constants,
+                &self.lua_modules,
                 &ids,
             )?;
         } else {

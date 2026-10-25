@@ -2,20 +2,12 @@
 -- Populates warehouse, district, customer, history, stock, orders, new_order, order_line
 -- for each warehouse ID in the `ids` table.
 
-local DISTRICTS_PER_WH = 10
-local CUSTOMERS_PER_DIST = 3000
-local N_ITEMS = 100000
+local DISTRICTS_PER_WH = const.districts_per_warehouse
+local CUSTOMERS_PER_DIST = const.customers_per_district
+local N_ITEMS = const.items
 local BATCH_SIZE = 500
 
--- PGM-C last name generation
-local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
-local function gen_last(n)
-    if n >= 1000 then n = rand_int(0, 999) end
-    local s = string.format("%03d", n)
-    return syllables[tonumber(string.sub(s, 1, 1)) + 1]
-        .. syllables[tonumber(string.sub(s, 2, 2)) + 1]
-        .. syllables[tonumber(string.sub(s, 3, 3)) + 1]
-end
+-- gen_last() comes from scripts/pgmc_common.lua (scripts.modules)
 
 local function rand_state()
     local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
