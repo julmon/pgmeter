@@ -731,6 +731,10 @@ const DATA = {data};
 
 const APP_JS: &str = r##"
 const fmt = (n, d = 0) => Number(n).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+// Every string that comes from the spec or the server (names, settings,
+// storage options) goes through innerHTML templates below; escape it so a
+// table named `<img src=x onerror=...>` renders as text instead of running.
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const humanBytes = (b) => {
   b = Number(b);
   if (!isFinite(b)) return '-';
@@ -795,14 +799,14 @@ const metaItems = [
 for (const [k, v] of metaItems) {
   const el = document.createElement('div');
   el.className = 'card meta';
-  el.innerHTML = `<div class="k">${k}</div><div class="v">${v}</div>`;
+  el.innerHTML = `<div class="k">${esc(k)}</div><div class="v">${esc(v)}</div>`;
   meta.appendChild(el);
 }
 
 const settings = document.getElementById('settings');
 for (const [k, v] of Object.entries(DATA.server.settings || {})) {
   const tr = document.createElement('tr');
-  tr.innerHTML = `<td style="text-align:left">${k}</td><td>${v}</td>`;
+  tr.innerHTML = `<td style="text-align:left">${esc(k)}</td><td>${esc(v)}</td>`;
   settings.appendChild(tr);
 }
 
@@ -823,16 +827,16 @@ const dataKpiItems = [
 for (const [k, v] of dataKpiItems) {
   const el = document.createElement('div');
   el.className = 'card kpi';
-  el.innerHTML = `<div class="label">${k}</div><div class="value" style="font-size:20px">${v}</div>`;
+  el.innerHTML = `<div class="label">${esc(k)}</div><div class="value" style="font-size:20px">${esc(v)}</div>`;
   dataKpis.appendChild(el);
 }
 
 const tablesBody = document.getElementById('tables-body');
 for (const t of diTables) {
   const tr = document.createElement('tr');
-  tr.innerHTML = `<td style="text-align:left">${t.name}</td>`
-    + `<td>${t.accessMethod || '-'}</td>`
-    + `<td style="text-align:left">${t.storage || '-'}</td>`
+  tr.innerHTML = `<td style="text-align:left">${esc(t.name)}</td>`
+    + `<td>${esc(t.accessMethod || '-')}</td>`
+    + `<td style="text-align:left">${esc(t.storage || '-')}</td>`
     + `<td>${fmt(t.rows)}</td>`
     + `<td>${humanBytes(t.tableBytes)}</td>`
     + `<td>${humanBytes(t.indexBytes)}</td>`;
@@ -843,9 +847,9 @@ const indexesBody = document.getElementById('indexes-body');
 for (const x of diIndexes) {
   const props = x.primary ? 'PRIMARY' : (x.unique ? 'UNIQUE' : '-');
   const tr = document.createElement('tr');
-  tr.innerHTML = `<td style="text-align:left">${x.name}</td>`
-    + `<td style="text-align:left">${x.table}</td>`
-    + `<td>${x.method || '-'}</td>`
+  tr.innerHTML = `<td style="text-align:left">${esc(x.name)}</td>`
+    + `<td style="text-align:left">${esc(x.table)}</td>`
+    + `<td>${esc(x.method || '-')}</td>`
     + `<td>${props}</td>`
     + `<td>${humanBytes(x.bytes)}</td>`;
   indexesBody.appendChild(tr);
@@ -864,7 +868,7 @@ const kpiItems = [
 for (const [k, v] of kpiItems) {
   const el = document.createElement('div');
   el.className = 'card kpi';
-  el.innerHTML = `<div class="label">${k}</div><div class="value">${v}</div>`;
+  el.innerHTML = `<div class="label">${esc(k)}</div><div class="value">${esc(v)}</div>`;
   kpis.appendChild(el);
 }
 
@@ -872,7 +876,7 @@ document.getElementById('tx-throughput-head').textContent = tpUnit;
 const txbody = document.getElementById('txbody');
 for (const t of DATA.transactions) {
   const tr = document.createElement('tr');
-  tr.innerHTML = `<td>${t.name}</td><td>${fmt(t.committed)}</td><td>${fmt(t.errors)}</td>` +
+  tr.innerHTML = `<td>${esc(t.name)}</td><td>${fmt(t.committed)}</td><td>${fmt(t.errors)}</td>` +
     `<td>${fmt(t.error_rate, 2)}</td><td>${fmt(t.throughput)}</td>` +
     `<td>${fmt(t.mean, 2)}</td><td>${fmt(t.p95, 2)}</td><td>${fmt(t.p99, 2)}</td><td>${fmt(t.max, 2)}</td>`;
   txbody.appendChild(tr);
@@ -1296,6 +1300,32 @@ transactions:
         assert_eq!(ts.rampup_end_s, Some(1));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Regression for RELEASE_REVIEW B13: strings from the spec and the server
+    // are inserted through innerHTML templates. Every interpolation of such a
+    // string must go through `esc(...)`; numbers go through `fmt(...)`.
+    #[test]
+    fn report_js_escapes_every_string_interpolated_into_html() {
+        assert!(APP_JS.contains("const esc = "));
+        for line in APP_JS
+            .lines()
+            .filter(|l| l.contains("innerHTML = `") || l.trim_start().starts_with("+ `"))
+        {
+            let mut rest = line;
+            while let Some(pos) = rest.find("${") {
+                let expr_end = rest[pos..].find('}').expect("unterminated ${") + pos;
+                let expr = &rest[pos + 2..expr_end];
+                assert!(
+                    expr.starts_with("esc(")
+                        || expr.starts_with("fmt(")
+                        || expr.starts_with("humanBytes(")
+                        || expr == "props",
+                    "unescaped interpolation `${{{expr}}}` in: {line}"
+                );
+                rest = &rest[expr_end + 1..];
+            }
+        }
     }
 
     #[test]
