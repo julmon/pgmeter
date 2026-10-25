@@ -27,7 +27,7 @@ mod yaml_types;
 
 use super::args::{OutputFormat, RunArgs};
 use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
-use error::error_detail;
+use error::{error_detail, Error};
 use txmessage::{TXMessage, TXMessageKind};
 
 /// What the data collector hands back when it finishes: the post-ramp-up
@@ -103,25 +103,26 @@ pub fn set_quiet(quiet: bool) {
     terminal::set_quiet(quiet);
 }
 
-pub fn get_target_dir_path() -> PathBuf {
-    let current_dir = match current_dir() {
-        Ok(current_dir) => current_dir,
-        Err(error) => {
-            terminal::err_msg(&error.to_string());
-            std::process::exit(1);
-        }
-    };
+pub fn get_target_dir_path() -> Result<PathBuf, Error> {
+    let current_dir =
+        current_dir().map_err(|e| Error::io("Cannot determine the current directory", e))?;
     let now: DateTime<Utc> = Utc::now();
     // Basic ISO 8601 (no `:`), so the name is valid on every filesystem and
     // needs no quoting in a shell.
-    let target_dir_path = current_dir.join(format!("pgmeter-{}", now.format("%Y%m%dT%H%M%SZ")));
+    Ok(current_dir.join(format!("pgmeter-{}", now.format("%Y%m%dT%H%M%SZ"))))
+}
 
-    target_dir_path
+/// Print an error the way every other failure is printed and exit non-zero.
+/// This is the only place the executor's callers should terminate the
+/// process from; everything inside the executor returns `Error`.
+pub fn exit_with_error(error: &Error) -> ! {
+    terminal::err_msg(&error.to_string());
+    std::process::exit(1);
 }
 
 impl Executor {
-    pub fn new(dsn: String, spec_file: String) -> Executor {
-        Executor {
+    pub fn new(dsn: String, spec_file: String) -> Result<Executor, Error> {
+        Ok(Executor {
             dsn,
             spec_file,
             counters: HashMap::new(),
@@ -133,12 +134,12 @@ impl Executor {
             rampup_s: 0,
             throughput_unit: "TPM".to_string(),
             throughput_factor: 60.0,
-            target_dir: get_target_dir_path(),
-        }
+            target_dir: get_target_dir_path()?,
+        })
     }
 
     // Execute read/write mixed workload
-    pub fn run_benchmark(&mut self, args: RunArgs) -> &mut Self {
+    pub fn run_benchmark(&mut self, args: RunArgs) -> Result<&mut Self, Error> {
         self.n_clients = args.client;
         self.duration_s = args.time;
         self.rampup_s = args.rampup;
@@ -153,7 +154,7 @@ impl Executor {
 
         // Echo the run configuration up front so the output is self-documenting
         // and the run is reproducible from its own log.
-        self.print_run_header(&args);
+        self.print_run_header(&args)?;
 
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
@@ -177,44 +178,33 @@ impl Executor {
         };
         let message = format!("Creating the target dir. {}", target_dir_name);
         terminal::start_msg(command, message.as_str());
-        match create_dir_all(&self.target_dir) {
-            Ok(_) => (),
-            Err(error) => {
-                terminal::err_msg(error_detail(&error).as_str());
-                std::process::exit(1);
-            }
-        };
+        create_dir_all(&self.target_dir)
+            .map_err(|e| Error::io(format!("Cannot create {}", self.target_dir.display()), e))?;
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        // Start data collector
+        // The benchmark always targets the full object-id range: min is 1 and
+        // max is auto-detected from the dataset at run time.
+        let min_id: u32 = 1;
+        terminal::start_msg(command, "Fetching maximum ID value");
+        let benchmark_client = self.get_benchmark(0, 0, 0)?;
+        self.throughput_unit = benchmark_client.spec.metrics.throughput_unit.clone();
+        self.throughput_factor = benchmark_client.spec.metrics.per.factor();
+        let max_id: u32 = {
+            let mut client = Executor::connect(self.dsn.clone())?;
+            let max_id = benchmark_client.get_default_max_id(&mut client)?;
+            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
+            max_id
+        };
+
+        // Start the data collector only now that everything that can fail
+        // before the clients start has succeeded.
         let dc_tx_counters = tx_counters.clone();
         let data_collector = self.start_data_collector(
             rx,
             dc_tx_counters,
             Arc::clone(&live_commits),
             Arc::clone(&live_latency_us),
-        );
-
-        // The benchmark always targets the full object-id range: min is 1 and
-        // max is auto-detected from the dataset at run time.
-        let min_id: u32 = 1;
-        terminal::start_msg(command, "Fetching maximum ID value");
-        let benchmark_client = self.get_benchmark(0, 0, 0);
-        self.throughput_unit = benchmark_client.spec.metrics.throughput_unit.clone();
-        self.throughput_factor = benchmark_client.spec.metrics.per.factor();
-        let max_id: u32 = {
-            let mut client = Executor::connect(self.dsn.clone());
-
-            let max_id = match benchmark_client.get_default_max_id(&mut client) {
-                Ok(max_id) => max_id,
-                Err(error) => {
-                    terminal::err_msg(&error.to_string());
-                    std::process::exit(1);
-                }
-            };
-            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
-            max_id
-        };
+        )?;
 
         let message = format!(
             "Starting {} client(s) in {} seconds",
@@ -223,8 +213,9 @@ impl Executor {
         terminal::start_msg(command, message.as_str());
 
         // One std::thread per client, each on its own blocking connection
-        // (matches pgbench's load-generation model).
-        self.run_benchmark_sync(
+        // (matches pgbench's load-generation model). A client that cannot
+        // start is reported after the collector has flushed the logs below.
+        let workload = self.run_benchmark_sync(
             args.client,
             min_id,
             max_id,
@@ -253,9 +244,10 @@ impl Executor {
         self.counters = result.counters;
         self.rampup_end_ts = result.rampup_end_ts;
 
+        workload?;
         self.write_run_metadata();
 
-        self
+        Ok(self)
     }
 
     // Write `run.json` next to the logs: the run parameters and the ramp-up
@@ -282,11 +274,11 @@ impl Executor {
     // Echo the run configuration to stderr so the output is self-documenting and
     // the run can be reproduced from its own log. Kept on stderr so stdout still
     // carries only the results (tables or --format json/csv).
-    fn print_run_header(&mut self, args: &RunArgs) {
+    fn print_run_header(&mut self, args: &RunArgs) -> Result<(), Error> {
         if terminal::is_quiet() {
-            return;
+            return Ok(());
         }
-        let spec_name = self.get_benchmark(0, 0, 0).spec.name.clone();
+        let spec_name = self.get_benchmark(0, 0, 0)?.spec.name.clone();
         let started: DateTime<Utc> = Utc::now();
         eprintln!();
         eprintln!("pgmeter {} - {}", env!("CARGO_PKG_VERSION"), spec_name);
@@ -300,6 +292,7 @@ impl Executor {
         }
         eprintln!("  started:  {}", started.format("%Y-%m-%dT%H:%M:%SZ"));
         eprintln!();
+        Ok(())
     }
 
     /// Benchmark execution using one std::thread per client, each on its own
@@ -319,40 +312,46 @@ impl Executor {
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
         progress: u16,
-    ) {
-        let mut client_threads: Vec<JoinHandle<()>> = Vec::with_capacity(n_clients as usize);
+    ) -> Result<(), Error> {
+        let mut client_threads: Vec<JoinHandle<Result<(), Error>>> =
+            Vec::with_capacity(n_clients as usize);
+        // Raised by a client that cannot start (connection, spec or prepare
+        // failure) so the other clients stop instead of running out the clock.
+        let abort = Arc::new(AtomicBool::new(false));
 
         // Start the clients using std::thread
         for client_id in 1..=n_clients {
             let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
             sleep(Duration::from_millis(sleep_ms));
+            if abort.load(Ordering::Relaxed) {
+                break;
+            }
 
             let dsn = self.dsn.clone();
             let spec_file = self.spec_file.clone();
             let tx_clone = tx.clone();
+            let abort = Arc::clone(&abort);
 
-            let handle = thread::spawn(move || {
-                // Create synchronous postgres connection
-                let mut client = Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
-                    terminal::err_msg(&format!("Connection failed: {}", error_detail(&err)));
-                    std::process::exit(1);
-                });
-
-                // Get benchmark and prepare statements
-                let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id)
-                    .unwrap_or_else(|e| {
-                        terminal::err_msg(&e.to_string());
-                        std::process::exit(1);
-                    });
-                let prepared = benchmark
-                    .prepare_statements(&mut client)
-                    .unwrap_or_else(|err| {
-                        terminal::err_msg(&format!(
-                            "Failed to prepare statements: {}",
-                            error_detail(&err)
-                        ));
-                        std::process::exit(1);
-                    });
+            let handle = thread::spawn(move || -> Result<(), Error> {
+                let setup = (|| {
+                    let mut client = Client::connect(&dsn, NoTls).map_err(|e| {
+                        Error::Other(format!(
+                            "client {}: connection failed: {}",
+                            client_id,
+                            error_detail(&e)
+                        ))
+                    })?;
+                    let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id)?;
+                    let prepared = benchmark.prepare_statements(&mut client)?;
+                    Ok::<_, Error>((client, benchmark, prepared))
+                })();
+                let (mut client, benchmark, prepared) = match setup {
+                    Ok(ready) => ready,
+                    Err(error) => {
+                        abort.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                };
 
                 let transactions = benchmark.get_transactions_rw();
 
@@ -398,10 +397,13 @@ impl Executor {
                         }
                     }
 
-                    if loop_start.elapsed().as_millis() >= duration_limit {
+                    if loop_start.elapsed().as_millis() >= duration_limit
+                        || abort.load(Ordering::Relaxed)
+                    {
                         break;
                     }
                 }
+                Ok(())
             });
 
             client_threads.push(handle);
@@ -431,9 +433,12 @@ impl Executor {
         tx.send(TXMessage::end_of_rampup()).unwrap();
         self.rampup_time_ms = start.elapsed().as_millis();
 
-        // Wait for all client threads
+        // Wait for all client threads, keeping the first failure.
+        let mut first_error = None;
         for handle in client_threads {
-            handle.join().expect("Client thread panicked");
+            if let Err(error) = handle.join().expect("Client thread panicked") {
+                first_error.get_or_insert(error);
+            }
         }
 
         monitor_stop.store(true, Ordering::Relaxed);
@@ -441,6 +446,11 @@ impl Executor {
             .join()
             .expect("the workload monitor thread panicked");
         terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     // Start the data collector thread. Data collector is in charge of storing transaction
@@ -453,29 +463,18 @@ impl Executor {
         tx_counters: Sender<CollectorResult>,
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
-    ) -> JoinHandle<()> {
-        let target_dir = self.target_dir.clone();
-        thread::spawn(move || {
-            // Create the file where transaction logs are written
-            let log_file = match File::create(target_dir.join(LOG_FILE)) {
-                Ok(f) => f,
-                Err(e) => {
-                    terminal::err_msg(&format!("Could not create {}: {}", LOG_FILE, e));
-                    std::process::exit(1);
-                }
-            };
-            // Use larger buffer for better I/O performance
-            let mut log_file = BufWriter::with_capacity(64 * 1024, log_file);
-            // Create the error log file
-            let error_file = match File::create(target_dir.join(ERROR_FILE)) {
-                Ok(f) => f,
-                Err(e) => {
-                    terminal::err_msg(&format!("Could not create {}: {}", ERROR_FILE, e));
-                    std::process::exit(1);
-                }
-            };
-            let mut error_file = BufWriter::with_capacity(8 * 1024, error_file);
-
+    ) -> Result<JoinHandle<()>, Error> {
+        // Open both log files here, so a failure is reported before any
+        // client starts rather than from inside the collector thread.
+        let create = |name: &str| {
+            let path = self.target_dir.join(name);
+            File::create(&path)
+                .map_err(|e| Error::io(format!("Cannot create {}", path.display()), e))
+        };
+        // Use larger buffer for better I/O performance
+        let mut log_file = BufWriter::with_capacity(64 * 1024, create(LOG_FILE)?);
+        let mut error_file = BufWriter::with_capacity(8 * 1024, create(ERROR_FILE)?);
+        Ok(thread::spawn(move || {
             // Initialize the counters with expected capacity
             let mut counters: HashMap<u16, Counter> = HashMap::with_capacity(16);
             let mut client_ids = BTreeMap::new();
@@ -490,9 +489,11 @@ impl Executor {
             let start_instant = Instant::now();
 
             let mut n_client: u32 = 0;
-            loop {
-                // Wait for a new message coming from the clients
-                let msg = rx.recv().unwrap();
+            // Wait for messages from the clients. A closed channel means the
+            // run was abandoned before Terminate could be sent (every sender
+            // dropped): flush and finish like a normal shutdown instead of
+            // panicking.
+            while let Ok(msg) = rx.recv() {
                 // Exit thread
                 match msg.kind {
                     // Terminate data collector
@@ -603,50 +604,44 @@ impl Executor {
                     rampup_end_ts,
                 })
                 .unwrap();
-        })
+        }))
     }
 
     // Open a new connection to the database and returns a Client
-    fn connect(dsn: String) -> Client {
-        Client::connect(&dsn, NoTls).unwrap_or_else(|err| {
-            terminal::err_msg(error_detail(&err).as_str());
-            std::process::exit(1);
-        })
+    fn connect(dsn: String) -> Result<Client, Error> {
+        Client::connect(&dsn, NoTls).map_err(Error::from)
     }
 
     // Initialize database schemabenchmark: create tables
-    pub fn init_db_schema(&mut self) -> &mut Self {
+    pub fn init_db_schema(&mut self) -> Result<&mut Self, Error> {
         let command = "INIT";
         let message = "Executing database DDLs";
 
         terminal::start_msg(command, message);
 
         // New database connection
-        let mut client = Executor::connect(self.dsn.clone());
+        let mut client = Executor::connect(self.dsn.clone())?;
 
         // Load the corresponding benchmark client
-        let benchmark_client = self.get_benchmark(0, 0, 0);
+        let benchmark_client = self.get_benchmark(0, 0, 0)?;
 
         // Initialize the database model/schema
-        let duration_us = match benchmark_client.initialize_schema(&mut client) {
-            Ok(duration) => duration,
-            Err(error) => {
-                terminal::err_msg(error_detail(&error).as_str());
-                std::process::exit(1);
-            }
-        };
+        let duration_us = benchmark_client.initialize_schema(&mut client)?;
         let duration_ms = duration_us as f64 / 1000_f64;
 
         terminal::done_msg(duration_ms);
 
-        self
+        Ok(self)
     }
 
     // Execute a post-create-table SQL script if provided
-    pub fn exec_post_create_table_script(&mut self, script_path: Option<String>) -> &mut Self {
+    pub fn exec_post_create_table_script(
+        &mut self,
+        script_path: Option<String>,
+    ) -> Result<&mut Self, Error> {
         let path = match script_path {
             Some(p) => p,
-            None => return self,
+            None => return Ok(self),
         };
 
         let command = "INIT";
@@ -656,33 +651,22 @@ impl Executor {
         let start = std::time::Instant::now();
 
         // Read the SQL script file
-        let sql = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) => {
-                terminal::err_msg(format!("Failed to read script file: {}", error).as_str());
-                std::process::exit(1);
-            }
-        };
+        let sql = std::fs::read_to_string(&path)
+            .map_err(|e| Error::io(format!("Failed to read script file '{}'", path), e))?;
 
         // Execute the script
-        let mut client = Executor::connect(self.dsn.clone());
-        match client.batch_execute(&sql) {
-            Ok(_) => (),
-            Err(error) => {
-                terminal::err_msg(error_detail(&error).as_str());
-                std::process::exit(1);
-            }
-        }
+        let mut client = Executor::connect(self.dsn.clone())?;
+        client.batch_execute(&sql)?;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
-        self
+        Ok(self)
     }
 
     // Generate benchmark data
-    pub fn load_data(&mut self, scalefactor: u32, n_jobs: u32) -> &mut Self {
+    pub fn load_data(&mut self, scalefactor: u32, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark client
-        let benchmark_client = self.get_benchmark(scalefactor, 0, 0);
+        let benchmark_client = self.get_benchmark(scalefactor, 0, 0)?;
 
         let command = "INIT";
         let message = "Pre-loading operations";
@@ -690,16 +674,10 @@ impl Executor {
         terminal::start_msg(command, message);
 
         // New database connection
-        let mut client = Executor::connect(self.dsn.clone());
+        let mut client = Executor::connect(self.dsn.clone())?;
 
         // Execute PreLoadData
-        let duration_us = match benchmark_client.pre_load_data(&mut client) {
-            Ok(duration) => duration,
-            Err(error) => {
-                terminal::err_msg(&error.to_string());
-                std::process::exit(1);
-            }
-        };
+        let duration_us = benchmark_client.pre_load_data(&mut client)?;
         let duration_ms = duration_us as f64 / 1000_f64;
 
         terminal::done_msg(duration_ms);
@@ -731,37 +709,34 @@ impl Executor {
             let dsn = self.dsn.clone();
 
             // Load the corresponding benchmark client
-            let job_benchmark_client = self.get_benchmark(scalefactor, 0, 0);
+            let job_benchmark_client = self.get_benchmark(scalefactor, 0, 0)?;
 
             // Starting a new job into its dedicated thread
-            let job = thread::spawn(move || {
+            let job = thread::spawn(move || -> Result<(), Error> {
                 // New database connection
-                let mut job_client = Executor::connect(dsn);
-
-                let _duration_us = match job_benchmark_client.load_data(&mut job_client, job_ids) {
-                    Ok(duration) => duration,
-                    Err(error) => {
-                        terminal::err_msg(&error.to_string());
-                        std::process::exit(1);
-                    }
-                };
+                let mut job_client = Executor::connect(dsn)?;
+                job_benchmark_client.load_data(&mut job_client, job_ids)?;
+                Ok(())
             });
 
             jobs.push(job);
         }
 
-        // Wait for the end of all jobs
-        for job in jobs {
-            job.join().expect("the client thread panicked");
-        }
+        // Wait for the end of all jobs, keeping the first failure.
+        join_jobs(jobs)?;
         let duration_ms = start.elapsed().as_micros() as f64 / 1000_f64;
         terminal::done_msg(duration_ms);
 
-        self
+        Ok(self)
     }
 
     // Execute database multiple statements (DDLs, admin query, etc..) using n_jobs threads.
-    pub fn exec_stmts(&mut self, n_jobs: u32, stmts: Vec<BenchmarkStmt>, use_transaction: bool) {
+    pub fn exec_stmts(
+        &mut self,
+        n_jobs: u32,
+        stmts: Vec<BenchmarkStmt>,
+        use_transaction: bool,
+    ) -> Result<(), Error> {
         // We want to get one row per job and the ids balanced across the rowss.
         let mut rows = Vec::with_capacity(n_jobs as usize);
         for _ in 0..n_jobs {
@@ -778,74 +753,51 @@ impl Executor {
             let dsn = self.dsn.clone();
 
             // Starting a new job into its dedicated thread
-            let job = thread::spawn(move || {
+            let job = thread::spawn(move || -> Result<(), Error> {
                 // New database connection
-                let mut client = Executor::connect(dsn);
+                let mut client = Executor::connect(dsn)?;
 
                 for stmt in job_stmts.iter() {
                     if use_transaction {
-                        let mut transaction = match client.transaction() {
-                            Ok(t) => t,
-                            Err(error) => {
-                                terminal::err_msg(error_detail(&error).as_str());
-                                std::process::exit(1);
-                            }
-                        };
-                        match transaction.batch_execute(stmt) {
-                            Ok(_) => (),
-                            Err(error) => {
-                                terminal::err_msg(error_detail(&error).as_str());
-                                std::process::exit(1);
-                            }
-                        }
-                        match transaction.commit() {
-                            Ok(_) => (),
-                            Err(error) => {
-                                terminal::err_msg(error_detail(&error).as_str());
-                                std::process::exit(1);
-                            }
-                        }
+                        let mut transaction = client.transaction()?;
+                        transaction.batch_execute(stmt)?;
+                        transaction.commit()?;
                     }
                     // No transaction
                     else {
-                        match client.batch_execute(stmt) {
-                            Ok(_) => (),
-                            Err(error) => {
-                                terminal::err_msg(error_detail(&error).as_str());
-                                std::process::exit(1);
-                            }
-                        }
+                        client.batch_execute(stmt)?;
                     }
                 }
+                Ok(())
             });
 
             jobs.push(job);
         }
 
-        // Wait for the end of all jobs
-        for job in jobs {
-            job.join().expect("the client thread panicked");
-        }
+        // Wait for the end of all jobs, keeping the first failure.
+        join_jobs(jobs)
     }
 
-    fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
-        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id).unwrap_or_else(|e| {
-            terminal::err_msg(&e.to_string());
-            std::process::exit(1);
-        })
+    fn get_benchmark(
+        &mut self,
+        scalefactor: u32,
+        min_id: u32,
+        max_id: u32,
+    ) -> Result<YamlBenchmark, Error> {
+        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id)
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs
-    pub fn add_primary_keys(&mut self, n_jobs: u32) -> &mut Self {
+    pub fn add_primary_keys(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Primary keys creation");
-        self.exec_stmts(n_jobs, benchmark.get_pkey_ddls(), true);
+        self.exec_stmts(n_jobs, benchmark.get_pkey_ddls(), true)?;
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
     // Execute foreign keys DDLs serially.
@@ -854,110 +806,91 @@ impl Executor {
     // takes a ShareRowExclusiveLock on both the referencing and the referenced table,
     // so concurrent adds touching a shared parent serialize on its lock anyway and can
     // deadlock when two FKs reference each other's tables in opposite order across jobs.
-    pub fn add_foreign_keys(&mut self, _n_jobs: u32, no_fkey: bool) -> &mut Self {
+    pub fn add_foreign_keys(&mut self, _n_jobs: u32, no_fkey: bool) -> Result<&mut Self, Error> {
         // Don't do anything if no_fkey is true
         if no_fkey {
-            return self;
+            return Ok(self);
         }
 
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Foreign keys creation");
-        self.exec_stmts(1, benchmark.get_fkey_ddls(), true);
+        self.exec_stmts(1, benchmark.get_fkey_ddls(), true)?;
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
     // Execute additional indexes DDLs using multiple concurrent jobs
-    pub fn add_indexes(&mut self, n_jobs: u32) -> &mut Self {
+    pub fn add_indexes(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Additional indexes creation");
-        self.exec_stmts(n_jobs, benchmark.get_index_ddls(), true);
+        self.exec_stmts(n_jobs, benchmark.get_index_ddls(), true)?;
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
     // Execute VACUUM statementsusing multiple concurrent jobs
-    pub fn vacuum(&mut self, n_jobs: u32) -> &mut Self {
+    pub fn vacuum(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Vacuuming tables");
-        self.exec_stmts(n_jobs, benchmark.get_vacuum_stmts(), false);
+        self.exec_stmts(n_jobs, benchmark.get_vacuum_stmts(), false)?;
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
     // Force a checkpoint
-    pub fn checkpoint(&mut self) -> &mut Self {
+    pub fn checkpoint(&mut self) -> Result<&mut Self, Error> {
         let start = Instant::now();
 
         terminal::start_msg("INIT", "Forcing checkpoint");
-        let mut client = Executor::connect(self.dsn.clone());
-
-        match client.batch_execute("CHECKPOINT") {
-            Ok(_) => (),
-            Err(error) => {
-                terminal::err_msg(error_detail(&error).as_str());
-                std::process::exit(1);
-            }
-        }
+        let mut client = Executor::connect(self.dsn.clone())?;
+        client.batch_execute("CHECKPOINT")?;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
     // Perform data aggregation based on the log file
-    pub fn aggregate_data(&mut self) -> &mut Self {
+    pub fn aggregate_data(&mut self) -> Result<&mut Self, Error> {
         let start = Instant::now();
 
         terminal::start_msg("RUN", "Aggregating data");
 
-        let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
+        let transactions = self.get_benchmark(0, 0, 0)?.get_transactions_rw();
 
-        match data_agg::aggregate_transaction_data(
+        data_agg::aggregate_transaction_data(
             LOG_FILE,
             &self.target_dir,
             &transactions,
             self.rampup_end_ts,
             self.throughput_factor,
-        ) {
-            Ok(_) => (),
-            Err(error) => {
-                terminal::err_msg(&error.to_string());
-                std::process::exit(1);
-            }
-        }
+        )?;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
-        self
+        Ok(self)
     }
 
-    pub fn print_results(&mut self, format: OutputFormat) -> &mut Self {
+    pub fn print_results(&mut self, format: OutputFormat) -> Result<&mut Self, Error> {
         // Get transactions details and the headline throughput metric from the spec.
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let transactions = benchmark.get_transactions_rw();
         let throughput_unit = benchmark.spec.metrics.throughput_unit.clone();
         let throughput_factor = benchmark.spec.metrics.per.factor();
         // Read statistics from the generated local files
-        let stats_map = match data_agg::get_stats(&self.target_dir, &transactions) {
-            Ok(stats_map) => stats_map,
-            Err(error) => {
-                terminal::err_msg(&error.to_string());
-                std::process::exit(1);
-            }
-        };
+        let stats_map = data_agg::get_stats(&self.target_dir, &transactions)?;
 
         // Same computation as the HTML report, so every output agrees.
         let summary = summary::summarize(
@@ -1021,15 +954,18 @@ impl Executor {
             }
         }
 
-        self
+        Ok(self)
     }
 
     // Generate a self-contained HTML report into the run's target directory.
-    pub fn generate_report(&mut self) -> &mut Self {
+    // Generate a self-contained HTML report into the run's target directory.
+    // A report failure is reported but does not fail the run: the results and
+    // the raw logs are already on disk and get printed next.
+    pub fn generate_report(&mut self) -> Result<&mut Self, Error> {
         let start = Instant::now();
         terminal::start_msg("RUN", "Generating HTML report");
 
-        let benchmark = self.get_benchmark(0, 0, 0);
+        let benchmark = self.get_benchmark(0, 0, 0)?;
         let transactions = benchmark.get_transactions_rw();
         let spec = benchmark.spec.clone();
 
@@ -1037,11 +973,17 @@ impl Executor {
             Ok(stats) => stats,
             Err(error) => {
                 terminal::err_msg(&error.to_string());
-                return self;
+                return Ok(self);
             }
         };
 
-        let mut client = Executor::connect(self.dsn.clone());
+        let mut client = match Executor::connect(self.dsn.clone()) {
+            Ok(client) => client,
+            Err(error) => {
+                terminal::err_msg(&error.to_string());
+                return Ok(self);
+            }
+        };
 
         let input = report::ReportInput {
             target_dir: &self.target_dir,
@@ -1067,7 +1009,22 @@ impl Executor {
             Err(error) => terminal::err_msg(&error.to_string()),
         }
 
-        self
+        Ok(self)
+    }
+}
+
+/// Join worker threads that return a Result, returning the first error after
+/// every thread has finished (so no connection is left mid-statement).
+fn join_jobs(jobs: Vec<JoinHandle<Result<(), Error>>>) -> Result<(), Error> {
+    let mut first_error = None;
+    for job in jobs {
+        if let Err(error) = job.join().expect("the client thread panicked") {
+            first_error.get_or_insert(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
