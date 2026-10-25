@@ -115,6 +115,10 @@ from-scratch example.
 
 ### Init Options (`init`)
 
+> **`init` is destructive.** It issues `DROP TABLE IF EXISTS ... CASCADE` for
+> every table declared in the spec before recreating and loading it, so point it
+> at a database (or schema) you can afford to wipe.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--spec` | (required) | Path to the YAML benchmark specification file |

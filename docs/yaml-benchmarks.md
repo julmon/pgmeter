@@ -116,6 +116,11 @@ The password is taken from `PGPASSWORD`.
 pgmeter [conn opts] init --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
 ```
 
+> **Destructive.** `init` runs `DROP TABLE IF EXISTS <table> CASCADE` for every
+> table in `schema.tables` before creating it, then loads the data. Dependent
+> objects you created on those tables (views, foreign keys from other tables)
+> go with them.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--spec` | (required) | Path to the YAML spec |
