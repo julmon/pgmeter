@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
+#[serde(deny_unknown_fields)]
 pub struct BenchmarkSpec {
     pub name: String,
     #[serde(default)]
@@ -30,6 +31,7 @@ pub struct BenchmarkSpec {
 /// on the KPI card, chart axis and table column; `per` is the time base used to
 /// turn a committed-transaction count into a rate.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsSpec {
     /// e.g. "TPS", "txns/min", "queries/hr". Used purely as a display label.
     #[serde(default = "default_throughput_unit")]
@@ -78,6 +80,7 @@ impl ThroughputPer {
 
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
+#[serde(deny_unknown_fields)]
 pub struct ScalingSpec {
     pub unit: String,
     pub max_id_query: String,
@@ -86,6 +89,7 @@ pub struct ScalingSpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaSpec {
     pub tables: Vec<TableSpec>,
     #[serde(default)]
@@ -101,6 +105,7 @@ pub struct SchemaSpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TableSpec {
     pub name: String,
     pub columns: Vec<ColumnSpec>,
@@ -117,6 +122,7 @@ pub struct TableSpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ColumnSpec {
     pub name: String,
     #[serde(rename = "type")]
@@ -124,6 +130,7 @@ pub struct ColumnSpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ForeignKeySpec {
     pub name: String,
     pub table: String,
@@ -132,12 +139,14 @@ pub struct ForeignKeySpec {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ForeignKeyRef {
     pub table: String,
     pub columns: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct IndexSpec {
     pub name: String,
     pub table: String,
@@ -160,6 +169,7 @@ pub struct IndexSpec {
 
 #[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)]
+#[serde(deny_unknown_fields)]
 pub struct LoadSpec {
     pub table: String,
     /// How rows are loaded. Only `copy` exists; the field is an enum so a typo
@@ -187,6 +197,7 @@ fn default_batch_size() -> u32 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TransactionSpec {
     pub id: u16,
     pub name: String,
@@ -220,6 +231,7 @@ pub enum TransactionMode {
 /// These run at VM init time (before any transaction), useful for shared
 /// helper functions and dispatch tables.
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ScriptsSpec {
     #[serde(default)]
     pub modules: Vec<String>,
@@ -282,6 +294,37 @@ mod tests {
         let tx: TransactionSpec =
             serde_yaml::from_str("id: 1\nname: t\nweight: 1\nmode: script\nscript: x\n").unwrap();
         assert_eq!(tx.mode, TransactionMode::Script);
+    }
+
+    // Regression for RELEASE_REVIEW B8: a misspelt key used to be dropped
+    // silently, so the benchmark ran with a different schema or workload
+    // than written.
+    #[test]
+    fn unknown_keys_are_rejected_at_every_level() {
+        let cases = [
+            // top level
+            ("name: x\nscaling: {unit: u, max_id_query: q}\nschema: {tables: []}\ntransactions: []\nload_scripts: []\n", "load_scripts"),
+            // table: primary_keys instead of primary_key
+            ("name: x\nscaling: {unit: u, max_id_query: q}\ntransactions: []\nschema:\n  tables:\n    - name: t\n      columns: [{name: id, type: int}]\n      primary_keys: [id]\n", "primary_keys"),
+            // transaction: script_files instead of script_file
+            ("name: x\nscaling: {unit: u, max_id_query: q}\nschema: {tables: []}\ntransactions:\n  - {id: 1, name: t, weight: 1, mode: script, script_files: a.lua}\n", "script_files"),
+            // load entry
+            ("name: x\nscaling: {unit: u, max_id_query: q}\nschema: {tables: []}\ntransactions: []\nload:\n  - {table: t, copy_columns: [id], rows_per_id: 1, row: r, batch: 10}\n", "batch"),
+            // metrics
+            ("name: x\nscaling: {unit: u, max_id_query: q}\nschema: {tables: []}\ntransactions: []\nmetrics: {unit: TPS}\n", "unit"),
+            // index
+            ("name: x\nscaling: {unit: u, max_id_query: q}\ntransactions: []\nschema:\n  tables: []\n  indexes:\n    - {name: i, table: t, columns: [a], method: hash}\n", "method"),
+        ];
+        for (yaml, key) in cases {
+            let err = serde_yaml::from_str::<BenchmarkSpec>(yaml)
+                .err()
+                .unwrap_or_else(|| panic!("unknown key `{key}` was accepted"))
+                .to_string();
+            assert!(
+                err.contains(&format!("unknown field `{key}`")),
+                "{key}: {err}"
+            );
+        }
     }
 
     #[test]
