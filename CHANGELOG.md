@@ -29,14 +29,30 @@ First public release.
   PGM-B, PGM-C, PGM-H, PGM-DS and PGM-IoT, plus a minimal `custom-simple`
   template. `pgmeter spec list` shows them and `pgmeter spec new` scaffolds a
   copy to edit.
-- Each run writes a result directory with `transaction.log`, `error.log`,
-  per-transaction CSV files (throughput over time, response times over time,
+- Each run writes a result directory (`pgmeter-<UTC timestamp>/`) with
+  `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
+  ramp-up boundary), `transaction.log` and `error.log` (one record per line,
+  line breaks in messages escaped), per-transaction CSV files
+  (`pgmeter-throughput-*.csv` in the spec's unit, response times over time,
   statistics) and a self-contained HTML report with charts, percentiles,
-  server and data-set information.
+  server and data-set information. Committed counts, throughput, statistics
+  and the report's histogram describe the steady-state window after ramp-up;
+  the time-series charts show the whole run with ramp-up shaded.
+- Specs are validated when loaded: unknown keys, unknown modes or load
+  methods, missing `sql` or `script`, duplicate or colliding transaction ids
+  and names, a zero total weight, undeclared tables and `load` together with
+  `load_script` are reported together before anything touches the database.
+- A failed transaction rolls back and the connection stays usable; a script
+  that fails mid-COPY has its stream aborted; Lua bridge errors carry the
+  PostgreSQL server message.
 - Connection settings follow libpq conventions: `PGHOST`, `PGPORT`, `PGUSER`,
-  `PGDATABASE`, `PGPASSWORD` and `~/.pgpass`.
+  `PGDATABASE`, `PGPASSWORD` and `~/.pgpass`. The default user name falls back
+  to `$USER`, `$LOGNAME` and `postgres` when the UID has no passwd entry.
 - Released under the PostgreSQL License; third-party notices for Chart.js and
   Luau in `THIRD_PARTY_NOTICES.md`.
-- Minimum supported Rust version 1.85; PostgreSQL 12 or later.
+- Minimum supported Rust version 1.85; PostgreSQL 12 or later; Linux and
+  macOS.
+- Continuous integration on stable and the MSRV, with end-to-end tests
+  against PostgreSQL 12 and 18.
 
 [Unreleased]: https://github.com/julmon/pgmeter/compare/main...HEAD
