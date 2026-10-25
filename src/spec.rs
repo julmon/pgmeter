@@ -9,10 +9,7 @@ use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 use tabled::{
     builder::Builder,
-    object::Columns,
-    style::{HorizontalLine, Line},
-    width::Width,
-    ModifyObject, Style,
+    settings::{object::Columns, style::HorizontalLine, Modify, Style, Width},
 };
 
 static SAMPLES: Dir = include_dir!("$CARGO_MANIFEST_DIR/samples");
@@ -85,23 +82,15 @@ fn collapse_ws(s: &str) -> String {
 // blurb doesn't blow the table out to the full terminal width.
 pub fn print_list() {
     let mut builder = Builder::default();
-    builder.set_columns(["Benchmark", "Title", "Description"]);
+    builder.push_record(["Benchmark", "Title", "Description"]);
     for e in list_entries() {
-        builder.add_record([e.dir, e.name, e.description.unwrap_or_default()]);
+        builder.push_record([e.dir, e.name, e.description.unwrap_or_default()]);
     }
 
     let mut table = builder.build();
     table
-        .with(
-            Style::blank()
-                .off_vertical()
-                .horizontals([HorizontalLine::new(1, Line::filled('─'))]),
-        )
-        .with(
-            Columns::single(2)
-                .modify()
-                .with(Width::wrap(60).keep_words()),
-        );
+        .with(Style::blank().horizontals([(1, HorizontalLine::new('─').intersection('─'))]))
+        .with(Modify::new(Columns::new(2..=2)).with(Width::wrap(60).keep_words(true)));
 
     println!("{}", table);
 }
