@@ -22,8 +22,9 @@ description: >
 # Scaling rules
 # ---------------------------------------------------------------------------
 # TPC-DS scaling is non-linear (many dimensions grow sub-linearly with SF), so
-# this max_id_query is a provisional SF estimate from the store_sales row count
-# (~2.88M rows at SF=1). It is finalized once the load scripts exist.
+# the scale factor is estimated from the store_sales row count (~2.88M rows at
+# SF=1, as produced by the load script). GREATEST(1, ...) keeps the id range
+# non-empty on a partially loaded dataset.
 scaling:
   unit: scalefactor
   max_id_query: "SELECT GREATEST(1, (SELECT COUNT(*) FROM store_sales) / 2880000)::int AS max_id"
