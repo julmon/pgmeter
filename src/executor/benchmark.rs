@@ -86,7 +86,8 @@ pub struct TransactionSummary {
     pub n_commits: u64,
     pub n_errors: u64,
     pub error_rate: f64,
-    pub throughput: u32,
+    /// Throughput in the spec's unit over the workload window (see `summary::summarize`).
+    pub throughput: f64,
 }
 
 impl TransactionSummary {
@@ -95,7 +96,7 @@ impl TransactionSummary {
         n_commits: u64,
         n_errors: u64,
         error_rate: f64,
-        throughput: u32,
+        throughput: f64,
     ) -> TransactionSummary {
         TransactionSummary {
             name,

@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::benchmark::{BenchmarkTransaction, Counter, ResponseTimeStatistics};
+use super::summary;
 use super::yaml_types::BenchmarkSpec;
 
 const CHART_JS: &str = include_str!("assets/chart.umd.min.js");
@@ -70,73 +71,50 @@ pub fn generate(
     let server = fetch_server_info(client);
     let data_info = fetch_data_info(client, input.spec);
 
-    let workload_secs = if input.total_time_ms > input.rampup_time_ms {
-        ((input.total_time_ms - input.rampup_time_ms) as f64 / 1000.0).max(1.0)
-    } else {
-        1.0
-    };
-
     // Headline throughput metric: unit label + time base, configured per spec.
     let throughput_factor = input.spec.metrics.per.factor();
     let throughput_unit = input.spec.metrics.throughput_unit.clone();
 
+    // Same computation as the terminal/JSON/CSV outputs, so every output agrees.
+    let summary = summary::summarize(
+        input.transactions,
+        input.counters,
+        input.total_time_ms,
+        input.rampup_time_ms,
+        throughput_factor,
+    );
+
     // Per-transaction summary + statistics rows (post-rampup counters).
-    let mut tx_rows: Vec<TxRow> = Vec::new();
-    let mut total_committed: u64 = 0;
-    let mut total_errors: u64 = 0;
-    let mut weighted_latency_sum: f64 = 0.0;
-    for tx in input.transactions {
-        let counter = input.counters.get(&tx.id).cloned().unwrap_or(Counter {
-            n_commits: 0,
-            n_total: 0,
-            total_duration_ms: 0.0,
-        });
-        let errors = counter.n_total - counter.n_commits;
-        let default_stats = ResponseTimeStatistics {
-            name: tx.name.clone(),
-            mean: 0.0,
-            min: 0.0,
-            max: 0.0,
-            std: 0.0,
-            percentile_95: 0.0,
-            percentile_99: 0.0,
-        };
-        let stats = input.stats.get(&tx.id).unwrap_or(&default_stats);
-
-        total_committed += counter.n_commits;
-        total_errors += errors;
-        weighted_latency_sum += counter.total_duration_ms;
-
-        tx_rows.push(TxRow {
-            name: tx.name.clone(),
-            committed: counter.n_commits,
-            errors,
-            error_rate: if counter.n_total > 0 {
-                errors as f64 / counter.n_total as f64 * 100.0
-            } else {
-                0.0
-            },
-            throughput: (counter.n_commits as f64 / workload_secs * throughput_factor) as u64,
-            mean: stats.mean,
-            min: stats.min,
-            max: stats.max,
-            std: stats.std,
-            p95: stats.percentile_95,
-            p99: stats.percentile_99,
-        });
-    }
-
-    let total_tx = total_committed + total_errors;
-    let overall_error_rate = if total_tx > 0 {
-        total_errors as f64 / total_tx as f64 * 100.0
-    } else {
-        0.0
-    };
-    let weighted_avg_latency = if total_committed > 0 {
-        weighted_latency_sum / total_committed as f64
-    } else {
-        0.0
-    };
+    let tx_rows: Vec<TxRow> = input
+        .transactions
+        .iter()
+        .zip(summary.transactions.iter())
+        .map(|(tx, s)| {
+            let default_stats = ResponseTimeStatistics {
+                name: tx.name.clone(),
+                mean: 0.0,
+                min: 0.0,
+                max: 0.0,
+                std: 0.0,
+                percentile_95: 0.0,
+                percentile_99: 0.0,
+            };
+            let stats = input.stats.get(&tx.id).unwrap_or(&default_stats);
+            TxRow {
+                name: tx.name.clone(),
+                committed: s.n_commits,
+                errors: s.n_errors,
+                error_rate: s.error_rate,
+                throughput: s.throughput.round() as u64,
+                mean: stats.mean,
+                min: stats.min,
+                max: stats.max,
+                std: stats.std,
+                p95: stats.percentile_95,
+                p99: stats.percentile_99,
+            }
+        })
+        .collect();
 
     // Time series and histogram parsed directly from the raw logs so that every
     // chart shares a single time origin.
@@ -200,12 +178,12 @@ pub fn generate(
         "server": server,
         "dataInfo": data_info,
         "kpis": {
-            "throughput": (total_committed as f64 / workload_secs * throughput_factor).round() as u64,
+            "throughput": summary.throughput.round() as u64,
             "peakThroughput": peak_throughput,
-            "committed": total_committed,
-            "errors": total_errors,
-            "errorRate": overall_error_rate,
-            "avgLatency": weighted_avg_latency,
+            "committed": summary.total_commits,
+            "errors": summary.total_errors,
+            "errorRate": summary.error_rate,
+            "avgLatency": summary.avg_latency_ms,
         },
         "transactions": tx_rows,
         "timeAxis": ts.time_axis,

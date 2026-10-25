@@ -17,6 +17,7 @@ use rand::prelude::*;
 mod benchmark;
 mod data_agg;
 mod report;
+mod summary;
 mod terminal;
 mod txmessage;
 mod yaml_benchmark;
@@ -24,9 +25,7 @@ mod yaml_lua;
 mod yaml_types;
 
 use super::args::{OutputFormat, RunArgs};
-use benchmark::{
-    Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics, TransactionSummary,
-};
+use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
 use txmessage::{TXMessage, TXMessageKind};
 
 /// Per-transaction counters returned by the data collector when it finishes.
@@ -872,7 +871,6 @@ impl Executor {
     }
 
     pub fn print_results(&mut self, format: OutputFormat) -> &mut Self {
-        let duration_ms = Duration::from_millis(self.total_time_ms as u64);
         // Get transactions details and the headline throughput metric from the spec.
         let benchmark = self.get_benchmark(0, 0, 0);
         let transactions = benchmark.get_transactions_rw();
@@ -887,97 +885,64 @@ impl Executor {
             }
         };
 
-        let mut data_stats: Vec<ResponseTimeStatistics> = Vec::new();
-        let mut data_summary: Vec<TransactionSummary> = Vec::new();
+        // Same computation as the HTML report, so every output agrees.
+        let summary = summary::summarize(
+            &transactions,
+            &self.counters,
+            self.total_time_ms,
+            self.rampup_time_ms,
+            throughput_factor,
+        );
 
-        for transaction in transactions {
-            let default_stats = ResponseTimeStatistics {
-                name: transaction.name.clone(),
-                mean: 0.0,
-                min: 0.0,
-                max: 0.0,
-                std: 0.0,
-                percentile_95: 0.0,
-                percentile_99: 0.0,
-            };
-            let stats = stats_map.get(&transaction.id).unwrap_or(&default_stats);
-            let default_counters = Counter {
-                n_commits: 0,
-                n_total: 0,
-                total_duration_ms: 0.0,
-            };
-            let counters = self
-                .counters
-                .get(&transaction.id)
-                .unwrap_or(&default_counters);
-
-            data_stats.push(stats.clone());
-            data_summary.push(TransactionSummary::new(
-                transaction.name,
-                // Number of commits
-                counters.n_commits,
-                // Number of errors
-                counters.n_total - counters.n_commits,
-                // Error rate
-                if counters.n_total > 0 {
-                    (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0
-                } else {
-                    0.0
-                },
-                // Throughput in the spec's configured unit (commits/sec * time-base factor)
-                (counters.n_commits as f64 / duration_ms.as_secs() as f64 * throughput_factor)
-                    as u32,
-            ));
-        }
+        let data_stats: Vec<ResponseTimeStatistics> = transactions
+            .iter()
+            .map(|transaction| {
+                stats_map
+                    .get(&transaction.id)
+                    .cloned()
+                    .unwrap_or_else(|| ResponseTimeStatistics {
+                        name: transaction.name.clone(),
+                        mean: 0.0,
+                        min: 0.0,
+                        max: 0.0,
+                        std: 0.0,
+                        percentile_95: 0.0,
+                        percentile_99: 0.0,
+                    })
+            })
+            .collect();
 
         match format {
             OutputFormat::Table => {
-                // Headline KPIs aggregated across all transaction types.
-                let total_commits: u64 = data_summary.iter().map(|s| s.n_commits).sum();
-                let total_errors: u64 = data_summary.iter().map(|s| s.n_errors).sum();
-                let total_throughput: u64 = data_summary.iter().map(|s| s.throughput as u64).sum();
-                let total_tx = total_commits + total_errors;
-                let error_rate = if total_tx > 0 {
-                    total_errors as f64 / total_tx as f64 * 100.0
-                } else {
-                    0.0
-                };
-                // Commit-weighted mean latency so heavier transactions dominate.
-                let weighted: f64 = data_summary
-                    .iter()
-                    .zip(data_stats.iter())
-                    .map(|(s, st)| st.mean * s.n_commits as f64)
-                    .sum();
-                let avg_latency = if total_commits > 0 {
-                    weighted / total_commits as f64
-                } else {
-                    0.0
-                };
                 terminal::kpi_banner(
-                    total_throughput,
+                    summary.throughput.round() as u64,
                     &throughput_unit,
-                    total_commits,
-                    error_rate,
-                    avg_latency,
+                    summary.total_commits,
+                    summary.error_rate,
+                    summary.avg_latency_ms,
                 );
 
-                data_agg::print_transactions_tables(&data_summary, &data_stats, &throughput_unit);
+                data_agg::print_transactions_tables(
+                    &summary.transactions,
+                    &data_stats,
+                    &throughput_unit,
+                );
             }
             OutputFormat::Json => {
                 print!(
                     "{}",
                     data_agg::results_json(
-                        &data_summary,
+                        &summary.transactions,
                         &data_stats,
                         &throughput_unit,
-                        duration_ms.as_secs(),
+                        summary.workload_secs,
                     )
                 );
             }
             OutputFormat::Csv => {
                 print!(
                     "{}",
-                    data_agg::results_csv(&data_summary, &data_stats, &throughput_unit)
+                    data_agg::results_csv(&summary.transactions, &data_stats, &throughput_unit)
                 );
             }
         }
