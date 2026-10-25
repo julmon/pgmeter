@@ -114,7 +114,7 @@ The password is taken from `PGPASSWORD`.
 ### `init`
 
 ```bash
-pgmeter [conn opts] init --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>]
+pgmeter [conn opts] init --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-create-table <FILE>] [-q]
 ```
 
 > **Destructive.** `init` runs `DROP TABLE IF EXISTS <table> CASCADE` for every
@@ -129,6 +129,7 @@ pgmeter [conn opts] init --spec <FILE> [-s <N>] [-j <N>] [--no-fkey] [--post-cre
 | `-j, --jobs` | 1 | Parallel data-loading threads |
 | `--no-fkey` | false | Skip foreign-key creation |
 | `--post-create-table` | — | Extra SQL file executed after table creation |
+| `-q, --quiet` | false | Suppress progress output |
 
 ### `run`
 
@@ -145,6 +146,10 @@ pgmeter [conn opts] run --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [-P <N>] [--for
 | `-P, --progress` | 0 | Print live progress every N seconds (0 disables) |
 | `--format` | table | Results output format: `table`, `json`, or `csv` |
 | `-q, --quiet` | false | Suppress progress output; print only result data |
+
+Ctrl-C ends a run early: the clients stop, the results and the report cover what
+ran so far and are marked as interrupted, and pgmeter exits normally. A second
+Ctrl-C aborts immediately with status 130.
 
 > **Use the same `--spec` file for `init` and `run`.** The spec is the single
 > source of truth for both the schema and the workload.
@@ -902,8 +907,10 @@ That's a complete, original benchmark — no Rust, no recompile.
 
 ## 13. Limitations and gotchas
 
-- **Modes:** only `simple` and `script` are implemented. `extended` (referenced
-  in some sample comments) is not — using it errors at run time.
+- **Modes:** only `simple` and `script` exist. Any other `mode` value is
+  rejected when the spec is loaded.
+- **TLS:** `--sslmode` uses rustls with the system CA store; a custom CA file
+  (libpq's `sslrootcert`) and client certificates are not supported yet.
 - **`scalefactor` is `0` at run time.** Only loaders see the real value. Derive
   ranges in transactions from `min_id`/`max_id`/`const.*`.
 - **`simple`-mode bindings evaluate in declaration order.** Bindings compile into
