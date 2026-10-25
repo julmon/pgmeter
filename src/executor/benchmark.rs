@@ -1,3 +1,4 @@
+use super::error::Error;
 use postgres::Client;
 use tabled::Tabled;
 
@@ -64,10 +65,7 @@ pub struct ResponseTimeStatistics {
 /// Uses prepared statements and synchronous I/O (matches pgbench architecture)
 pub trait ReadWriteSync: Send + Sync {
     /// Prepare all statements needed for transactions (called once per connection)
-    fn prepare_statements(
-        &self,
-        client: &mut Client,
-    ) -> Result<PreparedStatements, postgres::Error>;
+    fn prepare_statements(&self, client: &mut Client) -> Result<PreparedStatements, Error>;
 
     /// Execute a transaction using prepared statements (hot path)
     fn execute_rw_transaction_sync(
@@ -75,7 +73,7 @@ pub trait ReadWriteSync: Send + Sync {
         client: &mut Client,
         prepared: &PreparedStatements,
         transaction: &BenchmarkTransaction,
-    ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<u128, Error>;
 }
 
 // Per-transaction headline results. The throughput is expressed in the unit
@@ -109,13 +107,10 @@ impl TransactionSummary {
 }
 
 pub trait Benchmark {
-    fn initialize_schema(&self, client: &mut Client) -> Result<u128, postgres::Error>;
-    fn pre_load_data(&self, client: &mut Client) -> Result<u128, String>;
-    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, String>;
-    fn get_default_max_id(
-        &self,
-        client: &mut Client,
-    ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
+    fn initialize_schema(&self, client: &mut Client) -> Result<u128, Error>;
+    fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error>;
+    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error>;
+    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, Error>;
     fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction>;
     fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt>;
     fn get_fkey_ddls(&self) -> Vec<BenchmarkStmt>;

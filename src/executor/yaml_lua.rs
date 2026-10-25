@@ -1,3 +1,4 @@
+use super::error::Error;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -351,7 +352,7 @@ pub fn execute_script(
     scripts: &HashMap<u16, String>,
     modules: &[String],
     tx_id: u16,
-) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<u128, Error> {
     set_client(client);
 
     let result = LUA_VM.with(|cell| {
@@ -359,35 +360,24 @@ pub fn execute_script(
 
         // Lazily initialize the Lua VM
         if vm_opt.is_none() {
-            let lua = create_lua_vm().map_err(lua_to_sync_err)?;
+            let lua = create_lua_vm().map_err(Error::from)?;
 
-            inject_context(&lua, min_id, max_id, scalefactor, constants)
-                .map_err(lua_to_sync_err)?;
+            inject_context(&lua, min_id, max_id, scalefactor, constants).map_err(Error::from)?;
 
             // Pre-load shared modules (runs at global scope before any transactions)
             for (i, module_src) in modules.iter().enumerate() {
-                lua.load(module_src).exec().map_err(
-                    |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(format!(
-                            "Failed to load module {}: {}",
-                            i, e
-                        )))
-                    },
-                )?;
+                lua.load(module_src)
+                    .exec()
+                    .map_err(|e| Error::lua(format!("Failed to load module {}: {}", i, e)))?;
             }
 
             // Pre-load all transaction scripts as named functions
             for (id, script_src) in scripts {
                 let func_name = format!("__tx_{}", id);
                 let chunk = format!("function {}()\n{}\nend", func_name, script_src);
-                lua.load(&chunk).exec().map_err(
-                    |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(format!(
-                            "Failed to load script for tx {}: {}",
-                            id, e
-                        )))
-                    },
-                )?;
+                lua.load(&chunk).exec().map_err(|e| {
+                    Error::lua(format!("Failed to load script for tx {}: {}", id, e))
+                })?;
             }
 
             *vm_opt = Some(lua);
@@ -414,9 +404,7 @@ pub fn execute_script(
         // touches the connection (the ROLLBACK issued on error, the next
         // transaction).
         settle_copy_stream(outcome.is_ok());
-        outcome.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-            Box::new(std::io::Error::other(e.to_string()))
-        })?;
+        outcome?;
 
         Ok(start.elapsed().as_micros())
     });
@@ -435,31 +423,28 @@ pub fn execute_load_script(
     scalefactor: u32,
     constants: &HashMap<String, serde_yaml::Value>,
     ids: &[u32],
-) -> Result<u128, String> {
+) -> Result<u128, Error> {
     set_client(client);
 
-    let result = (|| -> Result<u128, String> {
-        let lua = create_lua_vm().map_err(|e| format!("Failed to create Lua VM: {}", e))?;
+    let result = (|| -> Result<u128, Error> {
+        let lua =
+            create_lua_vm().map_err(|e| Error::lua(format!("Failed to create Lua VM: {}", e)))?;
 
-        lua.globals()
-            .set("scalefactor", scalefactor)
-            .map_err(|e| e.to_string())?;
-        inject_constants(&lua, constants).map_err(|e| e.to_string())?;
+        lua.globals().set("scalefactor", scalefactor)?;
+        inject_constants(&lua, constants)?;
 
         // Pass the list of IDs to load as a Lua table
-        let ids_table = lua.create_table().map_err(|e| e.to_string())?;
+        let ids_table = lua.create_table()?;
         for (i, &id) in ids.iter().enumerate() {
-            ids_table.set(i + 1, id).map_err(|e| e.to_string())?;
+            ids_table.set(i + 1, id)?;
         }
-        lua.globals()
-            .set("ids", ids_table)
-            .map_err(|e| e.to_string())?;
+        lua.globals().set("ids", ids_table)?;
 
         let start = std::time::Instant::now();
         let outcome = lua
             .load(script)
             .exec()
-            .map_err(|e| format!("Load script failed: {}", e));
+            .map_err(|e| Error::lua(format!("Load script failed: {}", e)));
         settle_copy_stream(outcome.is_ok());
         outcome?;
 
@@ -800,7 +785,7 @@ pub fn eval_bindings_simple(
     max_id: u32,
     scalefactor: u32,
     constants: &HashMap<String, serde_yaml::Value>,
-) -> Result<HashMap<String, String>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<HashMap<String, String>, Error> {
     // One binding function per transaction id, so distinct simple transactions
     // don't clobber each other's compiled bindings.
     let func_name = format!("__eval_bindings_{}", tx_id);
@@ -809,23 +794,19 @@ pub fn eval_bindings_simple(
         let mut vm_opt = cell.borrow_mut();
 
         if vm_opt.is_none() {
-            let lua = create_eval_vm().map_err(lua_to_sync_err)?;
-            inject_constants(&lua, constants).map_err(lua_to_sync_err)?;
+            let lua = create_eval_vm().map_err(Error::from)?;
+            inject_constants(&lua, constants).map_err(Error::from)?;
             *vm_opt = Some(lua);
         }
 
         let lua = vm_opt.as_ref().unwrap();
 
         // Set context globals (cheap: just integer assignments)
-        lua.globals()
-            .set("min_id", min_id)
-            .map_err(lua_to_sync_err)?;
-        lua.globals()
-            .set("max_id", max_id)
-            .map_err(lua_to_sync_err)?;
+        lua.globals().set("min_id", min_id).map_err(Error::from)?;
+        lua.globals().set("max_id", max_id).map_err(Error::from)?;
         lua.globals()
             .set("scalefactor", scalefactor)
-            .map_err(lua_to_sync_err)?;
+            .map_err(Error::from)?;
 
         // Compile this transaction's binding function once per thread
         EVAL_FUNCS.with(|set_cell| {
@@ -847,20 +828,17 @@ pub fn eval_bindings_simple(
                 body.push_str(&format!("  return {}\n", return_keys.join(", ")));
 
                 let chunk = format!("function {}()\n{}end", func_name, body);
-                lua.load(&chunk).exec().map_err(lua_to_sync_err)?;
+                lua.load(&chunk).exec().map_err(Error::from)?;
 
                 compiled.insert(tx_id);
             }
 
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            Ok::<(), Error>(())
         })?;
 
         // Call the pre-compiled function (single bytecode dispatch, no parsing)
-        let func: LuaFunction = lua
-            .globals()
-            .get(func_name.as_str())
-            .map_err(lua_to_sync_err)?;
-        let results: LuaMultiValue = func.call(()).map_err(lua_to_sync_err)?;
+        let func: LuaFunction = lua.globals().get(func_name.as_str()).map_err(Error::from)?;
+        let results: LuaMultiValue = func.call(()).map_err(Error::from)?;
 
         // Map returned values back to binding names
         let mut resolved = HashMap::new();
@@ -905,10 +883,6 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
     Ok(())
 }
 
-fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
-    Box::new(std::io::Error::other(e.to_string()))
-}
-
 /// Close a COPY stream a script left open. After a successful script the
 /// stream is finished so the rows it wrote are kept (a script may rely on the
 /// implicit `copy_end`); after a failed script it is dropped, which aborts the
@@ -932,7 +906,7 @@ fn settle_copy_stream(script_succeeded: bool) {
 /// "db error"; the server's message (`division by zero`, the constraint name,
 /// `DETAIL:` lines) lives in its source chain, which `error_detail` flattens.
 fn db_err(context: &str, e: &dyn std::error::Error) -> LuaError {
-    LuaError::RuntimeError(format!("{}: {}", context, super::error_detail(e)))
+    LuaError::RuntimeError(format!("{}: {}", context, super::error::error_detail(e)))
 }
 
 #[cfg(test)]

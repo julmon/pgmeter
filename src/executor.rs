@@ -16,6 +16,7 @@ use rand::prelude::*;
 
 mod benchmark;
 mod data_agg;
+pub mod error;
 mod report;
 mod summary;
 mod terminal;
@@ -26,6 +27,7 @@ mod yaml_types;
 
 use super::args::{OutputFormat, RunArgs};
 use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
+use error::error_detail;
 use txmessage::{TXMessage, TXMessageKind};
 
 /// What the data collector hands back when it finishes: the post-ramp-up
@@ -80,24 +82,6 @@ fn escape_log_message(message: &str) -> String {
         }
     }
     out
-}
-
-// postgres::Error's Display prints only a terse category such as "db error";
-// the actual server message (e.g. ERROR: relation "warehouse" already exists)
-// lives in its source chain. Build a full message by appending each underlying
-// cause so failures are actionable instead of opaque.
-fn error_detail(error: &dyn std::error::Error) -> String {
-    let mut msg = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        let text = cause.to_string();
-        if !text.is_empty() && !msg.contains(&text) {
-            msg.push_str(": ");
-            msg.push_str(&text);
-        }
-        source = cause.source();
-    }
-    msg
 }
 
 // Mask the password in a libpq URL so the connection target can be echoed in the
@@ -224,7 +208,7 @@ impl Executor {
             let max_id = match benchmark_client.get_default_max_id(&mut client) {
                 Ok(max_id) => max_id,
                 Err(error) => {
-                    terminal::err_msg(error_detail(error.as_ref()).as_str());
+                    terminal::err_msg(&error.to_string());
                     std::process::exit(1);
                 }
             };
@@ -355,7 +339,11 @@ impl Executor {
                 });
 
                 // Get benchmark and prepare statements
-                let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id);
+                let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id)
+                    .unwrap_or_else(|e| {
+                        terminal::err_msg(&e.to_string());
+                        std::process::exit(1);
+                    });
                 let prepared = benchmark
                     .prepare_statements(&mut client)
                     .unwrap_or_else(|err| {
@@ -404,7 +392,7 @@ impl Executor {
                             let m = TXMessage::error(
                                 transaction.id,
                                 client_id as u32,
-                                error_detail(error.as_ref()),
+                                error.to_string(),
                             );
                             let _ = tx_clone.send(m);
                         }
@@ -708,7 +696,7 @@ impl Executor {
         let duration_us = match benchmark_client.pre_load_data(&mut client) {
             Ok(duration) => duration,
             Err(error) => {
-                terminal::err_msg(error.as_str());
+                terminal::err_msg(&error.to_string());
                 std::process::exit(1);
             }
         };
@@ -753,7 +741,7 @@ impl Executor {
                 let _duration_us = match job_benchmark_client.load_data(&mut job_client, job_ids) {
                     Ok(duration) => duration,
                     Err(error) => {
-                        terminal::err_msg(error.as_str());
+                        terminal::err_msg(&error.to_string());
                         std::process::exit(1);
                     }
                 };
@@ -841,7 +829,10 @@ impl Executor {
     }
 
     fn get_benchmark(&mut self, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
-        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id)
+        YamlBenchmark::from_file(&self.spec_file, scalefactor, min_id, max_id).unwrap_or_else(|e| {
+            terminal::err_msg(&e.to_string());
+            std::process::exit(1);
+        })
     }
 
     // Execute primary keys DDLs using multiple concurrent jobs
@@ -943,7 +934,7 @@ impl Executor {
         ) {
             Ok(_) => (),
             Err(error) => {
-                terminal::err_msg(error_detail(error.as_ref()).as_str());
+                terminal::err_msg(&error.to_string());
                 std::process::exit(1);
             }
         }
@@ -963,7 +954,7 @@ impl Executor {
         let stats_map = match data_agg::get_stats(&self.target_dir, &transactions) {
             Ok(stats_map) => stats_map,
             Err(error) => {
-                terminal::err_msg(error_detail(error.as_ref()).as_str());
+                terminal::err_msg(&error.to_string());
                 std::process::exit(1);
             }
         };
@@ -1045,7 +1036,7 @@ impl Executor {
         let stats = match data_agg::get_stats(&self.target_dir, &transactions) {
             Ok(stats) => stats,
             Err(error) => {
-                terminal::err_msg(error_detail(error.as_ref()).as_str());
+                terminal::err_msg(&error.to_string());
                 return self;
             }
         };
@@ -1073,7 +1064,7 @@ impl Executor {
                 terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
                 terminal::artifact_path("report:", &report_path.display().to_string());
             }
-            Err(error) => terminal::err_msg(error_detail(error.as_ref()).as_str()),
+            Err(error) => terminal::err_msg(&error.to_string()),
         }
 
         self

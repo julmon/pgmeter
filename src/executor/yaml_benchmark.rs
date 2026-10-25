@@ -8,6 +8,7 @@ use postgres::Client;
 use super::benchmark::{
     Benchmark, BenchmarkStmt, BenchmarkTransaction, PreparedStatements, ReadWriteSync,
 };
+use super::error::Error;
 use super::yaml_lua;
 use super::yaml_types::{BenchmarkSpec, TransactionMode};
 
@@ -40,7 +41,12 @@ impl YamlBenchmark {
     /// (containing `spec.yaml` and an optional `scripts/` folder) or a single
     /// spec file. Relative `script_file`/module/load-script paths resolve
     /// against the benchmark directory (the spec file's parent).
-    pub fn from_file(path: &str, scalefactor: u32, min_id: u32, max_id: u32) -> YamlBenchmark {
+    pub fn from_file(
+        path: &str,
+        scalefactor: u32,
+        min_id: u32,
+        max_id: u32,
+    ) -> Result<YamlBenchmark, Error> {
         let path = Path::new(path);
         let (spec_path, spec_dir) = if path.is_dir() {
             (path.join("spec.yaml"), path.to_path_buf())
@@ -49,23 +55,20 @@ impl YamlBenchmark {
             (path.to_path_buf(), dir)
         };
 
-        let yaml_content = std::fs::read_to_string(&spec_path).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!(
-                "Failed to read spec file '{}': {}",
-                spec_path.display(),
-                e
-            ));
-            std::process::exit(1);
-        });
+        let yaml_content = std::fs::read_to_string(&spec_path).map_err(|e| {
+            Error::io(
+                format!("Failed to read spec file '{}'", spec_path.display()),
+                e,
+            )
+        })?;
 
-        let spec: BenchmarkSpec = serde_yaml::from_str(&yaml_content).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!(
+        let spec: BenchmarkSpec = serde_yaml::from_str(&yaml_content).map_err(|e| {
+            Error::spec(format!(
                 "Failed to parse YAML spec '{}': {}",
                 spec_path.display(),
                 e
-            ));
-            std::process::exit(1);
-        });
+            ))
+        })?;
 
         Self::from_spec(spec, spec_dir, scalefactor, min_id, max_id)
     }
@@ -78,14 +81,13 @@ impl YamlBenchmark {
         scalefactor: u32,
         min_id: u32,
         max_id: u32,
-    ) -> YamlBenchmark {
+    ) -> Result<YamlBenchmark, Error> {
         if let Err(problems) = validate_spec(&spec) {
-            super::terminal::err_msg(&format!(
+            return Err(Error::spec(format!(
                 "Invalid benchmark spec '{}':\n  - {}",
                 spec.name,
                 problems.join("\n  - ")
-            ));
-            std::process::exit(1);
+            )));
         }
 
         let table_ddls = Self::generate_table_ddls(&spec);
@@ -94,12 +96,12 @@ impl YamlBenchmark {
         let index_ddls = Self::generate_index_ddls(&spec);
         let vacuum_stmts = Self::generate_vacuum_stmts(&spec);
         let transactions_rw = Self::generate_transactions(&spec);
-        let lua_scripts = Self::load_lua_scripts(&spec, &spec_dir);
-        let lua_modules = Self::load_lua_modules(&spec, &spec_dir);
-        let pre_load_script = Self::load_optional_script(&spec.pre_load_script, &spec_dir);
-        let load_script_src = Self::load_optional_script(&spec.load_script, &spec_dir);
+        let lua_scripts = Self::load_lua_scripts(&spec, &spec_dir)?;
+        let lua_modules = Self::load_lua_modules(&spec, &spec_dir)?;
+        let pre_load_script = Self::load_optional_script(&spec.pre_load_script, &spec_dir)?;
+        let load_script_src = Self::load_optional_script(&spec.load_script, &spec_dir)?;
 
-        YamlBenchmark {
+        Ok(YamlBenchmark {
             spec,
             scalefactor,
             min_id,
@@ -115,7 +117,7 @@ impl YamlBenchmark {
             pre_load_script,
             load_script_src,
             spec_dir,
-        }
+        })
     }
 
     fn generate_table_ddls(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
@@ -271,51 +273,44 @@ impl YamlBenchmark {
             .collect()
     }
 
-    fn load_optional_script(value: &Option<String>, spec_dir: &Path) -> Option<String> {
-        value.as_ref().map(|v| {
-            // If the value contains a newline, it's inline Lua code.
-            // Otherwise, treat it as a file path.
-            if v.contains('\n') {
-                v.clone()
-            } else {
-                let full_path = spec_dir.join(v);
-                std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
-                    super::terminal::err_msg(&format!(
-                        "Failed to read script '{}': {}",
-                        full_path.display(),
-                        e
-                    ));
-                    std::process::exit(1);
-                })
-            }
-        })
+    /// Read a Lua source file referenced by the spec, relative to the spec dir.
+    fn read_lua_file(what: &str, spec_dir: &Path, file: &str) -> Result<String, Error> {
+        let path = spec_dir.join(file);
+        std::fs::read_to_string(&path)
+            .map_err(|e| Error::io(format!("Failed to read {} '{}'", what, path.display()), e))
     }
 
-    fn load_lua_modules(spec: &BenchmarkSpec, spec_dir: &Path) -> Vec<String> {
+    /// A value containing a newline is inline Lua source; otherwise it is a
+    /// file path relative to the spec.
+    fn load_optional_script(
+        value: &Option<String>,
+        spec_dir: &Path,
+    ) -> Result<Option<String>, Error> {
+        match value {
+            None => Ok(None),
+            Some(v) if v.contains('\n') => Ok(Some(v.clone())),
+            Some(v) => Self::read_lua_file("script", spec_dir, v).map(Some),
+        }
+    }
+
+    fn load_lua_modules(spec: &BenchmarkSpec, spec_dir: &Path) -> Result<Vec<String>, Error> {
         spec.scripts
             .modules
             .iter()
             .map(|module| {
-                // A value containing a newline is inline Lua source;
-                // otherwise it is a file path relative to the spec.
                 if module.contains('\n') {
-                    module.clone()
+                    Ok(module.clone())
                 } else {
-                    let path = spec_dir.join(module);
-                    std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                        super::terminal::err_msg(&format!(
-                            "Failed to read Lua module '{}': {}",
-                            path.display(),
-                            e
-                        ));
-                        std::process::exit(1);
-                    })
+                    Self::read_lua_file("Lua module", spec_dir, module)
                 }
             })
             .collect()
     }
 
-    fn load_lua_scripts(spec: &BenchmarkSpec, spec_dir: &Path) -> HashMap<u16, String> {
+    fn load_lua_scripts(
+        spec: &BenchmarkSpec,
+        spec_dir: &Path,
+    ) -> Result<HashMap<u16, String>, Error> {
         let mut scripts = HashMap::new();
 
         for tx in &spec.transactions {
@@ -327,32 +322,23 @@ impl YamlBenchmark {
 
             // External script file
             if let Some(ref script_file) = tx.script_file {
-                let script_path = spec_dir.join(script_file);
-                let script = std::fs::read_to_string(&script_path).unwrap_or_else(|e| {
-                    super::terminal::err_msg(&format!(
-                        "Failed to read Lua script '{}': {}",
-                        script_path.display(),
-                        e
-                    ));
-                    std::process::exit(1);
-                });
-                scripts.insert(tx.id, script);
+                scripts.insert(
+                    tx.id,
+                    Self::read_lua_file("Lua script", spec_dir, script_file)?,
+                );
             }
         }
 
-        scripts
+        Ok(scripts)
     }
 
     /// Evaluate bindings and substitute {{var}} placeholders in a SQL template.
     /// Uses a thread-local Lua VM for binding evaluation (no per-call VM creation).
-    fn render_simple_sql(
-        &self,
-        tx: &super::yaml_types::TransactionSpec,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    fn render_simple_sql(&self, tx: &super::yaml_types::TransactionSpec) -> Result<String, Error> {
         let sql_template = match &tx.sql {
             Some(s) => s.as_str(),
             None => {
-                return Err("Transaction has mode=simple but no sql field".into());
+                return Err(Error::spec("Transaction has mode=simple but no sql field"));
             }
         };
 
@@ -392,7 +378,7 @@ impl YamlBenchmark {
         client: &mut Client,
         load_spec: &super::yaml_types::LoadSpec,
         ids: &[u32],
-    ) -> Result<(), String> {
+    ) -> Result<(), Error> {
         let lua = yaml_lua::create_eval_vm_with_context(
             self.min_id,
             self.max_id,
@@ -629,10 +615,7 @@ fn max_id_from_value(value: Option<i64>) -> Result<u32, String> {
 }
 
 impl ReadWriteSync for YamlBenchmark {
-    fn prepare_statements(
-        &self,
-        _client: &mut Client,
-    ) -> Result<PreparedStatements, postgres::Error> {
+    fn prepare_statements(&self, _client: &mut Client) -> Result<PreparedStatements, Error> {
         Ok(PreparedStatements::new())
     }
 
@@ -641,15 +624,18 @@ impl ReadWriteSync for YamlBenchmark {
         client: &mut Client,
         _prepared: &PreparedStatements,
         transaction: &BenchmarkTransaction,
-    ) -> Result<u128, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<u128, Error> {
         // Find the transaction spec
         let tx_spec = self
             .spec
             .transactions
             .iter()
             .find(|t| t.id == transaction.id)
-            .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
-                format!("Transaction id {} not found in spec", transaction.id).into()
+            .ok_or_else(|| {
+                Error::spec(format!(
+                    "Transaction id {} not found in spec",
+                    transaction.id
+                ))
             })?;
 
         let result = match tx_spec.mode {
@@ -660,7 +646,7 @@ impl ReadWriteSync for YamlBenchmark {
                 client
                     .batch_execute(&sql)
                     .map(|_| start.elapsed().as_micros())
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+                    .map_err(Error::from)
             }),
             TransactionMode::Script => {
                 // Execute Lua script. Validation at load time guarantees one
@@ -696,7 +682,7 @@ impl ReadWriteSync for YamlBenchmark {
 }
 
 impl Benchmark for YamlBenchmark {
-    fn initialize_schema(&self, client: &mut Client) -> Result<u128, postgres::Error> {
+    fn initialize_schema(&self, client: &mut Client) -> Result<u128, Error> {
         let start = Instant::now();
 
         let mut transaction = client.transaction()?;
@@ -708,7 +694,7 @@ impl Benchmark for YamlBenchmark {
         Ok(start.elapsed().as_micros())
     }
 
-    fn pre_load_data(&self, client: &mut Client) -> Result<u128, String> {
+    fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error> {
         match &self.pre_load_script {
             Some(script) => yaml_lua::execute_load_script(
                 client,
@@ -721,7 +707,7 @@ impl Benchmark for YamlBenchmark {
         }
     }
 
-    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, String> {
+    fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error> {
         let start = Instant::now();
 
         // If a load_script is defined, use it (Lua-based loading)
@@ -747,26 +733,26 @@ impl Benchmark for YamlBenchmark {
     /// bound of the id range. Accepts smallint, integer and bigint; NULL
     /// (`MAX()` over an empty table), no rows, or a value below 1 mean the
     /// dataset has not been loaded and are reported as errors, not panics.
-    fn get_default_max_id(
-        &self,
-        client: &mut Client,
-    ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, Error> {
         let query = &self.spec.scaling.max_id_query;
         let rows = client.query(query, &[])?;
         let Some(row) = rows.first() else {
-            return Err(format!("max_id_query returned no rows: {query}").into());
+            return Err(Error::spec(format!(
+                "max_id_query returned no rows: {query}"
+            )));
         };
         if row.is_empty() {
-            return Err(format!("max_id_query returned no columns: {query}").into());
+            return Err(Error::spec(format!(
+                "max_id_query returned no columns: {query}"
+            )));
         }
-        let value = max_id_column_value(row)
-            .ok_or_else(|| {
-                format!(
-                    "max_id_query must return an integer (smallint, integer or bigint), got {}: {query}",
-                    row.columns()[0].type_()
-                )
-            })?;
-        max_id_from_value(value).map_err(|e| format!("{e}: {query}").into())
+        let value = max_id_column_value(row).ok_or_else(|| {
+            Error::spec(format!(
+                "max_id_query must return an integer (smallint, integer or bigint), got {}: {query}",
+                row.columns()[0].type_()
+            ))
+        })?;
+        max_id_from_value(value).map_err(|e| Error::spec(format!("{e}: {query}")))
     }
 
     fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction> {
@@ -964,7 +950,7 @@ transactions:
         let bench = |query: &str| {
             let mut spec = sample_spec();
             spec.scaling.max_id_query = query.to_string();
-            YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 1)
+            YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 1).unwrap()
         };
 
         // run before init: MAX over nothing is NULL -> clean error, no panic.
@@ -1059,7 +1045,7 @@ transactions:
         )
         .unwrap();
 
-        let benchmark = YamlBenchmark::from_file(spec_path.to_str().unwrap(), 1, 1, 1);
+        let benchmark = YamlBenchmark::from_file(spec_path.to_str().unwrap(), 1, 1, 1).unwrap();
         let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
         let prepared = benchmark.prepare_statements(&mut client).unwrap();
 
@@ -1068,15 +1054,9 @@ transactions:
                 .execute_rw_transaction_sync(&mut client, &prepared, &tx)
                 .expect_err("division by zero must fail");
             // The server message must survive in both modes (RELEASE_REVIEW
-            // B16): directly in the Lua runtime error for script mode, and in
-            // the postgres::Error source chain for simple mode.
-            let mut chain = err.to_string();
-            let mut source = err.source();
-            while let Some(cause) = source {
-                chain.push_str(": ");
-                chain.push_str(&cause.to_string());
-                source = cause.source();
-            }
+            // B16): the Lua runtime error carries it for script mode, and
+            // Error's Display flattens the postgres source chain for simple mode.
+            let chain = err.to_string();
             assert!(
                 chain.contains("division by zero"),
                 "{}: server message lost, got: {chain}",

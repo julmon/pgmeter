@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, TransactionSummary};
+use super::error::Error;
 use polars::prelude::*;
 use tabled::{
     builder::Builder,
@@ -53,7 +54,7 @@ pub fn aggregate_transaction_data(
     transactions: &[BenchmarkTransaction],
     rampup_end_ts: Option<i64>,
     throughput_factor: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Error> {
     // Transaction log file parsing
     let df = LazyCsvReader::new(target_dir.join(log_file))
         .with_delimiter(b' ')
@@ -212,7 +213,7 @@ pub fn aggregate_transaction_data(
 pub fn get_stats(
     target_dir: &Path,
     transactions: &[BenchmarkTransaction],
-) -> Result<HashMap<u16, ResponseTimeStatistics>, Box<dyn std::error::Error>> {
+) -> Result<HashMap<u16, ResponseTimeStatistics>, Error> {
     let labels = ["mean", "std", "min", "95%", "99%", "max"];
 
     let mut stats_map: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
