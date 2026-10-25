@@ -48,6 +48,11 @@ serde_yaml = "0.9"
 serde_json = "1"
 include_dir = "0.7"
 signal-hook = "0.3"
+# TLS for the PostgreSQL connections (rustls with the ring provider: no system
+# OpenSSL needed at build time).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+rustls-native-certs = "0.8"
 
 [profile.release]
 opt-level = 3

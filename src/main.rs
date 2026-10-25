@@ -51,7 +51,7 @@ fn run() -> Result<(), Error> {
     match env.action {
         Action::Run => {
             let output_format = env.output_format;
-            Executor::new(dsn, spec_file)?
+            Executor::new(dsn, env.sslmode, spec_file)?
                 .run_benchmark(env.run_args)?
                 .aggregate_data()?
                 .generate_report()?
@@ -59,7 +59,7 @@ fn run() -> Result<(), Error> {
         }
         Action::Init => {
             let init = env.init_args;
-            Executor::new(dsn, spec_file)?
+            Executor::new(dsn, env.sslmode, spec_file)?
                 .init_db_schema()?
                 .exec_post_create_table_script(init.post_create_table)?
                 .load_data(init.scalefactor, init.jobs)?

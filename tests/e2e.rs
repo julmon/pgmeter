@@ -144,6 +144,80 @@ fn unreachable_server_is_reported_cleanly() {
     fs::remove_dir_all(&cwd).ok();
 }
 
+/// RELEASE_REVIEW C4: the TLS requirement is honoured. CI's service
+/// container has no TLS, so `require` must fail with one clean error and
+/// `disable` / the default `prefer` must work. (The encrypted path is checked
+/// locally against a PostgreSQL started with a self-signed certificate.)
+#[test]
+fn sslmode_require_is_refused_cleanly_by_a_server_without_tls() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    // Own tables: the e2e tests run in parallel, and `init` drops and
+    // recreates the tables of the spec it is given.
+    let cwd = workdir("sslmode");
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-sslmode
+scaling:
+  unit: thing
+  max_id_query: "SELECT MAX(id) FROM e2e_sslmode"
+schema:
+  tables:
+    - name: e2e_sslmode
+      columns: [{name: id, type: int}]
+      primary_key: [id]
+load:
+  - table: e2e_sslmode
+    copy_columns: [id]
+    rows_per_id: 1
+    row: "{{id}}\n"
+transactions:
+  - id: 1
+    name: ping
+    weight: 100
+    bindings:
+      tid: "rand_int(min_id, max_id)"
+    sql: "SELECT id FROM e2e_sslmode WHERE id = {{tid}}"
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+
+    let out = pgmeter(
+        &env,
+        &cwd,
+        &["--sslmode", "require", "init", "--spec", spec, "-s", "1"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("error:"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+
+    let out = pgmeter(
+        &env,
+        &cwd,
+        &["--sslmode", "disable", "init", "--spec", spec, "-s", "1"],
+    );
+    assert_success(&out, "init with sslmode=disable");
+    let mut env_prefer = env.clone();
+    env_prefer.push(("PGSSLMODE", "prefer".to_string()));
+    let out = pgmeter(
+        &env_prefer,
+        &cwd,
+        &[
+            "run", "--spec", spec, "-c", "1", "-T", "1", "--format", "json",
+        ],
+    );
+    assert_success(&out, "run with PGSSLMODE=prefer");
+
+    fs::remove_dir_all(&cwd).ok();
+}
+
 #[test]
 fn custom_simple_init_then_run_with_json_output() {
     let Some(env) = connection_env() else {

@@ -107,6 +107,7 @@ the bundled workloads under `samples/`) or a single spec file.
 | `-p, --port` | `PGPORT` | 5432 | Port |
 | `-U, --username` | `PGUSER` | current user | Database user |
 | `-d, --dbname` | `PGDATABASE` | current user | Database name |
+| `--sslmode` | `PGSSLMODE` | prefer | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` (libpq semantics; the `verify-*` modes use the system CA store) |
 
 The password is taken from `PGPASSWORD`.
 
