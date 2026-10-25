@@ -906,8 +906,8 @@ transactions:
 
     #[test]
     fn spec_loading_failures_are_errors_not_exits() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-c2-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
 
         let missing = dir.join("nope.yaml");
         let err = err_of(YamlBenchmark::from_file(missing.to_str().unwrap(), 1, 1, 1));
@@ -946,8 +946,6 @@ transactions:
             err.to_string().contains("Lua script") && err.to_string().contains("missing.lua"),
             "{err}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Every bundled sample must pass the same validation users' specs get.
@@ -1068,8 +1066,8 @@ transactions:
             return;
         };
 
-        let dir = std::env::temp_dir().join(format!("pgmeter-b3-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let spec_path = dir.join("spec.yaml");
         std::fs::write(
             &spec_path,
@@ -1122,8 +1120,6 @@ transactions:
                 .unwrap_or_else(|e| panic!("{}: connection unusable after failure: {e}", tx.name));
             assert_eq!(row.get::<_, i32>(0), 42);
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn sample_spec() -> BenchmarkSpec {

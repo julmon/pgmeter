@@ -292,8 +292,8 @@ mod tests {
     // have failed the first `get_benchmark`.
     #[test]
     fn spec_is_parsed_once_at_construction() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-c3-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let spec_path = dir.join("spec.yaml");
         std::fs::copy(
             concat!(

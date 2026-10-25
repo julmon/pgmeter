@@ -1244,8 +1244,8 @@ transactions:
 
     #[test]
     fn time_series_align_on_shared_origin() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
 
         // tx 1 at t=100,101; tx 2 at t=101,102. Shared origin = 100 -> 3 seconds.
         write(
@@ -1312,8 +1312,6 @@ transactions:
         assert_eq!(ts.total_tpm, vec![120, 60, 120]);
         assert_eq!(ts.hist_counts.iter().sum::<u64>(), 3);
         assert_eq!(ts.rampup_end_s, Some(1));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Regression for RELEASE_REVIEW B13: strings from the spec and the server

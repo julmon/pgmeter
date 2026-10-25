@@ -141,11 +141,8 @@ fn write_dir(dir: &Dir, output: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pgmeter-spec-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
@@ -171,7 +168,8 @@ mod tests {
 
     #[test]
     fn new_scaffolds_spec_and_scripts_and_refuses_to_overwrite() {
-        let out = temp_dir("new");
+        let tmp = temp_dir();
+        let out = tmp.path().to_path_buf();
         let out_str = out.to_str().unwrap();
 
         let dest = new("pgm-c", out_str, false).unwrap();
@@ -200,13 +198,12 @@ mod tests {
         let simple = new("custom-simple", out_str, false).unwrap();
         assert!(simple.join("spec.yaml").is_file());
         assert!(!simple.join("scripts").exists());
-
-        std::fs::remove_dir_all(&out).ok();
     }
 
     #[test]
     fn new_rejects_unknown_benchmark_and_lists_the_available_ones() {
-        let out = temp_dir("unknown");
+        let tmp = temp_dir();
+        let out = tmp.path().to_path_buf();
         let err = new("pgm-x", out.to_str().unwrap(), false).unwrap_err();
         assert!(err.contains("unknown benchmark 'pgm-x'"), "{err}");
         assert!(
@@ -214,6 +211,5 @@ mod tests {
             "{err}"
         );
         assert!(!out.join("pgm-x").exists());
-        std::fs::remove_dir_all(&out).ok();
     }
 }
