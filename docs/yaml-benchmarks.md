@@ -621,9 +621,20 @@ extra arguments after the SQL string and interpolated into `$1`, `$2`, … as
 | `query(sql, ...params)` | array of rows | Each row is a table keyed by **column name**. 1-indexed array. |
 | `query_one(sql, ...params)` | scalar or `nil` | First column of the first row; `nil` if no rows. |
 
-Result values come back through the simple protocol as text and are
-auto-converted: integers → Lua integer, decimals → Lua number, `t`/`f` →
-boolean, everything else → string. So:
+Result values come back through the simple protocol as **text, without type
+information**, and are converted by shape, matching what PostgreSQL prints:
+
+| Text looks like | Lua value |
+|-----------------|-----------|
+| `-?[0-9]+`, no leading zeros (`42`, `-7`, `0`) | integer; beyond the 32-bit range an exact number up to 2^53, above that the text is kept |
+| decimal or exponent form (`3.5`, `-0.25`, `1e+20`, `1.5E-3`) | number |
+| exactly `t` / `f` (the boolean output format) | boolean |
+| anything else (`NaN`, `Infinity`, `007`, `true`, dates, timestamps, `numeric` with more than 53 bits) | string |
+
+Because the shape is all there is, a **text column** whose value happens to be
+`t`, `f` or a bare number is converted too. If that matters, keep the value
+unambiguous on the SQL side (for example prefix it, `'#' || col`) or do the
+comparison in SQL. So:
 
 ```lua
 local rows = query("SELECT c_discount, c_last FROM customer WHERE c_id = $1", cid)

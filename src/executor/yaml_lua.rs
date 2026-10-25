@@ -551,21 +551,80 @@ fn query_simple(
 }
 
 /// Parse a string value into the best-matching Lua type.
+/// Convert a simple-protocol text value to a Lua value. The simple protocol
+/// carries no type information, so this is a heuristic restricted to the
+/// shapes PostgreSQL itself prints, so that text columns are not mangled:
+///
+/// - `-?[0-9]+` without leading zeros: integer (Lua integer up to i32; exact
+///   Lua number up to 2^53; above that the text is kept, since an f64 would
+///   lose digits)
+/// - `-?[0-9]+.[0-9]+` or with an exponent (`1e+20`, `1.5E-3`): number
+/// - exactly `t` / `f`, the boolean output format: boolean
+/// - anything else (`NaN`, `Infinity`, `007`, `true`, dates, ...): string
+///
+/// A text column holding `t`, `f` or digits is still converted; see the
+/// guide, section 9.4.
 fn str_to_lua_value(lua: &Lua, val: &str) -> LuaResult<LuaValue> {
-    // Try integer (i32 for Luau compat, fall through to f64 for larger values)
-    if let Ok(i) = val.parse::<i32>() {
-        return Ok(LuaValue::Integer(i));
+    if looks_like_integer(val) {
+        if let Ok(i) = val.parse::<i32>() {
+            return Ok(LuaValue::Integer(i));
+        }
+        if let Ok(i) = val.parse::<i64>() {
+            const EXACT: i64 = 1 << 53;
+            if (-EXACT..=EXACT).contains(&i) {
+                return Ok(LuaValue::Number(i as f64));
+            }
+        }
+        return Ok(LuaValue::String(lua.create_string(val)?));
     }
-    if let Ok(f) = val.parse::<f64>() {
-        return Ok(LuaValue::Number(f));
+    if looks_like_decimal(val) {
+        if let Ok(f) = val.parse::<f64>() {
+            return Ok(LuaValue::Number(f));
+        }
     }
-    if val == "t" || val == "true" {
-        return Ok(LuaValue::Boolean(true));
+    match val {
+        "t" => Ok(LuaValue::Boolean(true)),
+        "f" => Ok(LuaValue::Boolean(false)),
+        _ => Ok(LuaValue::String(lua.create_string(val)?)),
     }
-    if val == "f" || val == "false" {
-        return Ok(LuaValue::Boolean(false));
+}
+
+/// `-?[0-9]+`, no leading zero unless the value is exactly `0`.
+fn looks_like_integer(val: &str) -> bool {
+    let digits = val.strip_prefix('-').unwrap_or(val);
+    !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'))
+}
+
+/// `-?[0-9]+(.[0-9]+)?([eE][-+]?[0-9]+)?` with at least a fraction or an
+/// exponent, i.e. the text form of numeric, real and double precision.
+fn looks_like_decimal(val: &str) -> bool {
+    let rest = val.strip_prefix('-').unwrap_or(val);
+    let (mantissa, exponent) = match rest.find(['e', 'E']) {
+        Some(pos) => (&rest[..pos], Some(&rest[pos + 1..])),
+        None => (rest, None),
+    };
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (mantissa, None),
+    };
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(int_part) {
+        return false;
     }
-    Ok(LuaValue::String(lua.create_string(val)?))
+    if let Some(f) = frac_part {
+        if !all_digits(f) {
+            return false;
+        }
+    }
+    if let Some(e) = exponent {
+        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
+        if !all_digits(e) {
+            return false;
+        }
+    }
+    frac_part.is_some() || exponent.is_some()
 }
 
 /// Convert simple query rows to a Lua table of tables.
@@ -908,22 +967,67 @@ mod tests {
     #[test]
     fn str_to_lua_value_detects_types() {
         let lua = Lua::new();
-        assert!(matches!(str_to_lua_value(&lua, "42").unwrap(), LuaValue::Integer(n) if n == 42));
+        let conv = |s: &str| str_to_lua_value(&lua, s).unwrap();
+        let is_str =
+            |v: &LuaValue, s: &str| matches!(v, LuaValue::String(x) if x.to_str().unwrap() == s);
+
+        assert!(matches!(conv("42"), LuaValue::Integer(42)));
+        assert!(matches!(conv("-7"), LuaValue::Integer(-7)));
+        assert!(matches!(conv("0"), LuaValue::Integer(0)));
+        assert!(matches!(conv("3.5"), LuaValue::Number(f) if (f - 3.5).abs() < 1e-9));
+        assert!(matches!(conv("-0.25"), LuaValue::Number(f) if (f + 0.25).abs() < 1e-9));
+        // float8 output uses exponents for large and small magnitudes.
+        assert!(matches!(conv("1e+20"), LuaValue::Number(f) if f == 1e20));
+        assert!(matches!(conv("1.5E-3"), LuaValue::Number(f) if (f - 0.0015).abs() < 1e-12));
+        // bigint beyond i32 is an exact Lua number up to 2^53 ...
+        assert!(matches!(conv("2147483648"), LuaValue::Number(f) if f == 2147483648.0));
         assert!(
-            matches!(str_to_lua_value(&lua, "3.5").unwrap(), LuaValue::Number(f) if (f - 3.5).abs() < 1e-9)
+            matches!(conv("-9007199254740992"), LuaValue::Number(f) if f == -9007199254740992.0)
         );
-        assert!(matches!(
-            str_to_lua_value(&lua, "t").unwrap(),
-            LuaValue::Boolean(true)
-        ));
-        assert!(matches!(
-            str_to_lua_value(&lua, "false").unwrap(),
-            LuaValue::Boolean(false)
-        ));
-        assert!(matches!(
-            str_to_lua_value(&lua, "hello").unwrap(),
-            LuaValue::String(_)
-        ));
+        assert!(matches!(conv("t"), LuaValue::Boolean(true)));
+        assert!(matches!(conv("f"), LuaValue::Boolean(false)));
+        assert!(is_str(&conv("hello"), "hello"));
+    }
+
+    // Regression for RELEASE_REVIEW B12: text values that merely parse as a
+    // number or boolean in Rust must not be converted, only PostgreSQL's own
+    // output shapes are.
+    #[test]
+    fn str_to_lua_value_keeps_non_postgres_shapes_as_text() {
+        let lua = Lua::new();
+        for s in [
+            "NaN",
+            "nan",
+            "inf",
+            "Infinity",
+            "-Infinity", // float specials
+            "007",
+            "00",
+            "-0012", // leading zeros
+            "true",
+            "false",
+            "TRUE",
+            "yes",
+            "T", // only t/f are booleans
+            "1e",
+            "1.",
+            ".5",
+            "1.2.3",
+            "0x10",
+            "1_000",
+            "+5",
+            "",
+            " 42",
+            "9007199254740993", // 2^53 + 1 would lose a digit as f64
+            "2024-01-15",
+            "12:30:00",
+        ] {
+            let v = str_to_lua_value(&lua, s).unwrap();
+            assert!(
+                matches!(&v, LuaValue::String(x) if x.to_str().unwrap() == s),
+                "{s:?} must stay a string, got {v:?}"
+            );
+        }
     }
 
     #[test]
