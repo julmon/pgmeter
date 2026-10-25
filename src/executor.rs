@@ -51,6 +51,9 @@ pub struct Executor {
     /// shared by every pipeline step and client thread (RELEASE_REVIEW C3).
     benchmark: Arc<YamlBenchmark>,
     counters: HashMap<u16, Counter>,
+    /// Response-time statistics per transaction, computed by `aggregate_data`
+    /// and shared by the results and the report (RELEASE_REVIEW D5).
+    stats: HashMap<u16, ResponseTimeStatistics>,
     /// Log timestamp at which ramp-up ended; samples before it are excluded
     /// from the statistics and the histogram (RELEASE_REVIEW B2).
     rampup_end_ts: Option<i64>,
@@ -141,6 +144,7 @@ impl Executor {
             spec_file,
             benchmark,
             counters: HashMap::new(),
+            stats: HashMap::new(),
             rampup_end_ts: None,
             interrupted: false,
             total_time_ms: 0,
@@ -896,7 +900,7 @@ impl Executor {
 
         let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
 
-        data_agg::aggregate_transaction_data(
+        self.stats = data_agg::aggregate_transaction_data(
             LOG_FILE,
             &self.target_dir,
             &transactions,
@@ -915,8 +919,7 @@ impl Executor {
         let transactions = benchmark.get_transactions_rw();
         let throughput_unit = benchmark.spec.metrics.throughput_unit.clone();
         let throughput_factor = benchmark.spec.metrics.per.factor();
-        // Read statistics from the generated local files
-        let stats_map = data_agg::get_stats(&self.target_dir, &transactions)?;
+        let stats_map = &self.stats;
 
         // Same computation as the HTML report, so every output agrees.
         let summary = summary::summarize(
@@ -996,13 +999,7 @@ impl Executor {
         let transactions = benchmark.get_transactions_rw();
         let spec = benchmark.spec.clone();
 
-        let stats = match data_agg::get_stats(&self.target_dir, &transactions) {
-            Ok(stats) => stats,
-            Err(error) => {
-                terminal::err_msg(&error.to_string());
-                return Ok(self);
-            }
-        };
+        let stats = &self.stats;
 
         let mut client = match self.connect() {
             Ok(client) => client,
@@ -1019,7 +1016,7 @@ impl Executor {
             spec: &spec,
             transactions: &transactions,
             counters: &self.counters,
-            stats: &stats,
+            stats,
             total_time_ms: self.total_time_ms,
             rampup_time_ms: self.rampup_time_ms,
             rampup_end_ts: self.rampup_end_ts,

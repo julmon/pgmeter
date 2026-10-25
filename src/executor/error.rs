@@ -81,12 +81,6 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-impl From<polars::prelude::PolarsError> for Error {
-    fn from(e: polars::prelude::PolarsError) -> Self {
-        Error::Other(e.to_string())
-    }
-}
-
 /// Plain-text failures built with `format!` in the loaders and the Lua bridge.
 impl From<String> for Error {
     fn from(msg: String) -> Self {

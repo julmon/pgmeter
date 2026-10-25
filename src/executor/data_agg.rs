@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, TransactionSummary};
 use super::error::Error;
-use polars::prelude::*;
 use tabled::{
     builder::Builder,
     object::{Columns, Object, Rows},
@@ -41,255 +42,176 @@ pub(super) fn safe_name(name: &str) -> String {
         .collect()
 }
 
-/// The statistics frame for a transaction without samples: every statistic
-/// at zero, in the layout `get_stats` reads back.
-fn empty_stats_frame() -> PolarsResult<DataFrame> {
-    DataFrame::new(vec![
-        Series::new("describe", vec!["mean", "std", "min", "95%", "99%", "max"]),
-        Series::new("response_time_ms", vec![0.0f64; 6]),
-    ])
+/// Per-second accumulation for one transaction type (or for all of them).
+#[derive(Default)]
+struct PerSecond {
+    count: u64,
+    duration_sum_ms: f64,
 }
 
-// Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
+/// Everything aggregated for one transaction type in a single pass over the log.
+#[derive(Default)]
+struct TxAggregate {
+    /// Per log second, whole run (ramp-up included), for the time-series CSVs.
+    per_second: BTreeMap<i64, PerSecond>,
+    /// Steady-state response times (at or after the ramp-up boundary), for the statistics.
+    steady_durations_ms: Vec<f64>,
+}
+
+/// Response-time statistics of a sample. Matches what the previous
+/// implementation (polars `describe`) computed: sample standard deviation
+/// (n - 1), percentiles by linear interpolation between the two nearest
+/// order statistics. An empty sample yields all zeros.
+fn statistics(name: &str, durations_ms: &mut [f64]) -> ResponseTimeStatistics {
+    let mut stats = ResponseTimeStatistics {
+        name: name.to_string(),
+        mean: 0.0,
+        min: 0.0,
+        max: 0.0,
+        std: 0.0,
+        percentile_95: 0.0,
+        percentile_99: 0.0,
+    };
+    let n = durations_ms.len();
+    if n == 0 {
+        return stats;
+    }
+    durations_ms.sort_by(|a, b| a.total_cmp(b));
+    let sum: f64 = durations_ms.iter().sum();
+    stats.mean = sum / n as f64;
+    stats.min = durations_ms[0];
+    stats.max = durations_ms[n - 1];
+    if n > 1 {
+        let var = durations_ms
+            .iter()
+            .map(|d| (d - stats.mean).powi(2))
+            .sum::<f64>()
+            / (n - 1) as f64;
+        stats.std = var.sqrt();
+    }
+    stats.percentile_95 = percentile(durations_ms, 0.95);
+    stats.percentile_99 = percentile(durations_ms, 0.99);
+    stats
+}
+
+/// Linear-interpolation percentile of a sorted, non-empty sample.
+fn percentile(sorted: &[f64], q: f64) -> f64 {
+    let position = q * (sorted.len() - 1) as f64;
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    let fraction = position - lower as f64;
+    sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+}
+
+/// Throughput in the spec's unit for one second with `count` commits.
+fn rate(count: u64, throughput_factor: f64) -> u64 {
+    (count as f64 * throughput_factor).round() as u64
+}
+
+fn create(path: &Path) -> Result<BufWriter<File>, Error> {
+    File::create(path)
+        .map(BufWriter::new)
+        .map_err(|e| Error::io(format!("Cannot create {}", path.display()), e))
+}
+
+// Aggregates the transaction log in a single pass and writes the per-transaction
+// CSV files; returns the response-time statistics for the results and the report.
 //
 // The per-second time series (`pgmeter-throughput-*.csv`, `pgmeter-response-time-*.csv`)
 // cover the whole run, ramp-up included, so they line up with the report's
-// charts. The response-time statistics (`pgmeter-stats-*.csv`) only use samples
-// logged at or after `rampup_end_ts`, matching the committed counts and the
-// throughput, which the collector also only counts once ramp-up is over.
+// charts. The response-time statistics (returned, and written to
+// `pgmeter-stats-*.csv` for users) only use samples logged at or after
+// `rampup_end_ts`, matching the committed counts and the throughput, which the
+// collector also only counts once ramp-up is over.
 pub fn aggregate_transaction_data(
     log_file: &str,
     target_dir: &Path,
     transactions: &[BenchmarkTransaction],
     rampup_end_ts: Option<i64>,
     throughput_factor: f64,
-) -> Result<(), Error> {
-    // Transaction log file parsing
-    let df = LazyCsvReader::new(target_dir.join(log_file))
-        .with_delimiter(b' ')
-        .has_header(false)
-        .finish()?;
-    // Steady-state rows only, for the statistics.
-    let steady_df = match rampup_end_ts {
-        Some(ts) => df.clone().filter(col("column_1").gt_eq(lit(ts))),
-        None => df.clone(),
-    };
+) -> Result<HashMap<u16, ResponseTimeStatistics>, Error> {
+    let log_path = target_dir.join(log_file);
+    let log = File::open(&log_path)
+        .map_err(|e| Error::io(format!("Cannot read {}", log_path.display()), e))?;
 
-    // Produce aggregated data for each type of transaction
+    // One pass: `<ts> <clients> <tx_id> <duration_ms>` per line.
+    let mut per_tx: HashMap<u16, TxAggregate> = HashMap::new();
+    let mut all: BTreeMap<i64, PerSecond> = BTreeMap::new();
+    for line in BufReader::new(log).lines().map_while(Result::ok) {
+        let mut fields = line.split_whitespace();
+        let ts = fields.next().and_then(|v| v.parse::<i64>().ok());
+        let _clients = fields.next();
+        let tx_id = fields.next().and_then(|v| v.parse::<u16>().ok());
+        let duration_ms = fields.next().and_then(|v| v.parse::<f64>().ok());
+        let (Some(ts), Some(tx_id), Some(duration_ms)) = (ts, tx_id, duration_ms) else {
+            continue;
+        };
+        let agg = per_tx.entry(tx_id).or_default();
+        let second = agg.per_second.entry(ts).or_default();
+        second.count += 1;
+        second.duration_sum_ms += duration_ms;
+        let total = all.entry(ts).or_default();
+        total.count += 1;
+        total.duration_sum_ms += duration_ms;
+        if rampup_end_ts.is_none_or(|end| ts >= end) {
+            agg.steady_durations_ms.push(duration_ms);
+        }
+    }
+
+    let mut stats_map = HashMap::new();
     for transaction in transactions {
         let safe = safe_name(&transaction.name);
-        // Filter data for this transaction type
-        let filtered_df = df.clone().filter(col("column_3").eq(transaction.id as i64));
-        let steady_filtered_df = steady_df
-            .clone()
-            .filter(col("column_3").eq(transaction.id as i64));
+        let mut agg = per_tx.remove(&transaction.id).unwrap_or_default();
+        let origin = agg.per_second.keys().next().copied().unwrap_or(0);
 
-        // Check if there's any data for this transaction
-        let count_df = filtered_df
-            .clone()
-            .select([col("column_3").count()])
-            .collect()?;
-        let count: u32 = count_df
-            .column("column_3")
-            .ok()
-            .and_then(|c| c.get(0).ok())
-            .and_then(|v| v.try_extract::<u32>().ok())
-            .unwrap_or(0);
-
-        if count == 0 {
-            // No data for this transaction - create empty files
-            let empty_tpm = DataFrame::new(vec![
-                Series::new("time_s", Vec::<i64>::new()),
-                Series::new("throughput", Vec::<i64>::new()),
-            ])?;
-            let mut file =
-                std::fs::File::create(target_dir.join(format!("pgmeter-throughput-{}.csv", safe)))?;
-            CsvWriter::new(&mut file).finish(&mut empty_tpm.clone())?;
-
-            let empty_rt = DataFrame::new(vec![
-                Series::new("time_s", Vec::<i64>::new()),
-                Series::new("response_time_ms", Vec::<f64>::new()),
-            ])?;
-            let mut file = std::fs::File::create(
-                target_dir.join(format!("pgmeter-response-time-{}.csv", safe)),
+        let mut throughput = create(&target_dir.join(format!("pgmeter-throughput-{safe}.csv")))?;
+        writeln!(throughput, "time_s,throughput")?;
+        let mut response_time =
+            create(&target_dir.join(format!("pgmeter-response-time-{safe}.csv")))?;
+        writeln!(response_time, "time_s,response_time_ms")?;
+        for (ts, second) in &agg.per_second {
+            writeln!(
+                throughput,
+                "{},{}",
+                ts - origin,
+                rate(second.count, throughput_factor)
             )?;
-            CsvWriter::new(&mut file).finish(&mut empty_rt.clone())?;
-
-            let mut empty_stats = empty_stats_frame()?;
-            let mut file =
-                std::fs::File::create(target_dir.join(format!("pgmeter-stats-{}.csv", safe)))?;
-            CsvWriter::new(&mut file).finish(&mut empty_stats)?;
-
-            continue;
+            writeln!(
+                response_time,
+                "{},{}",
+                ts - origin,
+                second.duration_sum_ms / second.count as f64
+            )?;
         }
 
-        // Throughput per second, expressed in the spec's unit (count x factor),
-        // rounded to the nearest integer (+0.5 then truncating cast: polars 0.26's
-        // Expr::round needs an extra feature).
-        let mut tpm_df = filtered_df
-            .clone()
-            // Group by timestamp (in second) and transaction_id
-            .groupby([col("column_1"), col("column_3")])
-            .agg([
-                (col("column_4").count().cast(DataType::Float64) * lit(throughput_factor)
-                    + lit(0.5))
-                .cast(DataType::Int64),
-            ])
-            .select([
-                col("column_1").alias("time_s") - col("column_1").min(),
-                col("column_4").alias("throughput"),
-            ])
-            .sort("time_s", Default::default())
-            .collect()?;
-
-        // Save data as a CSV file
-        let mut file =
-            std::fs::File::create(target_dir.join(format!("pgmeter-throughput-{}.csv", safe)))?;
-        CsvWriter::new(&mut file).finish(&mut tpm_df)?;
-
-        // Calculate the average (mean) response time over a period of time
-        let mut response_time_df = filtered_df
-            .clone()
-            // Group by timestamp (in second) and transaction_id
-            .groupby([col("column_1"), col("column_3")])
-            .agg([col("column_4").mean()])
-            .select([
-                col("column_1").alias("time_s") - col("column_1").min(),
-                col("column_4").alias("response_time_ms"),
-            ])
-            .sort("time_s", Default::default())
-            .collect()?;
-
-        // Response times statistics (post-ramp-up samples only)
-        let stats_result = steady_filtered_df
-            .select([col("column_4").alias("response_time_ms")])
-            .collect();
-
-        let mut stats = match stats_result {
-            Ok(stats_df) => stats_df
-                .describe(Some(&[0.95, 0.99]))
-                .select(["describe", "response_time_ms"])
-                .or_else(|_| empty_stats_frame())?,
-            Err(_) => empty_stats_frame()?,
-        };
-
-        // Save data as a CSV file
-        let mut file =
-            std::fs::File::create(target_dir.join(format!("pgmeter-response-time-{}.csv", safe)))?;
-        CsvWriter::new(&mut file).finish(&mut response_time_df)?;
-        // Save statistics
-        let mut file_stats =
-            std::fs::File::create(target_dir.join(format!("pgmeter-stats-{}.csv", safe)))?;
-        CsvWriter::new(&mut file_stats).finish(&mut stats)?;
+        let stats = statistics(&transaction.name, &mut agg.steady_durations_ms);
+        let mut stats_file = create(&target_dir.join(format!("pgmeter-stats-{safe}.csv")))?;
+        writeln!(stats_file, "describe,response_time_ms")?;
+        writeln!(stats_file, "count,{}", agg.steady_durations_ms.len())?;
+        for (label, value) in [
+            ("mean", stats.mean),
+            ("std", stats.std),
+            ("min", stats.min),
+            ("95%", stats.percentile_95),
+            ("99%", stats.percentile_99),
+            ("max", stats.max),
+        ] {
+            writeln!(stats_file, "{label},{value}")?;
+        }
+        stats_map.insert(transaction.id, stats);
     }
 
     // Total throughput per second across all transaction types, same unit.
-    let mut tpm_all_df = df
-        .clone()
-        // Group by timestamp (in second) only
-        .groupby([col("column_1")])
-        .agg([
-            (col("column_4").count().cast(DataType::Float64) * lit(throughput_factor) + lit(0.5))
-                .cast(DataType::Int64),
-        ])
-        .select([
-            col("column_1").alias("time_s") - col("column_1").min(),
-            col("column_4").alias("throughput"),
-        ])
-        .sort("time_s", Default::default())
-        .collect()?;
-
-    // Save data as a CSV file
-    let mut file = std::fs::File::create(target_dir.join("pgmeter-throughput-all.csv"))?;
-    CsvWriter::new(&mut file).finish(&mut tpm_all_df)?;
-
-    Ok(())
-}
-
-// Reads the CSV file containing statistics and returns them as the following structure: HashMap<transaction_id: u16, ResponseTimeStatistices>
-pub fn get_stats(
-    target_dir: &Path,
-    transactions: &[BenchmarkTransaction],
-) -> Result<HashMap<u16, ResponseTimeStatistics>, Error> {
-    let labels = ["mean", "std", "min", "95%", "99%", "max"];
-
-    let mut stats_map: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
-
-    for transaction in transactions {
-        let safe = safe_name(&transaction.name);
-        let mut stats = ResponseTimeStatistics {
-            name: transaction.name.clone(),
-            min: 0.0,
-            mean: 0.0,
-            max: 0.0,
-            std: 0.0,
-            percentile_95: 0.0,
-            percentile_99: 0.0,
-        };
-
-        let stats_file = target_dir.join(format!("pgmeter-stats-{}.csv", safe));
-
-        // Check if stats file exists and has data
-        if !stats_file.exists() {
-            stats_map.insert(transaction.id, stats);
-            continue;
-        }
-
-        let df = match LazyCsvReader::new(&stats_file)
-            .with_delimiter(b',')
-            .has_header(true)
-            .finish()
-        {
-            Ok(df) => df,
-            Err(_) => {
-                stats_map.insert(transaction.id, stats);
-                continue;
-            }
-        };
-
-        for label in labels.iter() {
-            let row = match df
-                .clone()
-                .filter(col("describe").eq(lit(*label)))
-                .first()
-                .select([col("response_time_ms")])
-                .collect()
-            {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            // Try to extract the value, defaulting to 0.0 if it fails
-            let value: f64 = row
-                .column("response_time_ms")
-                .ok()
-                .and_then(|col| col.get(0).ok())
-                .and_then(|v| v.try_extract::<f64>().ok())
-                .unwrap_or(0.0);
-
-            match *label {
-                "mean" => {
-                    stats.mean = value;
-                }
-                "min" => {
-                    stats.min = value;
-                }
-                "max" => {
-                    stats.max = value;
-                }
-                "std" => {
-                    stats.std = value;
-                }
-                "95%" => {
-                    stats.percentile_95 = value;
-                }
-                "99%" => {
-                    stats.percentile_99 = value;
-                }
-                &_ => (),
-            }
-        }
-        stats_map.insert(transaction.id, stats);
+    let origin = all.keys().next().copied().unwrap_or(0);
+    let mut total = create(&target_dir.join("pgmeter-throughput-all.csv"))?;
+    writeln!(total, "time_s,throughput")?;
+    for (ts, second) in &all {
+        writeln!(
+            total,
+            "{},{}",
+            ts - origin,
+            rate(second.count, throughput_factor)
+        )?;
     }
 
     Ok(stats_map)
@@ -458,6 +380,52 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
+    // RELEASE_REVIEW D5: the hand-rolled statistics reproduce what polars'
+    // `describe` produced: sample standard deviation and linearly
+    // interpolated percentiles.
+    #[test]
+    fn statistics_match_the_previous_definitions() {
+        let mut sample = vec![4.0, 1.0, 3.0, 2.0, 5.0];
+        let s = statistics("t", &mut sample);
+        assert_eq!(s.mean, 3.0);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 5.0);
+        // sample variance of 1..5 is 2.5
+        assert!((s.std - 2.5f64.sqrt()).abs() < 1e-12, "{}", s.std);
+        // position 0.95 * 4 = 3.8 -> 4 + 0.8 * (5 - 4)
+        assert!((s.percentile_95 - 4.8).abs() < 1e-12, "{}", s.percentile_95);
+        assert!(
+            (s.percentile_99 - 4.96).abs() < 1e-12,
+            "{}",
+            s.percentile_99
+        );
+
+        let one = statistics("one", &mut [7.5]);
+        assert_eq!((one.mean, one.min, one.max, one.std), (7.5, 7.5, 7.5, 0.0));
+        assert_eq!((one.percentile_95, one.percentile_99), (7.5, 7.5));
+
+        let none = statistics("none", &mut []);
+        assert_eq!((none.mean, none.max, none.percentile_99), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn aggregate_writes_zero_stats_and_empty_series_for_an_idle_transaction() {
+        let dir = std::env::temp_dir().join(format!("pgmeter-agg-idle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("transaction.log"), "100 1 1 2.0\n").unwrap();
+        let transactions = vec![tx(1, "busy"), tx(2, "idle")];
+        let stats =
+            aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
+        assert_eq!(stats[&2].mean, 0.0);
+        assert_eq!(stats[&1].mean, 2.0);
+        let idle = std::fs::read_to_string(dir.join("pgmeter-stats-idle.csv")).unwrap();
+        assert_eq!(idle.lines().nth(1), Some("count,0"));
+        assert_eq!(idle.lines().nth(2), Some("mean,0"));
+        let series = std::fs::read_to_string(dir.join("pgmeter-throughput-idle.csv")).unwrap();
+        assert_eq!(series, "time_s,throughput\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn safe_name_replaces_path_unsafe_chars() {
         assert_eq!(safe_name("Debit/credit"), "Debit_credit");
@@ -557,10 +525,9 @@ mod tests {
         drop(f);
         let transactions = vec![tx(1, "only")];
 
-        aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102), 60.0)
-            .unwrap();
-
-        let stats = get_stats(&dir, &transactions).unwrap();
+        let stats =
+            aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102), 60.0)
+                .unwrap();
         let only = &stats[&1];
         assert_eq!(only.mean, 3.0, "ramp-up samples must not inflate the mean");
         assert_eq!(only.max, 4.0);
@@ -576,49 +543,14 @@ mod tests {
 
         // Without a boundary, every sample counts. RELEASE_REVIEW C7: with a
         // per-second unit (factor 1) the series is a plain count, not x60.
-        aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
-        let stats = get_stats(&dir, &transactions).unwrap();
+        let stats =
+            aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
         assert_eq!(stats[&1].max, 50.0);
         let tps = std::fs::read_to_string(dir.join("pgmeter-throughput-only.csv")).unwrap();
         assert_eq!(tps.lines().nth(1), Some("0,1"));
         assert_eq!(tps.lines().nth(3), Some("2,2"));
         let all = std::fs::read_to_string(dir.join("pgmeter-throughput-all.csv")).unwrap();
         assert_eq!(all.lines().nth(3), Some("2,2"));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn get_stats_reads_csv_and_defaults_when_missing() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-stats-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // safe_name("tx/one") == "tx_one" -> file must use the sanitized name.
-        let mut f = File::create(dir.join("pgmeter-stats-tx_one.csv")).unwrap();
-        writeln!(f, "describe,response_time_ms").unwrap();
-        writeln!(f, "mean,1.5").unwrap();
-        writeln!(f, "std,0.5").unwrap();
-        writeln!(f, "min,0.1").unwrap();
-        writeln!(f, "95%,2.0").unwrap();
-        writeln!(f, "99%,3.0").unwrap();
-        writeln!(f, "max,9.9").unwrap();
-        drop(f);
-
-        let transactions = vec![tx(1, "tx/one"), tx(2, "missing")];
-        let stats = get_stats(&dir, &transactions).unwrap();
-
-        let one = &stats[&1];
-        assert_eq!(one.mean, 1.5);
-        assert_eq!(one.std, 0.5);
-        assert_eq!(one.min, 0.1);
-        assert_eq!(one.percentile_95, 2.0);
-        assert_eq!(one.percentile_99, 3.0);
-        assert_eq!(one.max, 9.9);
-
-        // No file for tx 2 -> all-zero stats, but still present.
-        let two = &stats[&2];
-        assert_eq!(two.mean, 0.0);
-        assert_eq!(two.max, 0.0);
 
         std::fs::remove_dir_all(&dir).ok();
     }
