@@ -127,23 +127,28 @@ from-scratch example.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--spec` | (required) | Path to the YAML benchmark specification file |
+| `--spec` | (required) | Benchmark directory (containing `spec.yaml`) or a single spec file |
 | `-s, --scalefactor` | 1 | Scale factor (meaning is defined by the spec's `scaling.unit`) |
 | `-j, --jobs` | 1 | Number of parallel threads for data loading |
 | `--no-fkey` | false | Skip foreign key creation |
 | `--post-create-table` | — | Path to a SQL script run after table creation |
+| `-q, --quiet` | false | Suppress progress output |
 
 ### Run Options (`run`)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--spec` | (required) | Path to the YAML benchmark specification file |
+| `--spec` | (required) | Benchmark directory (containing `spec.yaml`) or a single spec file |
 | `-c, --client` | 1 | Number of concurrent database clients |
 | `-T, --time` | 1 | Duration of benchmark in seconds |
 | `-r, --rampup` | 0 | Ramp-up period in seconds (clients start gradually) |
 | `-P, --progress` | 0 | Print live progress every N seconds (0 disables) |
 | `--format` | table | Results output format: `table`, `json`, or `csv` |
 | `-q, --quiet` | false | Suppress progress output; print only result data |
+
+Press Ctrl-C during a run to end it early: the clients stop, the results and the
+report are produced from what ran so far and marked as interrupted, and pgmeter
+exits normally. A second Ctrl-C aborts immediately with status 130.
 
 ## Example Workflow
 
@@ -169,8 +174,9 @@ Each benchmark run creates a timestamped directory in the current directory
 (UTC, e.g. `pgmeter-20240115T103000Z/`) containing:
 
 - `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
-- `run.json` - Run parameters, elapsed and ramp-up times, the throughput unit, and
-  `rampup_end_ts`, the `transaction.log` timestamp at which ramp-up ended
+- `run.json` - Run parameters, elapsed and ramp-up times, the throughput unit,
+  `rampup_end_ts` (the `transaction.log` timestamp at which ramp-up ended) and
+  `interrupted` (`true` when the run was ended with Ctrl-C)
 - `transaction.log` - One line per committed transaction, ramp-up included:
   `<unix_timestamp> <active_clients> <transaction_id> <response_time_ms>`, space-separated
 - `error.log` - One line per failed transaction:
@@ -189,20 +195,26 @@ whole run with the ramp-up window shaded.
 
 ### Console Output
 
-After benchmark completion, pgmeter displays:
+During the run, `--progress N` prints the throughput and average latency of the
+last N seconds. After completion, pgmeter displays (`--format table`):
 
-**Results Summary**
-- Transaction name
+**Headline**: overall throughput in the spec's unit (TPM by default), committed
+transactions, error rate and average response time, e.g.
+`24 040 TPM · 24 103 committed · 0.43% errors · 19.82 ms avg`.
+
+**Results**, one row per transaction:
 - Number of committed transactions
 - Number of errors
 - Error rate (%)
-- Transactions per minute (TPM)
-- Transactions per second (TPS)
+- Throughput in the spec's unit (TPM, TPS, ...)
 
-**Response Time Statistics**
+**Response times**, one row per transaction:
 - Average, minimum, maximum response time (ms)
 - Standard deviation (ms)
 - 95th and 99th percentiles (ms)
+
+`--format json` and `--format csv` print the same figures for scripting; `-q`
+suppresses the progress lines so only the result data reaches stdout.
 
 ### HTML Report
 
@@ -211,7 +223,7 @@ self-contained (charts library inlined, no network required) — just open it in
 browser.
 
 **▶ [View a live sample report](https://julmon.github.io/pgmeter/sample-report.html)**
-(a PGM-C run: 10 warehouses, 8 clients for 60s) — hover the charts, toggle dark/light.
+(a PGM-C run: 10 warehouses, 8 clients for 60 s with a 10 s ramp-up) — hover the charts, toggle dark/light.
 
 ![pgmeter HTML report — charts](docs/images/report-charts.png)
 
@@ -248,21 +260,28 @@ cargo build --release
 
 ```
 src/
-├── main.rs                    # Application entry point
-├── args.rs                    # CLI argument parsing
-├── executor.rs                # Benchmark executor (module root)
+├── main.rs                    # Entry point: dispatches the sub-commands, maps errors to exit codes
+├── args.rs                    # CLI argument parsing (clap)
+├── spec.rs                    # Embedded benchmark specs (`spec list` / `spec new`)
+├── executor.rs                # Executor: connection, spec, aggregation, results, report
 └── executor/
-    ├── benchmark.rs           # Benchmark traits and types
+    ├── init.rs                # The `init` pipeline (schema, parallel loading, keys, indexes)
+    ├── run.rs                 # The `run` pipeline (client threads, data collector, logs)
+    ├── error.rs               # The executor error type and the server-message helper
+    ├── tls.rs                 # rustls connector for `--sslmode`
+    ├── benchmark.rs           # Transaction and counter types shared by the pipelines
     ├── yaml_types.rs          # Serde structs for the YAML spec
-    ├── yaml_benchmark.rs      # YAML-driven Benchmark implementation
+    ├── yaml_benchmark.rs      # Spec validation, schema DDL, loading and transaction execution
     ├── yaml_lua.rs            # Lua VM, DB bridge, binding/template compilation
-    ├── data_agg.rs            # Data aggregation and statistics
+    ├── data_agg.rs            # Per-transaction response-time statistics
+    ├── summary.rs             # Throughput and error-rate math shared by every output
     ├── report.rs              # Self-contained HTML report generation
     ├── terminal.rs            # Terminal output formatting
     ├── txmessage.rs           # Inter-thread messaging
     └── assets/                # Vendored assets (inlined Chart.js)
 samples/                       # Reference and example benchmark specs
 docs/yaml-benchmarks.md        # Benchmark authoring guide
+tests/                         # End-to-end tests (need `PGMETER_TEST_DSN`)
 ```
 
 ## Trademark notice

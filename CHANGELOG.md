@@ -47,12 +47,19 @@ First public release.
   that fails mid-COPY has its stream aborted; Lua bridge and loader errors
   carry the PostgreSQL server message. Lua `NaN` and infinite numbers reach
   the server as `float8` literals.
+- Ctrl-C ends a run early: the clients stop, the results and the report are
+  produced from the steady-state samples so far and marked as interrupted
+  (`interrupted` in `run.json`); a second Ctrl-C aborts immediately with
+  status 130.
 - Connection settings follow libpq conventions: `PGHOST`, `PGPORT`, `PGUSER`,
   `PGDATABASE`, `PGPASSWORD` and `~/.pgpass`. The default user name falls back
   to `$USER`, `$LOGNAME` and `postgres` when the UID has no passwd entry.
+- TLS with `--sslmode` / `PGSSLMODE` (`disable`, `prefer`, `require`,
+  `verify-ca`, `verify-full`, libpq semantics) through rustls; the `verify-*`
+  modes check the server certificate against the system CA store.
 - Released under the PostgreSQL License; third-party notices for Chart.js and
   Luau in `THIRD_PARTY_NOTICES.md`.
-- Minimum supported Rust version 1.85; PostgreSQL 12 or later; Linux and
+- Minimum supported Rust version 1.87; PostgreSQL 12 or later; Linux and
   macOS.
 - Continuous integration on stable and the MSRV, with end-to-end tests
   against PostgreSQL 12 and 18.
