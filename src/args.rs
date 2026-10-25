@@ -867,7 +867,8 @@ mod tests {
 
     #[test]
     fn lookup_returns_first_matching_entry() {
-        let path = std::env::temp_dir().join(format!("pgmeter-pgpass-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pgpass");
         {
             let mut f = File::create(&path).unwrap();
             writeln!(f, "# comment").unwrap();
@@ -907,8 +908,6 @@ mod tests {
             resolve_password_from(None, None, "localhost", 5432, "db", "user"),
             ""
         );
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

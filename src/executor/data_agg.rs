@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn aggregate_writes_zero_stats_and_empty_series_for_an_idle_transaction() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-agg-idle-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::write(dir.join("transaction.log"), "100 1 1 2.0\n").unwrap();
         let transactions = vec![tx(1, "busy"), tx(2, "idle")];
         let stats =
@@ -415,7 +415,6 @@ mod tests {
         assert_eq!(idle.lines().nth(2), Some("mean,0"));
         let series = std::fs::read_to_string(dir.join("pgmeter-throughput-idle.csv")).unwrap();
         assert_eq!(series, "time_s,throughput\n");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -504,8 +503,8 @@ mod tests {
     // steady-state window, while the per-second series keep the whole run.
     #[test]
     fn aggregate_excludes_rampup_samples_from_stats_only() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-agg-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
 
         // Two slow ramp-up samples (t=100,101), then four steady ones (t=102..103).
         let mut f = File::create(dir.join("transaction.log")).unwrap();
@@ -543,7 +542,5 @@ mod tests {
         assert_eq!(tps.lines().nth(3), Some("2,2"));
         let all = std::fs::read_to_string(dir.join("pgmeter-throughput-all.csv")).unwrap();
         assert_eq!(all.lines().nth(3), Some("2,2"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

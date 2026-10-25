@@ -51,12 +51,13 @@ fn sample(name: &str) -> PathBuf {
 }
 
 /// Fresh working directory per test: `run` writes its result directory into
-/// the current directory.
-fn workdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pgmeter-e2e-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// the current directory. Removed when the returned handle is dropped, so a
+/// failing test leaves nothing behind.
+fn workdir(tag: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("pgmeter-e2e-{tag}-"))
+        .tempdir()
+        .unwrap()
 }
 
 fn pgmeter(env: &[(&str, String)], cwd: &Path, args: &[&str]) -> Output {
@@ -121,7 +122,8 @@ fn unreachable_server_is_reported_cleanly() {
         ("PGUSER", "nobody".to_string()),
         ("PGDATABASE", "nowhere".to_string()),
     ];
-    let cwd = workdir("unreachable");
+    let tmp = workdir("unreachable");
+    let cwd = tmp.path().to_path_buf();
     let spec = sample("custom-simple");
     for args in [
         vec!["init", "--spec", spec.to_str().unwrap()],
@@ -141,7 +143,6 @@ fn unreachable_server_is_reported_cleanly() {
         assert!(stderr.contains("error:"), "{args:?}: {stderr}");
         assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
     }
-    fs::remove_dir_all(&cwd).ok();
 }
 
 /// RELEASE_REVIEW C4: the TLS requirement is honoured. CI's service
@@ -156,7 +157,8 @@ fn sslmode_require_is_refused_cleanly_by_a_server_without_tls() {
     };
     // Own tables: the e2e tests run in parallel, and `init` drops and
     // recreates the tables of the spec it is given.
-    let cwd = workdir("sslmode");
+    let tmp = workdir("sslmode");
+    let cwd = tmp.path().to_path_buf();
     let spec_dir = cwd.join("spec");
     fs::create_dir_all(&spec_dir).unwrap();
     fs::write(
@@ -214,8 +216,6 @@ transactions:
         ],
     );
     assert_success(&out, "run with PGSSLMODE=prefer");
-
-    fs::remove_dir_all(&cwd).ok();
 }
 
 #[test]
@@ -224,7 +224,8 @@ fn custom_simple_init_then_run_with_json_output() {
         eprintln!("PGMETER_TEST_DSN not set, skipping");
         return;
     };
-    let cwd = workdir("custom-simple");
+    let tmp = workdir("custom-simple");
+    let cwd = tmp.path().to_path_buf();
     let spec = sample("custom-simple");
 
     let init = pgmeter(
@@ -309,8 +310,6 @@ fn custom_simple_init_then_run_with_json_output() {
     let report = fs::read_to_string(dir.join("report.html")).unwrap();
     assert!(report.contains("const DATA = {"));
     assert!(report.contains("my-app-benchmark"));
-
-    fs::remove_dir_all(&cwd).ok();
 }
 
 #[test]
@@ -319,7 +318,8 @@ fn pgm_b_init_then_run_with_csv_output() {
         eprintln!("PGMETER_TEST_DSN not set, skipping");
         return;
     };
-    let cwd = workdir("pgm-b");
+    let tmp = workdir("pgm-b");
+    let cwd = tmp.path().to_path_buf();
     let spec = sample("pgm-b");
 
     assert_success(
@@ -383,8 +383,6 @@ fn pgm_b_init_then_run_with_csv_output() {
         (workload - (total - rampup) as f64 / 1000.0).abs() < 1e-6,
         "{run_json}"
     );
-
-    fs::remove_dir_all(&cwd).ok();
 }
 
 /// Ctrl-C during the workload (RELEASE_REVIEW C5): the clients stop, the
@@ -397,7 +395,8 @@ fn ctrl_c_ends_the_run_with_partial_results() {
         eprintln!("PGMETER_TEST_DSN not set, skipping");
         return;
     };
-    let cwd = workdir("ctrl-c");
+    let tmp = workdir("ctrl-c");
+    let cwd = tmp.path().to_path_buf();
     let spec_dir = cwd.join("spec");
     fs::create_dir_all(&spec_dir).unwrap();
     fs::write(
@@ -477,8 +476,6 @@ transactions:
         log.lines().count() > 0,
         "transaction.log must have been flushed"
     );
-
-    fs::remove_dir_all(&cwd).ok();
 }
 
 #[test]
@@ -487,7 +484,8 @@ fn failing_transactions_are_counted_and_the_run_completes() {
         eprintln!("PGMETER_TEST_DSN not set, skipping");
         return;
     };
-    let cwd = workdir("failing");
+    let tmp = workdir("failing");
+    let cwd = tmp.path().to_path_buf();
     let spec_dir = cwd.join("spec");
     fs::create_dir_all(&spec_dir).unwrap();
     // One transaction that always fails inside a transaction block (B3: the
@@ -595,6 +593,4 @@ transactions:
             "server message lost: {line}"
         );
     }
-
-    fs::remove_dir_all(&cwd).ok();
 }

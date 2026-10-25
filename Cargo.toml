@@ -59,6 +59,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
 rustls-native-certs = "0.8"
 
+[dev-dependencies]
+# Temporary directories for tests, removed on drop even when a test fails.
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
