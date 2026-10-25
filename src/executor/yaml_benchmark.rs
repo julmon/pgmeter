@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -79,7 +79,7 @@ impl YamlBenchmark {
         min_id: u32,
         max_id: u32,
     ) -> YamlBenchmark {
-        if let Err(problems) = validate_transactions(&spec) {
+        if let Err(problems) = validate_spec(&spec) {
             super::terminal::err_msg(&format!(
                 "Invalid benchmark spec '{}':\n  - {}",
                 spec.name,
@@ -463,12 +463,57 @@ impl YamlBenchmark {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
-/// Check that every transaction carries what its mode needs: `simple` needs
-/// `sql`, `script` needs exactly one of `script` / `script_file`. Returns every
-/// problem found so a spec author fixes them in one pass.
-fn validate_transactions(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
+/// Validate what serde cannot: cross-field and cross-section rules. Every
+/// problem found is returned so a spec author fixes them in one pass.
+///
+/// - each transaction carries what its mode needs (`simple` needs `sql`,
+///   `script` exactly one of `script` / `script_file`), has an `id` above 0,
+///   and ids and names are unique (names become result file names through
+///   `safe_name`, so `A/B` and `A_B` collide);
+/// - the total weight is above 0 (the weighted selection panics on 0);
+/// - `scaling.max_id_query` is not empty;
+/// - `load` and `load_script` are not both set (the template loaders would be
+///   silently skipped), `rows_per_id` is a positive integer or an expression,
+///   and every table named by `load`, `foreign_keys` or `indexes` is declared.
+fn validate_spec(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
     let mut problems = Vec::new();
+
+    if spec.transactions.is_empty() {
+        problems.push("no transactions declared".to_string());
+    } else if spec.transactions.iter().all(|t| t.weight == 0) {
+        problems.push(
+            "total transaction weight is 0: at least one transaction needs a weight above 0"
+                .to_string(),
+        );
+    }
+    if spec.scaling.max_id_query.trim().is_empty() {
+        problems.push("scaling.max_id_query is empty".to_string());
+    }
+
+    let mut seen_ids: HashSet<u16> = HashSet::new();
+    let mut seen_names: HashMap<String, &str> = HashMap::new();
     for tx in &spec.transactions {
+        let who = format!("transaction {} ({})", tx.id, tx.name);
+        if tx.id == 0 {
+            problems.push(format!("{who}: `id` must be greater than 0"));
+        }
+        if !seen_ids.insert(tx.id) {
+            problems.push(format!(
+                "transaction id {} is declared more than once",
+                tx.id
+            ));
+        }
+        match seen_names.insert(super::data_agg::safe_name(&tx.name), &tx.name) {
+            Some(prev) if prev == tx.name => {
+                problems.push(format!("transaction name `{}` is declared more than once", tx.name))
+            }
+            Some(prev) => problems.push(format!(
+                "transaction names `{prev}` and `{}` collide: both map to the result file name `{}`",
+                tx.name,
+                super::data_agg::safe_name(&tx.name)
+            )),
+            None => {}
+        }
         let who = format!("transaction {} ({})", tx.id, tx.name);
         match tx.mode {
             TransactionMode::Simple => {
@@ -490,6 +535,49 @@ fn validate_transactions(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
             },
         }
     }
+
+    let tables: HashSet<&str> = spec.schema.tables.iter().map(|t| t.name.as_str()).collect();
+    let mut check_table = |what: String, table: &str| {
+        if !tables.contains(table) {
+            problems.push(format!(
+                "{what}: table `{table}` is not declared in schema.tables"
+            ));
+        }
+    };
+    for fk in &spec.schema.foreign_keys {
+        check_table(format!("foreign key `{}`", fk.name), &fk.table);
+        check_table(
+            format!("foreign key `{}` references", fk.name),
+            &fk.references.table,
+        );
+    }
+    for ix in &spec.schema.indexes {
+        check_table(format!("index `{}`", ix.name), &ix.table);
+    }
+    for (i, load) in spec.load.iter().enumerate() {
+        check_table(format!("load[{i}]"), &load.table);
+    }
+
+    if !spec.load.is_empty() && spec.load_script.is_some() {
+        problems.push(
+            "`load` and `load_script` are mutually exclusive: with a `load_script` the template loaders are never run"
+                .to_string(),
+        );
+    }
+    for (i, load) in spec.load.iter().enumerate() {
+        let ok = match &load.rows_per_id {
+            serde_yaml::Value::Number(n) => n.as_u64().is_some_and(|v| v >= 1),
+            serde_yaml::Value::String(s) => !s.trim().is_empty(),
+            _ => false,
+        };
+        if !ok {
+            problems.push(format!(
+                "load[{i}] ({}): rows_per_id must be a positive integer or a `{{{{expr}}}}` string, got {:?}",
+                load.table, load.rows_per_id
+            ));
+        }
+    }
+
     if problems.is_empty() {
         Ok(())
     } else {
@@ -720,7 +808,7 @@ mod tests {
     fn validate_rejects_script_mode_without_a_script() {
         let spec =
             spec_with_transactions("  - {id: 1, name: no-script, weight: 50, mode: script}\n");
-        let problems = super::validate_transactions(&spec).unwrap_err();
+        let problems = super::validate_spec(&spec).unwrap_err();
         assert_eq!(problems.len(), 1);
         assert!(
             problems[0].contains("transaction 1 (no-script)"),
@@ -741,7 +829,7 @@ mod tests {
              \x20 - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
              \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script_file: tx.lua}\n",
         );
-        let problems = super::validate_transactions(&spec).unwrap_err();
+        let problems = super::validate_spec(&spec).unwrap_err();
         let joined = problems.join("\n");
         assert_eq!(problems.len(), 3, "{joined}");
         assert!(joined.contains("(both): `script` and `script_file` are mutually exclusive"));
@@ -752,7 +840,70 @@ mod tests {
             "  - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
              \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script: 'exec(\"SELECT 1\")'}\n",
         );
-        assert!(super::validate_transactions(&valid).is_ok());
+        assert!(super::validate_spec(&valid).is_ok());
+    }
+
+    // Regression for RELEASE_REVIEW B9: none of these were checked. A total
+    // weight of 0 panicked the client thread in `gen_range(1..=0)`, both
+    // `load` and `load_script` silently skipped the template loaders, and
+    // the rest surfaced as confusing SQL errors or overwritten result files.
+    #[test]
+    fn validate_rejects_structural_problems() {
+        let spec: BenchmarkSpec = serde_yaml::from_str(
+            r#"
+name: broken
+scaling:
+  unit: u
+  max_id_query: "  "
+schema:
+  tables:
+    - name: t
+      columns: [{name: id, type: int}]
+  foreign_keys:
+    - {name: fk_bad, table: missing_a, columns: [id], references: {table: missing_b, columns: [id]}}
+  indexes:
+    - {name: ix_bad, table: missing_c, columns: [id]}
+load:
+  - {table: missing_d, copy_columns: [id], rows_per_id: true, row: "x"}
+  - {table: t, copy_columns: [id], rows_per_id: 0, row: "x"}
+load_script: load.lua
+transactions:
+  - {id: 0, name: zero-id, weight: 0, sql: "SELECT 1"}
+  - {id: 1, name: A/B, weight: 0, sql: "SELECT 1"}
+  - {id: 1, name: A_B, weight: 0, sql: "SELECT 1"}
+  - {id: 2, name: A_B, weight: 0, sql: "SELECT 1"}
+"#,
+        )
+        .unwrap();
+        let problems = super::validate_spec(&spec).unwrap_err();
+        let joined = problems.join("\n");
+        for expected in [
+            "total transaction weight is 0",
+            "scaling.max_id_query is empty",
+            "transaction 0 (zero-id): `id` must be greater than 0",
+            "transaction id 1 is declared more than once",
+            "transaction names `A/B` and `A_B` collide",
+            "transaction name `A_B` is declared more than once",
+            "foreign key `fk_bad`: table `missing_a` is not declared",
+            "foreign key `fk_bad` references: table `missing_b` is not declared",
+            "index `ix_bad`: table `missing_c` is not declared",
+            "load[0]: table `missing_d` is not declared",
+            "`load` and `load_script` are mutually exclusive",
+            "load[0] (missing_d): rows_per_id must be a positive integer",
+            "load[1] (t): rows_per_id must be a positive integer",
+        ] {
+            assert!(
+                joined.contains(expected),
+                "missing {expected:?} in:\n{joined}"
+            );
+        }
+        assert_eq!(problems.len(), 13, "{joined}");
+
+        let empty = spec_with_transactions("  []\n");
+        assert_eq!(
+            super::validate_spec(&empty).unwrap_err(),
+            vec!["no transactions declared".to_string()]
+        );
     }
 
     // Every bundled sample must pass the same validation users' specs get.
@@ -768,7 +919,7 @@ mod tests {
             let yaml = std::fs::read_to_string(&spec_path).unwrap();
             let spec: BenchmarkSpec = serde_yaml::from_str(&yaml)
                 .unwrap_or_else(|e| panic!("{}: {e}", spec_path.display()));
-            if let Err(problems) = super::validate_transactions(&spec) {
+            if let Err(problems) = super::validate_spec(&spec) {
                 panic!("{}: {}", spec_path.display(), problems.join("; "));
             }
             checked += 1;

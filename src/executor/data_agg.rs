@@ -28,7 +28,7 @@ where
 // that isn't alphanumeric, '-' or '_' (e.g. the '/' in "Debit/credit") becomes
 // '_', so the per-transaction CSV paths stay valid instead of being treated as
 // nested directories.
-fn safe_name(name: &str) -> String {
+pub(super) fn safe_name(name: &str) -> String {
     name.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '-' || c == '_' {
