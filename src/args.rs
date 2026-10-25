@@ -307,7 +307,10 @@ impl PgMtrArgs {
         // Sub-commands
         // init --spec <FILE> <OPTIONS>
         let init = Command::new("init")
-            .about("Initialize benchmark from a YAML specification file")
+            .about(
+                "Initialize benchmark from a YAML specification file \
+                 (drops and recreates the tables the spec declares)",
+            )
             .arg_required_else_help(true)
             .arg(spec_option.clone())
             .arg(scalefactor_option)
@@ -665,6 +668,19 @@ mod tests {
         assert_eq!(pick_username([Some("carol".into()), None]), "carol");
         // The real lookup must not panic either, whatever the environment.
         assert!(!get_os_username().is_empty());
+    }
+
+    // RELEASE_REVIEW C8: `init` issues DROP TABLE ... CASCADE for every table
+    // in the spec; the help text must say so.
+    #[test]
+    fn init_help_warns_that_tables_are_dropped() {
+        let Err(err) =
+            PgMtrArgs::new_from("u".to_string(), ["pgmeter", "init", "--help"].into_iter())
+        else {
+            panic!("--help must exit through a clap error");
+        };
+        let help = err.to_string();
+        assert!(help.contains("drops and recreates the tables"), "{help}");
     }
     use std::io::Write;
 
