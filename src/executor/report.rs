@@ -36,6 +36,9 @@ pub struct ReportInput<'a> {
     pub stats: &'a HashMap<u16, ResponseTimeStatistics>,
     pub total_time_ms: u128,
     pub rampup_time_ms: u128,
+    /// Log timestamp at which ramp-up ended; earlier samples are excluded from
+    /// the histogram and shaded on the time-series charts.
+    pub rampup_end_ts: Option<i64>,
     pub clients: u16,
     pub duration_s: u16,
     pub rampup_s: u16,
@@ -171,6 +174,7 @@ pub fn generate(
             "clients": input.clients,
             "duration": input.duration_s,
             "rampup": input.rampup_s,
+            "rampupEndS": ts.rampup_end_s,
             "elapsedMs": input.total_time_ms,
             "scalingUnit": input.spec.scaling.unit,
             "throughputUnit": throughput_unit,
@@ -219,6 +223,9 @@ pub fn generate(
 #[derive(Default)]
 struct TimeSeries {
     time_axis: Vec<u64>,
+    /// Elapsed seconds (on `time_axis`) at which ramp-up ended, if any sample
+    /// precedes it.
+    rampup_end_s: Option<u64>,
     total_tpm: Vec<u64>,
     series: Vec<Series>,
     hist_labels: Vec<String>,
@@ -291,7 +298,10 @@ fn build_time_series(
                 *counts.entry((tx_id, bucket)).or_insert(0) += 1;
                 *lat_sum.entry((tx_id, bucket)).or_insert(0.0) += dur;
                 tx_ids.insert(tx_id);
-                hist.add(dur);
+                // The histogram, like the statistics, only covers steady state.
+                if input.rampup_end_ts.is_none_or(|end| ts >= end) {
+                    hist.add(dur);
+                }
             }
         }
     }
@@ -328,9 +338,14 @@ fn build_time_series(
 
     let (hist_labels, hist_counts) = hist.finish();
     let (error_time_axis, error_counts) = build_error_series(input, min_ts, bucket_secs);
+    let rampup_end_s = input
+        .rampup_end_ts
+        .filter(|end| *end > min_ts)
+        .map(|end| (end - min_ts) as u64);
 
     Ok(TimeSeries {
         time_axis,
+        rampup_end_s,
         total_tpm,
         series,
         hist_labels,
@@ -874,6 +889,30 @@ const lineOpts = (yTitle) => ({
   elements: {point: {radius: 0}, line: {borderWidth: 1.5, tension: 0.2}}
 });
 
+// Shades the ramp-up window on time-series charts. Samples in that window are
+// drawn but excluded from the KPIs, statistics and histogram.
+const rampupPlugin = {
+  id: 'rampup',
+  beforeDatasetsDraw(chart) {
+    const end = DATA.meta.rampupEndS;
+    if (end == null || end <= 0) return;
+    const {ctx, chartArea: {top, bottom, left}, scales: {x}} = chart;
+    // Category axis: find the last label at or before the boundary.
+    let idx = -1;
+    for (let i = 0; i < DATA.timeAxis.length && DATA.timeAxis[i] < end; i++) idx = i;
+    if (idx < 0) return;
+    const right = Math.min(x.getPixelForValue(idx + 1), x.right);
+    ctx.save();
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.18)';
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.9)';
+    ctx.font = '11px sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.fillText('ramp-up', left + 4, top + 4);
+    ctx.restore();
+  }
+};
+
 // Registry of live Chart.js instances, keyed by canvas id, so we can export each as PNG.
 const charts = {};
 
@@ -892,7 +931,7 @@ charts.throughput = new Chart(document.getElementById('throughput'), {
     htmlLegend: {containerID: 'throughput-legend'},
     title: {display: true, text: 'Throughput over time'}
   }},
-  plugins: [htmlLegendPlugin]
+  plugins: [htmlLegendPlugin, rampupPlugin]
 });
 
 // Mean latency over time per transaction
@@ -907,7 +946,7 @@ charts.latency = new Chart(document.getElementById('latency'), {
     htmlLegend: {containerID: 'latency-legend'},
     title: {display: true, text: 'Latency over time'}
   }},
-  plugins: [htmlLegendPlugin]
+  plugins: [htmlLegendPlugin, rampupPlugin]
 });
 
 // Per-transaction panels (percentiles, mix) are only meaningful with more than
@@ -1223,6 +1262,7 @@ transactions:
             stats: &stats,
             total_time_ms: 3000,
             rampup_time_ms: 0,
+            rampup_end_ts: None,
             clients: 2,
             duration_s: 3,
             rampup_s: 0,
@@ -1230,6 +1270,7 @@ transactions:
 
         let ts = build_time_series(&input, 60.0).unwrap();
         assert_eq!(ts.time_axis, vec![0, 1, 2]);
+        assert_eq!(ts.rampup_end_s, None);
         // Total per-second counts *60: sec0=2, sec1=1, sec2=2.
         assert_eq!(ts.total_tpm, vec![120, 60, 120]);
         assert_eq!(ts.series.len(), 2);
@@ -1241,6 +1282,18 @@ transactions:
         // One error at second 1 relative to origin.
         assert_eq!(ts.error_time_axis, vec![0, 1]);
         assert_eq!(ts.error_counts, vec![0, 1]);
+
+        // Regression for RELEASE_REVIEW B2: with ramp-up ending at t=101 the
+        // time series keep every sample but the histogram drops the two at
+        // t=100, and the boundary is exposed as an elapsed-seconds offset.
+        let input = ReportInput {
+            rampup_end_ts: Some(101),
+            ..input
+        };
+        let ts = build_time_series(&input, 60.0).unwrap();
+        assert_eq!(ts.total_tpm, vec![120, 60, 120]);
+        assert_eq!(ts.hist_counts.iter().sum::<u64>(), 3);
+        assert_eq!(ts.rampup_end_s, Some(1));
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -41,22 +41,37 @@ fn safe_name(name: &str) -> String {
 }
 
 // Aggregates collected transaction data (response time, throughput) and saves it as CSV files.
+//
+// The per-second time series (`pgmeter-tpm-*.csv`, `pgmeter-response-time-*.csv`)
+// cover the whole run, ramp-up included, so they line up with the report's
+// charts. The response-time statistics (`pgmeter-stats-*.csv`) only use samples
+// logged at or after `rampup_end_ts`, matching the committed counts and the
+// throughput, which the collector also only counts once ramp-up is over.
 pub fn aggregate_transaction_data(
     log_file: &str,
     target_dir: &Path,
     transactions: &[BenchmarkTransaction],
+    rampup_end_ts: Option<i64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Transaction log file parsing
     let df = LazyCsvReader::new(target_dir.join(log_file))
         .with_delimiter(b' ')
         .has_header(false)
         .finish()?;
+    // Steady-state rows only, for the statistics.
+    let steady_df = match rampup_end_ts {
+        Some(ts) => df.clone().filter(col("column_1").gt_eq(lit(ts))),
+        None => df.clone(),
+    };
 
     // Produce aggregated data for each type of transaction
     for transaction in transactions {
         let safe = safe_name(&transaction.name);
         // Filter data for this transaction type
         let filtered_df = df.clone().filter(col("column_3").eq(transaction.id as i64));
+        let steady_filtered_df = steady_df
+            .clone()
+            .filter(col("column_3").eq(transaction.id as i64));
 
         // Check if there's any data for this transaction
         let count_df = filtered_df
@@ -131,9 +146,8 @@ pub fn aggregate_transaction_data(
             .sort("time_s", Default::default())
             .collect()?;
 
-        // Response times statistics
-        let stats_result = filtered_df
-            .clone()
+        // Response times statistics (post-ramp-up samples only)
+        let stats_result = steady_filtered_df
             .select([col("column_4").alias("response_time_ms")])
             .collect();
 
@@ -511,6 +525,46 @@ mod tests {
         );
         // A name with a comma must be quoted.
         assert!(lines[2].starts_with("\"a,b\",1,0,"));
+    }
+
+    // Regression for RELEASE_REVIEW B2: the statistics must only cover the
+    // steady-state window, while the per-second series keep the whole run.
+    #[test]
+    fn aggregate_excludes_rampup_samples_from_stats_only() {
+        let dir = std::env::temp_dir().join(format!("pgmeter-agg-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Two slow ramp-up samples (t=100,101), then four steady ones (t=102..103).
+        let mut f = File::create(dir.join("transaction.log")).unwrap();
+        write!(
+            f,
+            "100 1 1 50.0\n101 1 1 50.0\n102 2 1 2.0\n102 2 1 4.0\n103 2 1 2.0\n103 2 1 4.0\n"
+        )
+        .unwrap();
+        drop(f);
+        let transactions = vec![tx(1, "only")];
+
+        aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102)).unwrap();
+
+        let stats = get_stats(&dir, &transactions).unwrap();
+        let only = &stats[&1];
+        assert_eq!(only.mean, 3.0, "ramp-up samples must not inflate the mean");
+        assert_eq!(only.max, 4.0);
+        assert_eq!(only.min, 2.0);
+
+        // The per-second series still start at the first ramp-up second.
+        let tpm = std::fs::read_to_string(dir.join("pgmeter-tpm-only.csv")).unwrap();
+        let lines: Vec<&str> = tpm.lines().collect();
+        assert_eq!(lines[0], "time_s,tpm");
+        assert_eq!(lines.len(), 5, "four seconds of data: {tpm}");
+        assert_eq!(lines[1], "0,60");
+
+        // Without a boundary, every sample counts.
+        aggregate_transaction_data("transaction.log", &dir, &transactions, None).unwrap();
+        let stats = get_stats(&dir, &transactions).unwrap();
+        assert_eq!(stats[&1].max, 50.0);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
