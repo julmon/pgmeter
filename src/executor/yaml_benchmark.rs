@@ -332,12 +332,15 @@ impl YamlBenchmark {
 
     /// Evaluate bindings and substitute {{var}} placeholders in a SQL template.
     /// Uses a thread-local Lua VM for binding evaluation (no per-call VM creation).
-    fn render_simple_sql(&self, tx: &super::yaml_types::TransactionSpec) -> Result<String, Error> {
-        let sql_template = match &tx.sql {
-            Some(s) => s.as_str(),
-            None => {
-                return Err(Error::spec("Transaction has mode=simple but no sql field"));
-            }
+    /// Evaluate the bindings once and substitute them into every statement of
+    /// the transaction's `sql`: one element for a batch, one per statement for
+    /// the list form (each is sent in its own round trip).
+    fn render_simple_sql(
+        &self,
+        tx: &super::yaml_types::TransactionSpec,
+    ) -> Result<Vec<String>, Error> {
+        let Some(block) = &tx.sql else {
+            return Err(Error::spec("Transaction has mode=simple but no sql field"));
         };
 
         // Collect bindings as ordered pairs. serde_yaml::Mapping preserves declaration
@@ -358,14 +361,22 @@ impl YamlBenchmark {
             &self.spec.scaling.constants,
         )?;
 
-        // Substitute {{var}} in the SQL template
-        let mut sql = sql_template.to_string();
-        for (key, val) in &resolved {
-            let placeholder = format!("{{{{{}}}}}", key);
-            sql = sql.replace(&placeholder, val);
-        }
-
-        Ok(sql)
+        // Substitute {{var}} in every statement
+        let placeholders: Vec<(String, &String)> = resolved
+            .iter()
+            .map(|(key, val)| (format!("{{{{{key}}}}}"), val))
+            .collect();
+        Ok(block
+            .statements()
+            .into_iter()
+            .map(|template| {
+                let mut sql = template.to_string();
+                for (placeholder, val) in &placeholders {
+                    sql = sql.replace(placeholder, val);
+                }
+                sql
+            })
+            .collect())
     }
 
     /// Execute a template-based COPY data load for a single load spec and set of IDs.
@@ -508,11 +519,14 @@ fn validate_spec(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
         }
         let who = format!("transaction {} ({})", tx.id, tx.name);
         match tx.mode {
-            TransactionMode::Simple => {
-                if tx.sql.as_deref().is_none_or(|s| s.trim().is_empty()) {
-                    problems.push(format!("{who}: mode `simple` requires a non-empty `sql`"));
+            TransactionMode::Simple => match &tx.sql {
+                None => problems.push(format!("{who}: mode `simple` requires a non-empty `sql`")),
+                Some(block) => {
+                    if let Some(problem) = block.problem() {
+                        problems.push(format!("{who}: {problem}"));
+                    }
                 }
-            }
+            },
             TransactionMode::Script => match (&tx.script, &tx.script_file) {
                 (None, None) => problems.push(format!(
                     "{who}: mode `script` requires `script` or `script_file`"
@@ -650,10 +664,11 @@ impl YamlBenchmark {
         let result = match tx_spec.mode {
             // Evaluate bindings, substitute into the SQL template, execute.
             // No `?` here: a failure must fall through to the recovery below.
-            TransactionMode::Simple => self.render_simple_sql(tx_spec).and_then(|sql| {
+            TransactionMode::Simple => self.render_simple_sql(tx_spec).and_then(|statements| {
                 let start = Instant::now();
-                client
-                    .batch_execute(&sql)
+                statements
+                    .iter()
+                    .try_for_each(|sql| client.batch_execute(sql))
                     .map(|_| start.elapsed().as_micros())
                     .map_err(Error::from)
             }),
@@ -836,9 +851,47 @@ mod tests {
 
         let valid = spec_with_transactions(
             "  - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
-             \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script: 'exec(\"SELECT 1\")'}\n",
+             \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script: 'exec(\"SELECT 1\")'}\n\
+             \x20 - {id: 7, name: ok-list, weight: 10, sql: ['BEGIN', 'SELECT 1', 'COMMIT']}\n",
         );
         assert!(super::validate_spec(&valid).is_ok());
+
+        // The list form is checked element by element.
+        let lists = spec_with_transactions(
+            "  - {id: 1, name: empty-list, weight: 10, sql: []}\n\
+             \x20 - {id: 2, name: blank-item, weight: 10, sql: ['SELECT 1', '  ']}\n",
+        );
+        let joined = super::validate_spec(&lists).unwrap_err().join("\n");
+        assert!(
+            joined.contains("(empty-list): `sql` is an empty list"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("(blank-item): `sql[1]` is empty"),
+            "{joined}"
+        );
+    }
+
+    // The bindings are evaluated once per transaction and substituted into
+    // every statement of a list, so the statements see the same values.
+    #[test]
+    fn render_simple_sql_substitutes_bindings_in_every_statement() {
+        let spec = spec_with_transactions(
+            "  - id: 1\n    name: list\n    weight: 1\n    bindings: {v: 'rand_int(7, 7)', w: 'v * 2'}\n\
+             \x20   sql: ['BEGIN', 'SELECT {{v}}, {{w}}', 'UPDATE t SET x = {{v}}', 'COMMIT']\n\
+             \x20 - id: 2\n    name: batch\n    weight: 1\n    bindings: {v: 'rand_int(7, 7)'}\n\
+             \x20   sql: 'BEGIN; SELECT {{v}}; COMMIT'\n",
+        );
+        let bench = YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 1).unwrap();
+        let tx = |id| bench.spec.transactions.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(
+            bench.render_simple_sql(tx(1)).unwrap(),
+            vec!["BEGIN", "SELECT 7, 14", "UPDATE t SET x = 7", "COMMIT"]
+        );
+        assert_eq!(
+            bench.render_simple_sql(tx(2)).unwrap(),
+            vec!["BEGIN; SELECT 7; COMMIT"]
+        );
     }
 
     // Regression for RELEASE_REVIEW B9: none of these were checked. A total

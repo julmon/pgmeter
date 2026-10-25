@@ -136,19 +136,21 @@ transactions:
       delta: "rand_int(-5000, 5000)"
 
     # Execution mode:
-    #   "simple" = bindings substituted into the SQL template below, sent as one
-    #              batch (1 round-trip, like pgbench's simple protocol)
+    #   "simple" = bindings substituted into the SQL template(s) below
     #   "script" = a Lua script drives the transaction (see PGM-C)
     mode: simple
 
-    # SQL executed inside a single transaction.
+    # The TPC-B transaction, statement by statement. As a list, each statement
+    # is sent in its own round trip, exactly like pgbench's built-in TPC-B
+    # script, so PGM-B throughput is comparable with pgbench's. Written as a
+    # single string instead, the whole block would go in one round trip:
+    # about twice the throughput on a fast network, but not comparable.
     # {{var}} references are substituted from bindings above.
-    sql: |
-      BEGIN;
-      UPDATE account SET account_balance = account_balance + {{delta}} WHERE account_id = {{account_id}};
-      SELECT account_balance FROM account WHERE account_id = {{account_id}};
-      UPDATE teller SET teller_balance = teller_balance + {{delta}} WHERE teller_id = {{teller_id}};
-      UPDATE branch SET branch_balance = branch_balance + {{delta}} WHERE branch_id = {{branch_id}};
-      INSERT INTO history (account_id, teller_id, branch_id, delta, timestamp)
-        VALUES ({{account_id}}, {{teller_id}}, {{branch_id}}, {{delta}}, CURRENT_TIMESTAMP);
-      COMMIT;
+    sql:
+      - BEGIN
+      - UPDATE account SET account_balance = account_balance + {{delta}} WHERE account_id = {{account_id}}
+      - SELECT account_balance FROM account WHERE account_id = {{account_id}}
+      - UPDATE teller SET teller_balance = teller_balance + {{delta}} WHERE teller_id = {{teller_id}}
+      - UPDATE branch SET branch_balance = branch_balance + {{delta}} WHERE branch_id = {{branch_id}}
+      - INSERT INTO history (account_id, teller_id, branch_id, delta, timestamp) VALUES ({{account_id}}, {{teller_id}}, {{branch_id}}, {{delta}}, CURRENT_TIMESTAMP)
+      - COMMIT

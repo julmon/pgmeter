@@ -208,9 +208,85 @@ pub struct TransactionSpec {
     /// may reference earlier ones. serde_yaml::Mapping preserves insertion order.
     #[serde(default)]
     pub bindings: serde_yaml::Mapping,
-    pub sql: Option<String>,
+    /// One string (sent in a single round trip) or a list of statements
+    /// (one round trip each). See [`SqlBlock`].
+    pub sql: Option<SqlBlock>,
     pub script: Option<String>,
     pub script_file: Option<String>,
+}
+
+/// The SQL of a `simple` transaction.
+///
+/// A single string is sent to the server as one batch, in one round trip.
+/// A list sends each statement in its own round trip, which is what pgbench
+/// does with its scripts; use it when results have to be compared with
+/// pgbench's, or when the network round trips are part of what is measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SqlBlock {
+    Batch(String),
+    Statements(Vec<String>),
+}
+
+// Hand-written so that a wrong type is reported as "expected a SQL string or
+// a list of SQL statements" instead of serde's untagged-enum message, which
+// names neither the field nor the accepted shapes.
+impl<'de> Deserialize<'de> for SqlBlock {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SqlBlockVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SqlBlockVisitor {
+            type Value = SqlBlock;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a SQL string or a list of SQL statements")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SqlBlock, E> {
+                Ok(SqlBlock::Batch(v.to_string()))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<SqlBlock, A::Error> {
+                let mut statements = Vec::new();
+                while let Some(statement) = seq.next_element::<String>()? {
+                    statements.push(statement);
+                }
+                Ok(SqlBlock::Statements(statements))
+            }
+        }
+
+        deserializer.deserialize_any(SqlBlockVisitor)
+    }
+}
+
+impl SqlBlock {
+    /// The texts sent to the server, in order: one for a batch.
+    pub fn statements(&self) -> Vec<&str> {
+        match self {
+            SqlBlock::Batch(sql) => vec![sql.as_str()],
+            SqlBlock::Statements(list) => list.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// What `validate_spec` reports for this block, if anything: an empty
+    /// batch, an empty list, or an empty element.
+    pub fn problem(&self) -> Option<String> {
+        match self {
+            SqlBlock::Batch(sql) if sql.trim().is_empty() => {
+                Some("mode `simple` requires a non-empty `sql`".to_string())
+            }
+            SqlBlock::Statements(list) if list.is_empty() => {
+                Some("`sql` is an empty list".to_string())
+            }
+            SqlBlock::Statements(list) => list
+                .iter()
+                .position(|s| s.trim().is_empty())
+                .map(|i| format!("`sql[{i}]` is empty")),
+            SqlBlock::Batch(_) => None,
+        }
+    }
 }
 
 /// Execution mode of a transaction.
@@ -271,6 +347,58 @@ mod tests {
     // Regression for RELEASE_REVIEW B7: `mode` and `method` were free strings.
     // An unknown mode failed on every execution (thousands of identical error
     // lines) and an unknown method was silently ignored.
+    // `sql` is either one batch or a list of statements; anything else is a
+    // parse error, not a silently ignored field.
+    #[test]
+    fn sql_is_a_string_or_a_list_of_statements() {
+        let one: TransactionSpec =
+            serde_yaml::from_str("id: 1\nname: t\nweight: 1\nsql: \"BEGIN; SELECT 1; COMMIT\"\n")
+                .unwrap();
+        assert_eq!(
+            one.sql.as_ref().unwrap().statements(),
+            vec!["BEGIN; SELECT 1; COMMIT"]
+        );
+
+        let list: TransactionSpec = serde_yaml::from_str(
+            "id: 1\nname: t\nweight: 1\nsql:\n  - BEGIN\n  - SELECT {{x}}\n  - COMMIT\n",
+        )
+        .unwrap();
+        assert_eq!(
+            list.sql.as_ref().unwrap().statements(),
+            vec!["BEGIN", "SELECT {{x}}", "COMMIT"]
+        );
+        assert_eq!(list.sql.as_ref().unwrap().problem(), None);
+
+        assert_eq!(
+            SqlBlock::Batch("  ".into()).problem().as_deref(),
+            Some("mode `simple` requires a non-empty `sql`")
+        );
+        assert_eq!(
+            SqlBlock::Statements(vec![]).problem().as_deref(),
+            Some("`sql` is an empty list")
+        );
+        assert_eq!(
+            SqlBlock::Statements(vec!["SELECT 1".into(), " ".into()])
+                .problem()
+                .as_deref(),
+            Some("`sql[1]` is empty")
+        );
+
+        let err = serde_yaml::from_str::<TransactionSpec>("id: 1\nname: t\nweight: 1\nsql: 7\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("expected a SQL string or a list of SQL statements"),
+            "{err}"
+        );
+        let err = serde_yaml::from_str::<TransactionSpec>(
+            "id: 1\nname: t\nweight: 1\nsql: [SELECT 1, {a: b}]\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("expected a string"), "{err}");
+    }
+
     #[test]
     fn unknown_mode_and_method_are_rejected_at_parse_time() {
         let tx: Result<TransactionSpec, _> =
