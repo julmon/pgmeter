@@ -2,6 +2,7 @@ use super::error::Error;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::marker::PhantomData;
 
 use mlua::prelude::*;
 use postgres::Client;
@@ -59,25 +60,61 @@ where
     FAST_RNG.with(|cell| f(&mut cell.borrow_mut()))
 }
 
-/// Set the postgres client pointer for the current thread.
-/// Must be called before executing any Lua script.
-pub fn set_client(client: &mut Client) {
-    PG_CLIENT.with(|cell| {
-        cell.borrow_mut().0 = client as *mut Client;
-    });
+/// Binds `client` to this thread's Lua bridge for as long as the guard lives.
+///
+/// The bridge callbacks (`exec`, `query`, `copy_*`, ...) are registered once
+/// per thread-local VM and reach the connection through a raw pointer, so the
+/// pointer must never outlive the `&mut Client` it was taken from, and no
+/// COPY stream borrowed from that client may outlive it either. The guard
+/// ties both to the borrow: its lifetime is the client's, and dropping it,
+/// on every path including early returns and panics, aborts any COPY stream
+/// still open and clears the pointer. Nested binds on one thread are a bug
+/// and are caught by a debug assertion.
+pub struct ClientGuard<'a> {
+    _client: PhantomData<&'a mut Client>,
 }
 
-/// Clear the postgres client pointer. Call after Lua script execution.
-pub fn clear_client() {
+pub fn bind_client(client: &mut Client) -> ClientGuard<'_> {
     PG_CLIENT.with(|cell| {
-        cell.borrow_mut().0 = std::ptr::null_mut();
+        let mut ptr = cell.borrow_mut();
+        debug_assert!(
+            ptr.0.is_null(),
+            "a database client is already bound to this thread's Lua bridge"
+        );
+        ptr.0 = client as *mut Client;
     });
+    COPY_WRITER.with(|cell| {
+        debug_assert!(
+            cell.borrow().0.is_none(),
+            "a COPY stream outlived the script that opened it"
+        );
+    });
+    ClientGuard {
+        _client: PhantomData,
+    }
+}
+
+impl Drop for ClientGuard<'_> {
+    fn drop(&mut self) {
+        // A stream still open here belongs to a script that did not finish
+        // normally (the success path finished it already): abort it so the
+        // connection leaves COPY mode and the partial rows are discarded.
+        COPY_WRITER.with(|cell| {
+            if let Some(writer) = cell.borrow_mut().0.take() {
+                drop(writer);
+            }
+        });
+        PG_CLIENT.with(|cell| {
+            cell.borrow_mut().0 = std::ptr::null_mut();
+        });
+    }
 }
 
 /// Get a mutable reference to the postgres client from the thread-local pointer.
-/// SAFETY: The pointer was set via `set_client` and is valid for the duration of
-/// the Lua script execution. This is only called from within registered Lua functions,
-/// which run synchronously on the same thread.
+/// SAFETY: The pointer was set by `bind_client` and the guard that cleared it
+/// on drop has not been dropped yet, so the `&mut Client` it was taken from is
+/// still borrowed. Only called from registered Lua functions, which run
+/// synchronously on the same thread.
 fn with_client<F, R>(f: F) -> LuaResult<R>
 where
     F: FnOnce(&mut Client) -> LuaResult<R>,
@@ -330,9 +367,9 @@ pub fn execute_script(
     modules: &[String],
     tx_id: u16,
 ) -> Result<u128, Error> {
-    set_client(client);
+    let _bound = bind_client(client);
 
-    let result = LUA_VM.with(|cell| {
+    LUA_VM.with(|cell| {
         let mut vm_opt = cell.borrow_mut();
 
         // Lazily initialize the Lua VM
@@ -384,11 +421,7 @@ pub fn execute_script(
         outcome?;
 
         Ok(start.elapsed().as_micros())
-    });
-
-    clear_client();
-
-    result
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -401,9 +434,9 @@ pub fn execute_load_script(
     constants: &HashMap<String, serde_yaml::Value>,
     ids: &[u32],
 ) -> Result<u128, Error> {
-    set_client(client);
+    let _bound = bind_client(client);
 
-    let result = (|| -> Result<u128, Error> {
+    (|| -> Result<u128, Error> {
         let lua =
             create_lua_vm().map_err(|e| Error::lua(format!("Failed to create Lua VM: {}", e)))?;
 
@@ -426,10 +459,7 @@ pub fn execute_load_script(
         outcome?;
 
         Ok(start.elapsed().as_micros())
-    })();
-
-    clear_client();
-    result
+    })()
 }
 
 // Internal helpers
@@ -857,8 +887,8 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
 /// stream is finished so the rows it wrote are kept (a script may rely on the
 /// implicit `copy_end`); after a failed script it is dropped, which aborts the
 /// COPY server-side so partial rows are discarded and the connection leaves
-/// COPY mode. Either way the thread-local no longer holds a writer that
-/// borrows a client pointer about to be cleared.
+/// COPY mode. `ClientGuard::drop` does the abort too, for the paths that never
+/// reach this call.
 fn settle_copy_stream(script_succeeded: bool) {
     COPY_WRITER.with(|cell| {
         if let Some(writer) = cell.borrow_mut().0.take() {
@@ -1003,6 +1033,70 @@ mod tests {
         let f = compile_batch_row_template(&lua, "{{id}}|{{i}}\n").unwrap();
         let out: String = f.call((3i64, 1i64, 3i64)).unwrap();
         assert_eq!(out, "3|1\n3|2\n3|3\n");
+    }
+
+    // RELEASE_REVIEW D7: once a script returns, the bridge no longer holds the
+    // client, whether the script succeeded or failed (guard dropped either
+    // way). Needs a live server (skipped unless PGMETER_TEST_DSN is set).
+    #[test]
+    fn client_is_unbound_after_each_script() {
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        let constants = HashMap::new();
+        let scripts = HashMap::new();
+
+        let unbound = || {
+            with_client(|_| Ok(()))
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        };
+        assert!(
+            unbound().contains("No database connection"),
+            "{}",
+            unbound()
+        );
+
+        execute_script(
+            &mut client,
+            "exec('SELECT 1')",
+            1,
+            1,
+            1,
+            &constants,
+            &scripts,
+            &[],
+            920,
+        )
+        .unwrap();
+        assert!(
+            unbound().contains("No database connection"),
+            "{}",
+            unbound()
+        );
+
+        execute_script(
+            &mut client,
+            "error('boom')",
+            1,
+            1,
+            1,
+            &constants,
+            &scripts,
+            &[],
+            921,
+        )
+        .unwrap_err();
+        assert!(
+            unbound().contains("No database connection"),
+            "{}",
+            unbound()
+        );
     }
 
     // Regression for RELEASE_REVIEW B10. Needs a live server (skipped unless
