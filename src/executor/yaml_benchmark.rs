@@ -50,12 +50,20 @@ impl YamlBenchmark {
         };
 
         let yaml_content = std::fs::read_to_string(&spec_path).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!("Failed to read spec file '{}': {}", spec_path.display(), e));
+            super::terminal::err_msg(&format!(
+                "Failed to read spec file '{}': {}",
+                spec_path.display(),
+                e
+            ));
             std::process::exit(1);
         });
 
         let spec: BenchmarkSpec = serde_yaml::from_str(&yaml_content).unwrap_or_else(|e| {
-            super::terminal::err_msg(&format!("Failed to parse YAML spec '{}': {}", spec_path.display(), e));
+            super::terminal::err_msg(&format!(
+                "Failed to parse YAML spec '{}': {}",
+                spec_path.display(),
+                e
+            ));
             std::process::exit(1);
         });
 
@@ -126,7 +134,11 @@ impl YamlBenchmark {
                         serde_yaml::Value::Bool(b) => format!("{} = {}", k, b),
                         serde_yaml::Value::Number(n) => format!("{} = {}", k, n),
                         serde_yaml::Value::String(s) => format!("{} = {}", k, s),
-                        _ => format!("{} = {}", k, serde_yaml::to_string(v).unwrap_or_default().trim()),
+                        _ => format!(
+                            "{} = {}",
+                            k,
+                            serde_yaml::to_string(v).unwrap_or_default().trim()
+                        ),
                     })
                     .collect();
                 sql.push_str(&format!(" WITH ({})", opts.join(", ")));
@@ -209,7 +221,8 @@ impl YamlBenchmark {
     }
 
     fn generate_vacuum_stmts(spec: &BenchmarkSpec) -> Vec<BenchmarkStmt> {
-        let mut stmts: Vec<BenchmarkStmt> = spec.schema
+        let mut stmts: Vec<BenchmarkStmt> = spec
+            .schema
             .tables
             .iter()
             .map(|t| BenchmarkStmt {
@@ -246,7 +259,11 @@ impl YamlBenchmark {
             } else {
                 let full_path = spec_dir.join(v);
                 std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
-                    super::terminal::err_msg(&format!("Failed to read script '{}': {}", full_path.display(), e));
+                    super::terminal::err_msg(&format!(
+                        "Failed to read script '{}': {}",
+                        full_path.display(),
+                        e
+                    ));
                     std::process::exit(1);
                 })
             }
@@ -320,7 +337,8 @@ impl YamlBenchmark {
 
         // Collect bindings as ordered pairs. serde_yaml::Mapping preserves declaration
         // order, so later bindings may reference earlier ones.
-        let bindings: Vec<(String, String)> = tx.bindings
+        let bindings: Vec<(String, String)> = tx
+            .bindings
             .iter()
             .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
             .collect();
@@ -395,8 +413,12 @@ impl YamlBenchmark {
                 let batch_end = std::cmp::min((batch + 1) * batch_size, rows_per_id);
 
                 // Single Lua call generates all rows for this batch
-                let data: String = batch_func.call((id, batch_start, batch_end))
-                    .map_err(|e| format!("Batch generation failed (id={}, {}-{}): {}", id, batch_start, batch_end, e))?;
+                let data: String = batch_func.call((id, batch_start, batch_end)).map_err(|e| {
+                    format!(
+                        "Batch generation failed (id={}, {}-{}): {}",
+                        id, batch_start, batch_end, e
+                    )
+                })?;
 
                 let mut writer = client
                     .copy_in(&copy_sql)
@@ -449,9 +471,9 @@ impl ReadWriteSync for YamlBenchmark {
                 // Evaluate bindings and substitute into SQL template
                 let sql = self.render_simple_sql(tx_spec)?;
                 let start = Instant::now();
-                client.batch_execute(&sql).map_err(
-                    |e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) },
-                )?;
+                client
+                    .batch_execute(&sql)
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
                 Ok(start.elapsed().as_micros())
             }
             "script" => {
@@ -494,15 +516,13 @@ impl Benchmark for YamlBenchmark {
 
     fn pre_load_data(&self, client: &mut Client) -> Result<u128, String> {
         match &self.pre_load_script {
-            Some(script) => {
-                yaml_lua::execute_load_script(
-                    client,
-                    script,
-                    self.scalefactor,
-                    &self.spec.scaling.constants,
-                    &[],
-                )
-            }
+            Some(script) => yaml_lua::execute_load_script(
+                client,
+                script,
+                self.scalefactor,
+                &self.spec.scaling.constants,
+                &[],
+            ),
             None => Ok(0),
         }
     }
@@ -645,7 +665,10 @@ transactions:
             .map(|s| s.sql)
             .collect();
         // Only t1 declares a primary key.
-        assert_eq!(ddls, vec!["ALTER TABLE t1 ADD PRIMARY KEY (id)".to_string()]);
+        assert_eq!(
+            ddls,
+            vec!["ALTER TABLE t1 ADD PRIMARY KEY (id)".to_string()]
+        );
     }
 
     #[test]
@@ -657,7 +680,10 @@ transactions:
             .collect();
         assert_eq!(
             ddls,
-            vec!["ALTER TABLE t2 ADD CONSTRAINT t2_t1_fk FOREIGN KEY (t1_id) REFERENCES t1 (id)".to_string()],
+            vec![
+                "ALTER TABLE t2 ADD CONSTRAINT t2_t1_fk FOREIGN KEY (t1_id) REFERENCES t1 (id)"
+                    .to_string()
+            ],
         );
     }
 
@@ -709,20 +735,18 @@ transactions:
 
     #[test]
     fn shipped_sample_specs_parse_and_generate_ddls() {
-        for name in [
-            "pgm-b",
-            "pgm-c",
-            "pgm-h",
-            "pgm-ds",
-            "pgm-iot",
-        ] {
+        for name in ["pgm-b", "pgm-c", "pgm-h", "pgm-ds", "pgm-iot"] {
             let path = format!("samples/{}/spec.yaml", name);
-            let content = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {}", path, e));
-            let spec: BenchmarkSpec = serde_yaml::from_str(&content)
-                .unwrap_or_else(|e| panic!("parse {}: {}", path, e));
+            let content =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path, e));
+            let spec: BenchmarkSpec =
+                serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("parse {}: {}", path, e));
             assert!(!spec.schema.tables.is_empty(), "{} has no tables", name);
-            assert!(!spec.transactions.is_empty(), "{} has no transactions", name);
+            assert!(
+                !spec.transactions.is_empty(),
+                "{} has no transactions",
+                name
+            );
             assert!(
                 !YamlBenchmark::generate_table_ddls(&spec).is_empty(),
                 "{} produced no table DDLs",

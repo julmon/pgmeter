@@ -42,7 +42,7 @@ pub struct BenchmarkStmt {
     pub sql: String,
 }
 
-#[derive(Tabled,Clone,Debug)]
+#[derive(Tabled, Clone, Debug)]
 pub struct ResponseTimeStatistics {
     #[tabled(rename = "Transaction")]
     pub name: String,
@@ -64,7 +64,10 @@ pub struct ResponseTimeStatistics {
 /// Uses prepared statements and synchronous I/O (matches pgbench architecture)
 pub trait ReadWriteSync: Send + Sync {
     /// Prepare all statements needed for transactions (called once per connection)
-    fn prepare_statements(&self, client: &mut Client) -> Result<PreparedStatements, postgres::Error>;
+    fn prepare_statements(
+        &self,
+        client: &mut Client,
+    ) -> Result<PreparedStatements, postgres::Error>;
 
     /// Execute a transaction using prepared statements (hot path)
     fn execute_rw_transaction_sync(
@@ -87,7 +90,13 @@ pub struct TransactionSummary {
 }
 
 impl TransactionSummary {
-    pub fn new(name: String, n_commits: u64, n_errors: u64, error_rate: f64, throughput: u32) -> TransactionSummary {
+    pub fn new(
+        name: String,
+        n_commits: u64,
+        n_errors: u64,
+        error_rate: f64,
+        throughput: u32,
+    ) -> TransactionSummary {
         TransactionSummary {
             name,
             n_commits,

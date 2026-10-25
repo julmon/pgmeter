@@ -1,41 +1,36 @@
-use std::time::{Duration, Instant};
-use std::thread::{JoinHandle, sleep};
-use std::thread;
-use std::fs::{File, create_dir_all};
-use std::io::{BufWriter, Write};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use std::env::current_dir;
+use std::fs::{create_dir_all, File};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::thread::{sleep, JoinHandle};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use crossbeam_channel::{Sender, Receiver, unbounded};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use itoa;
 use postgres::{Client, NoTls};
 use rand::prelude::*;
-use itoa;
 use ryu;
 
 mod benchmark;
-mod txmessage;
-mod terminal;
 mod data_agg;
 mod report;
-mod yaml_types;
+mod terminal;
+mod txmessage;
 mod yaml_benchmark;
 mod yaml_lua;
+mod yaml_types;
 
+use super::args::{OutputFormat, RunArgs};
 use benchmark::{
-    Benchmark,
-    BenchmarkStmt,
-    Counter,
-    ReadWriteSync,
-    ResponseTimeStatistics,
-    TransactionSummary,
+    Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics, TransactionSummary,
 };
-use yaml_benchmark::YamlBenchmark;
 use txmessage::{TXMessage, TXMessageKind};
-use super::args::{RunArgs, OutputFormat};
+use yaml_benchmark::YamlBenchmark;
 
 pub struct Executor {
     dsn: String,
@@ -97,7 +92,7 @@ pub fn get_target_dir_path() -> PathBuf {
         Err(error) => {
             terminal::err_msg(&error.to_string());
             std::process::exit(1);
-         }
+        }
     };
     let now: DateTime<Utc> = Utc::now();
     let target_dir_path = current_dir.join(format!("pgmeter-{}", now.format("%Y-%m-%dT%H:%M:%S")));
@@ -128,7 +123,11 @@ impl Executor {
         let rampup_ms = args.rampup as u64 * 1000;
         let time_ms = args.time as u64 * 1000;
         // Nap time before starting a new client
-        let sleep_ms = if args.client > 0 { rampup_ms / args.client as u64 } else { 0 };
+        let sleep_ms = if args.client > 0 {
+            rampup_ms / args.client as u64
+        } else {
+            0
+        };
 
         // Echo the run configuration up front so the output is self-documenting
         // and the run is reproducible from its own log.
@@ -137,7 +136,10 @@ impl Executor {
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
         // Channels used to send back the counters once data collector has finished its work.
-        let (tx_counters, rx_counters): (Sender<HashMap<u16, Counter>>, Receiver<HashMap<u16, Counter>>) = unbounded();
+        let (tx_counters, rx_counters): (
+            Sender<HashMap<u16, Counter>>,
+            Receiver<HashMap<u16, Counter>>,
+        ) = unbounded();
 
         // Track total execution time in ms
         let start = Instant::now();
@@ -192,15 +194,26 @@ impl Executor {
             max_id
         };
 
-        let message = format!("Starting {} client(s) in {} seconds",
-            args.client, args.rampup);
+        let message = format!(
+            "Starting {} client(s) in {} seconds",
+            args.client, args.rampup
+        );
         terminal::start_msg(command, message.as_str());
 
         // One std::thread per client, each on its own blocking connection
         // (matches pgbench's load-generation model).
         self.run_benchmark_sync(
-            args.client, min_id, max_id, time_ms, rampup_ms, sleep_ms, tx.clone(), start,
-            Arc::clone(&live_commits), Arc::clone(&live_latency_us), args.progress,
+            args.client,
+            min_id,
+            max_id,
+            time_ms,
+            rampup_ms,
+            sleep_ms,
+            tx.clone(),
+            start,
+            Arc::clone(&live_commits),
+            Arc::clone(&live_latency_us),
+            args.progress,
         );
 
         // Proceed total execution time
@@ -209,7 +222,9 @@ impl Executor {
         // Send termination message to the data collector
         tx.send(TXMessage::terminate_data_collector()).unwrap();
         // Wait for the end of the data collection thread
-        data_collector.join().expect("the data collector thread panicked");
+        data_collector
+            .join()
+            .expect("the data collector thread panicked");
 
         // Receive counters from the data collector
         self.counters = rx_counters.recv().unwrap();
@@ -276,10 +291,15 @@ impl Executor {
 
                 // Get benchmark and prepare statements
                 let benchmark = YamlBenchmark::from_file(&spec_file, 0, min_id, max_id);
-                let prepared = benchmark.prepare_statements(&mut client).unwrap_or_else(|err| {
-                    terminal::err_msg(&format!("Failed to prepare statements: {}", error_detail(&err)));
-                    std::process::exit(1);
-                });
+                let prepared = benchmark
+                    .prepare_statements(&mut client)
+                    .unwrap_or_else(|err| {
+                        terminal::err_msg(&format!(
+                            "Failed to prepare statements: {}",
+                            error_detail(&err)
+                        ));
+                        std::process::exit(1);
+                    });
 
                 let transactions = benchmark.get_transactions_rw();
 
@@ -300,18 +320,27 @@ impl Executor {
                     // Fast weighted random selection
                     let tx_idx = {
                         let rand_val: u32 = thread_rng().gen_range(1..=total_weight);
-                        cumulative_weights.iter().position(|&w| rand_val <= w).unwrap_or(0)
+                        cumulative_weights
+                            .iter()
+                            .position(|&w| rand_val <= w)
+                            .unwrap_or(0)
                     };
                     let transaction = &transactions[tx_idx];
 
                     // Execute transaction using prepared statements
-                    match benchmark.execute_rw_transaction_sync(&mut client, &prepared, transaction) {
+                    match benchmark.execute_rw_transaction_sync(&mut client, &prepared, transaction)
+                    {
                         Ok(duration) => {
-                            let m = TXMessage::committed(transaction.id, client_id as u32, duration);
+                            let m =
+                                TXMessage::committed(transaction.id, client_id as u32, duration);
                             let _ = tx_clone.send(m);
                         }
                         Err(error) => {
-                            let m = TXMessage::error(transaction.id, client_id as u32, error_detail(error.as_ref()));
+                            let m = TXMessage::error(
+                                transaction.id,
+                                client_id as u32,
+                                error_detail(error.as_ref()),
+                            );
                             let _ = tx_clone.send(m);
                         }
                     }
@@ -351,7 +380,9 @@ impl Executor {
         }
 
         monitor_stop.store(true, Ordering::Relaxed);
-        monitor.join().expect("the workload monitor thread panicked");
+        monitor
+            .join()
+            .expect("the workload monitor thread panicked");
         terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
     }
 
@@ -374,7 +405,7 @@ impl Executor {
                 Err(e) => {
                     terminal::err_msg(&format!("Could not create {}: {}", LOG_FILE, e));
                     std::process::exit(1);
-                },
+                }
             };
             // Use larger buffer for better I/O performance
             let mut log_file = BufWriter::with_capacity(64 * 1024, log_file);
@@ -384,7 +415,7 @@ impl Executor {
                 Err(e) => {
                     terminal::err_msg(&format!("Could not create {}: {}", ERROR_FILE, e));
                     std::process::exit(1);
-                },
+                }
             };
             let mut error_file = BufWriter::with_capacity(8 * 1024, error_file);
 
@@ -409,7 +440,7 @@ impl Executor {
                     // Terminate data collector
                     TXMessageKind::TERMINATE => {
                         break;
-                    },
+                    }
                     // Committed transaction
                     TXMessageKind::COMMITTED => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
@@ -455,7 +486,7 @@ impl Executor {
                         let _ = log_file.write(b" ");
                         let _ = log_file.write(buffer_f.format(duration_ms).as_bytes());
                         let _ = log_file.write(b"\n");
-                    },
+                    }
                     TXMessageKind::ERROR => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
                         if !client_ids.contains_key(&msg.client_id) {
@@ -490,13 +521,13 @@ impl Executor {
                         let _ = error_file.write(b" ");
                         let _ = error_file.write(error_str.as_bytes());
                         let _ = error_file.write(b"\n");
-                    },
+                    }
                     TXMessageKind::ENDOFRAMPUP => {
                         ramping_up = false;
-                    },
+                    }
                     TXMessageKind::DEFAULT => {
                         // Should not happen
-                    },
+                    }
                 }
             }
             // Flush buffers before sending counters
@@ -823,8 +854,7 @@ impl Executor {
 
         terminal::start_msg("RUN", "Aggregating data");
 
-        let transactions = self.get_benchmark(0, 0, 0)
-            .get_transactions_rw();
+        let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
 
         match data_agg::aggregate_transaction_data(LOG_FILE, &self.target_dir, &transactions) {
             Ok(_) => (),
@@ -855,33 +885,47 @@ impl Executor {
             }
         };
 
-        let mut data_stats: Vec<ResponseTimeStatistics>  = Vec::new();
-        let mut data_summary: Vec<TransactionSummary>  = Vec::new();
+        let mut data_stats: Vec<ResponseTimeStatistics> = Vec::new();
+        let mut data_summary: Vec<TransactionSummary> = Vec::new();
 
         for transaction in transactions {
             let default_stats = ResponseTimeStatistics {
                 name: transaction.name.clone(),
-                mean: 0.0, min: 0.0, max: 0.0, std: 0.0,
-                percentile_95: 0.0, percentile_99: 0.0,
+                mean: 0.0,
+                min: 0.0,
+                max: 0.0,
+                std: 0.0,
+                percentile_95: 0.0,
+                percentile_99: 0.0,
             };
             let stats = stats_map.get(&transaction.id).unwrap_or(&default_stats);
-            let default_counters = Counter { n_commits: 0, n_total: 0, total_duration_ms: 0.0 };
-            let counters = self.counters.get(&transaction.id).unwrap_or(&default_counters);
+            let default_counters = Counter {
+                n_commits: 0,
+                n_total: 0,
+                total_duration_ms: 0.0,
+            };
+            let counters = self
+                .counters
+                .get(&transaction.id)
+                .unwrap_or(&default_counters);
 
             data_stats.push(stats.clone());
-            data_summary.push(
-                TransactionSummary::new(
-                    transaction.name,
-                    // Number of commits
-                    counters.n_commits,
-                    // Number of errors
-                    counters.n_total - counters.n_commits,
-                    // Error rate
-                    if counters.n_total > 0 { (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0 } else { 0.0 },
-                    // Throughput in the spec's configured unit (commits/sec * time-base factor)
-                    (counters.n_commits as f64 / duration_ms.as_secs() as f64 * throughput_factor) as u32,
-                )
-            );
+            data_summary.push(TransactionSummary::new(
+                transaction.name,
+                // Number of commits
+                counters.n_commits,
+                // Number of errors
+                counters.n_total - counters.n_commits,
+                // Error rate
+                if counters.n_total > 0 {
+                    (counters.n_total - counters.n_commits) as f64 / counters.n_total as f64 * 100.0
+                } else {
+                    0.0
+                },
+                // Throughput in the spec's configured unit (commits/sec * time-base factor)
+                (counters.n_commits as f64 / duration_ms.as_secs() as f64 * throughput_factor)
+                    as u32,
+            ));
         }
 
         match format {
@@ -907,7 +951,13 @@ impl Executor {
                 } else {
                     0.0
                 };
-                terminal::kpi_banner(total_throughput, &throughput_unit, total_commits, error_rate, avg_latency);
+                terminal::kpi_banner(
+                    total_throughput,
+                    &throughput_unit,
+                    total_commits,
+                    error_rate,
+                    avg_latency,
+                );
 
                 data_agg::print_transactions_tables(&data_summary, &data_stats, &throughput_unit);
             }

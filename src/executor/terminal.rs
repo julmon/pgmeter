@@ -203,7 +203,11 @@ pub fn spawn_workload_monitor(
 
             if tty {
                 pb.set_position(elapsed.min(total_s as f64) as u64);
-                pb.set_message(format!("{} tps · lat {:.2} ms", fmt_int(tps as u64), lat_ms));
+                pb.set_message(format!(
+                    "{} tps · lat {:.2} ms",
+                    fmt_int(tps as u64),
+                    lat_ms
+                ));
             } else if !quiet && progress_s > 0 && elapsed >= next_progress {
                 eprintln!(
                     "progress: {:.1} s, {:.1} tps, lat {:.3} ms",
@@ -223,7 +227,13 @@ pub fn spawn_workload_monitor(
 // accent colour; the remaining figures are emphasized with bold only. Counts use
 // thin-space thousands grouping. Goes to stdout so it travels with the tables and
 // is auto-decolourized when the output is piped.
-pub fn kpi_banner(throughput: u64, unit: &str, committed: u64, error_rate: f64, avg_latency_ms: f64) {
+pub fn kpi_banner(
+    throughput: u64,
+    unit: &str,
+    committed: u64,
+    error_rate: f64,
+    avg_latency_ms: f64,
+) {
     if is_quiet() {
         return;
     }

@@ -4,10 +4,10 @@ use std::io::Write;
 
 use mlua::prelude::*;
 use postgres::Client;
-use rand::Rng;
-use rand::SeedableRng;
 use rand::distributions::Alphanumeric;
 use rand::rngs::SmallRng;
+use rand::Rng;
+use rand::SeedableRng;
 
 /// Raw pointer wrapper for postgres::Client.
 /// SAFETY: This is only used within a single thread. The pointer is set before
@@ -105,9 +105,8 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
     lua.globals().set("rand_int", rand_int)?;
 
     // Register rand_float(min, max) -> number
-    let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
-        Ok(with_rng(|rng| rng.gen_range(min..max)))
-    })?;
+    let rand_float = lua
+        .create_function(|_, (min, max): (f64, f64)| Ok(with_rng(|rng| rng.gen_range(min..max))))?;
     lua.globals().set("rand_float", rand_float)?;
 
     // Register begin()
@@ -145,14 +144,17 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         let mut args_iter = args.into_iter();
         let sql: String = match args_iter.next() {
             Some(LuaValue::String(s)) => s.to_str()?.to_string(),
-            _ => return Err(LuaError::RuntimeError("exec: first argument must be a SQL string".to_string())),
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "exec: first argument must be a SQL string".to_string(),
+                ))
+            }
         };
 
         let params = collect_params_as_literals(args_iter)?;
 
         with_client(|client| {
-            execute_simple(client, &sql, &params)
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))
+            execute_simple(client, &sql, &params).map_err(|e| LuaError::RuntimeError(e.to_string()))
         })
     })?;
     lua.globals().set("exec", exec_fn)?;
@@ -162,7 +164,11 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         let mut args_iter = args.into_iter();
         let sql: String = match args_iter.next() {
             Some(LuaValue::String(s)) => s.to_str()?.to_string(),
-            _ => return Err(LuaError::RuntimeError("query: first argument must be a SQL string".to_string())),
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "query: first argument must be a SQL string".to_string(),
+                ))
+            }
         };
 
         let params = collect_params_as_literals(args_iter)?;
@@ -180,7 +186,11 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
         let mut args_iter = args.into_iter();
         let sql: String = match args_iter.next() {
             Some(LuaValue::String(s)) => s.to_str()?.to_string(),
-            _ => return Err(LuaError::RuntimeError("query_one: first argument must be a SQL string".to_string())),
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "query_one: first argument must be a SQL string".to_string(),
+                ))
+            }
         };
 
         let params = collect_params_as_literals(args_iter)?;
@@ -230,11 +240,14 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
             let mut holder = cell.borrow_mut();
             match holder.0.as_mut() {
                 Some(writer) => {
-                    writer.write_all(&bytes)
+                    writer
+                        .write_all(&bytes)
                         .map_err(|e| LuaError::RuntimeError(format!("copy_write: {}", e)))?;
                     Ok(())
                 }
-                None => Err(LuaError::RuntimeError("copy_write: no active COPY stream (call copy_start first)".to_string())),
+                None => Err(LuaError::RuntimeError(
+                    "copy_write: no active COPY stream (call copy_start first)".to_string(),
+                )),
             }
         })
     })?;
@@ -246,11 +259,14 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
             let mut holder = cell.borrow_mut();
             match holder.0.take() {
                 Some(writer) => {
-                    writer.finish()
+                    writer
+                        .finish()
                         .map_err(|e| LuaError::RuntimeError(format!("copy_end: {}", e)))?;
                     Ok(())
                 }
-                None => Err(LuaError::RuntimeError("copy_end: no active COPY stream".to_string())),
+                None => Err(LuaError::RuntimeError(
+                    "copy_end: no active COPY stream".to_string(),
+                )),
             }
         })
     })?;
@@ -274,25 +290,26 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
 
     // Register rand_strings(count, min_len, max_len) -> table of random strings
     // Batched version to reduce Lua↔Rust boundary crossings for bulk data loading.
-    let rand_strings_fn = lua.create_function(|lua, (count, min_len, max_len): (usize, usize, usize)| {
-        let table = lua.create_table_with_capacity(count, 0)?;
-        with_rng(|rng| {
-            for i in 1..=count {
-                let len = if min_len < max_len {
-                    rng.gen_range(min_len..=max_len)
-                } else {
-                    max_len
-                };
-                let s: String = (&mut *rng)
-                    .sample_iter(&Alphanumeric)
-                    .take(len)
-                    .map(char::from)
-                    .collect();
-                table.set(i, s)?;
-            }
-            Ok(table)
-        })
-    })?;
+    let rand_strings_fn =
+        lua.create_function(|lua, (count, min_len, max_len): (usize, usize, usize)| {
+            let table = lua.create_table_with_capacity(count, 0)?;
+            with_rng(|rng| {
+                for i in 1..=count {
+                    let len = if min_len < max_len {
+                        rng.gen_range(min_len..=max_len)
+                    } else {
+                        max_len
+                    };
+                    let s: String = (&mut *rng)
+                        .sample_iter(&Alphanumeric)
+                        .take(len)
+                        .map(char::from)
+                        .collect();
+                    table.set(i, s)?;
+                }
+                Ok(table)
+            })
+        })?;
     lua.globals().set("rand_strings", rand_strings_fn)?;
 
     Ok(lua)
@@ -401,17 +418,22 @@ pub fn execute_script(
 
         match func {
             Ok(f) => {
-                f.call::<()>(()).map_err(
-                    |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                    },
-                )?;
+                f.call::<()>(())
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        ))
+                    })?;
             }
             Err(_) => {
                 // Fallback: execute inline script directly
                 lua.load(script).exec().map_err(
                     |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        ))
                     },
                 )?;
             }
@@ -440,7 +462,9 @@ pub fn execute_load_script(
     let result = (|| -> Result<u128, String> {
         let lua = create_lua_vm().map_err(|e| format!("Failed to create Lua VM: {}", e))?;
 
-        lua.globals().set("scalefactor", scalefactor).map_err(|e| e.to_string())?;
+        lua.globals()
+            .set("scalefactor", scalefactor)
+            .map_err(|e| e.to_string())?;
         inject_constants(&lua, constants).map_err(|e| e.to_string())?;
 
         // Pass the list of IDs to load as a Lua table
@@ -448,7 +472,9 @@ pub fn execute_load_script(
         for (i, &id) in ids.iter().enumerate() {
             ids_table.set(i + 1, id).map_err(|e| e.to_string())?;
         }
-        lua.globals().set("ids", ids_table).map_err(|e| e.to_string())?;
+        lua.globals()
+            .set("ids", ids_table)
+            .map_err(|e| e.to_string())?;
 
         let start = std::time::Instant::now();
         lua.load(script)
@@ -485,7 +511,11 @@ fn collect_params_as_literals(args: impl Iterator<Item = LuaValue>) -> LuaResult
                 // Escape single quotes for SQL safety
                 params.push(format!("'{}'", s.replace('\'', "''")));
             }
-            LuaValue::Boolean(b) => params.push(if b { "true".to_string() } else { "false".to_string() }),
+            LuaValue::Boolean(b) => params.push(if b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }),
             LuaValue::Nil => params.push("NULL".to_string()),
             _ => {
                 return Err(LuaError::RuntimeError(format!(
@@ -537,7 +567,6 @@ fn query_simple(
     }
     Ok(rows)
 }
-
 
 /// Parse a string value into the best-matching Lua type.
 fn str_to_lua_value(lua: &Lua, val: &str) -> LuaResult<LuaValue> {
@@ -610,9 +639,8 @@ fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
     })?;
     lua.globals().set("rand_int", rand_int)?;
 
-    let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
-        Ok(with_rng(|rng| rng.gen_range(min..max)))
-    })?;
+    let rand_float = lua
+        .create_function(|_, (min, max): (f64, f64)| Ok(with_rng(|rng| rng.gen_range(min..max))))?;
     lua.globals().set("rand_float", rand_float)?;
     Ok(())
 }
@@ -739,9 +767,15 @@ pub fn eval_bindings_simple(
         let lua = vm_opt.as_ref().unwrap();
 
         // Set context globals (cheap: just integer assignments)
-        lua.globals().set("min_id", min_id).map_err(lua_to_sync_err)?;
-        lua.globals().set("max_id", max_id).map_err(lua_to_sync_err)?;
-        lua.globals().set("scalefactor", scalefactor).map_err(lua_to_sync_err)?;
+        lua.globals()
+            .set("min_id", min_id)
+            .map_err(lua_to_sync_err)?;
+        lua.globals()
+            .set("max_id", max_id)
+            .map_err(lua_to_sync_err)?;
+        lua.globals()
+            .set("scalefactor", scalefactor)
+            .map_err(lua_to_sync_err)?;
 
         // Compile this transaction's binding function once per thread
         EVAL_FUNCS.with(|set_cell| {
@@ -772,7 +806,10 @@ pub fn eval_bindings_simple(
         })?;
 
         // Call the pre-compiled function (single bytecode dispatch, no parsing)
-        let func: LuaFunction = lua.globals().get(func_name.as_str()).map_err(lua_to_sync_err)?;
+        let func: LuaFunction = lua
+            .globals()
+            .get(func_name.as_str())
+            .map_err(lua_to_sync_err)?;
         let results: LuaMultiValue = func.call(()).map_err(lua_to_sync_err)?;
 
         // Map returned values back to binding names
@@ -819,7 +856,10 @@ fn inject_constants(lua: &Lua, constants: &HashMap<String, serde_yaml::Value>) -
 }
 
 fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
-    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        e.to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -865,10 +905,21 @@ mod tests {
     fn str_to_lua_value_detects_types() {
         let lua = Lua::new();
         assert!(matches!(str_to_lua_value(&lua, "42").unwrap(), LuaValue::Integer(n) if n == 42));
-        assert!(matches!(str_to_lua_value(&lua, "3.5").unwrap(), LuaValue::Number(f) if (f - 3.5).abs() < 1e-9));
-        assert!(matches!(str_to_lua_value(&lua, "t").unwrap(), LuaValue::Boolean(true)));
-        assert!(matches!(str_to_lua_value(&lua, "false").unwrap(), LuaValue::Boolean(false)));
-        assert!(matches!(str_to_lua_value(&lua, "hello").unwrap(), LuaValue::String(_)));
+        assert!(
+            matches!(str_to_lua_value(&lua, "3.5").unwrap(), LuaValue::Number(f) if (f - 3.5).abs() < 1e-9)
+        );
+        assert!(matches!(
+            str_to_lua_value(&lua, "t").unwrap(),
+            LuaValue::Boolean(true)
+        ));
+        assert!(matches!(
+            str_to_lua_value(&lua, "false").unwrap(),
+            LuaValue::Boolean(false)
+        ));
+        assert!(matches!(
+            str_to_lua_value(&lua, "hello").unwrap(),
+            LuaValue::String(_)
+        ));
     }
 
     #[test]
