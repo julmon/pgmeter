@@ -2,6 +2,10 @@
 name = "pgmeter"
 version = "0.1.0"
 edition = "2021"
+# Minimum supported Rust version. Verified by building and testing with
+# `cargo +1.85.0 test --locked`; 1.84 cannot parse the edition-2024 manifests
+# of clap 4.6's crates. Keep README.md "Requirements" in sync (tested).
+rust-version = "1.85"
 authors = ["Julien Tachoires <julien@tachoires.me>"]
 description = "PostgreSQL benchmarking tool driven by YAML + Lua workload specs, with bundled TPC-derived reference workloads"
 license = "PostgreSQL"

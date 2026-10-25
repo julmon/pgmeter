@@ -77,4 +77,18 @@ mod tests {
         assert!(!env!("CARGO_PKG_HOMEPAGE").is_empty(), "homepage is required");
         assert_eq!(env!("CARGO_PKG_README"), "README.md");
     }
+
+    // The MSRV is declared once in Cargo.toml and repeated in the README's
+    // Requirements section; both must agree.
+    #[test]
+    fn readme_states_the_declared_rust_version() {
+        let msrv = env!("CARGO_PKG_RUST_VERSION");
+        assert!(!msrv.is_empty(), "package.rust-version must be set");
+        let readme = include_str!("../README.md");
+        let line = format!("- Rust {msrv} or later");
+        assert!(
+            readme.contains(&line),
+            "README.md Requirements must contain {line:?}"
+        );
+    }
 }
