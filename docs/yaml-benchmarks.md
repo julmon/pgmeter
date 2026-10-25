@@ -378,7 +378,7 @@ load:
 | `method` | no | only `copy` is implemented |
 | `copy_columns` | yes | column order for `COPY <table> (<copy_columns>) FROM stdin` |
 | `rows_per_id` | yes | rows to generate per unit. Integer, or a `{{expr}}` string evaluated once (may use `const.*`). |
-| `batch_size` | no | rows per `COPY` round-trip (default 10000) |
+| `batch_size` | no | rows per `COPY` round-trip (default 10000, must be above 0) |
 | `row` | yes | the **row template** (see below) |
 
 #### The row-template mini-language

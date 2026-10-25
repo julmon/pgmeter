@@ -6,7 +6,7 @@ use std::time::Instant;
 use postgres::Client;
 
 use super::benchmark::BenchmarkTransaction;
-use super::error::Error;
+use super::error::{error_detail, Error};
 use super::yaml_lua;
 use super::yaml_types::{BenchmarkSpec, LoadMethod, TransactionMode};
 
@@ -414,13 +414,7 @@ impl YamlBenchmark {
         };
 
         for &id in ids {
-            let batch_size = load_spec.batch_size;
-            let n_batches = ((rows_per_id as f64) / (batch_size as f64)).ceil() as u32;
-
-            for batch in 0..n_batches {
-                let batch_start = batch * batch_size + 1;
-                let batch_end = std::cmp::min((batch + 1) * batch_size, rows_per_id);
-
+            for (batch_start, batch_end) in batch_ranges(rows_per_id, load_spec.batch_size) {
                 // Single Lua call generates all rows for this batch
                 let data: String = batch_func.call((id, batch_start, batch_end)).map_err(|e| {
                     format!(
@@ -431,20 +425,30 @@ impl YamlBenchmark {
 
                 let mut writer = client
                     .copy_in(&copy_sql)
-                    .map_err(|e| format!("COPY failed: {}", e))?;
+                    .map_err(|e| format!("COPY failed: {}", error_detail(&e)))?;
 
                 writer
                     .write_all(data.as_bytes())
-                    .map_err(|e| format!("Write failed: {}", e))?;
+                    .map_err(|e| format!("Write failed: {}", error_detail(&e)))?;
 
                 writer
                     .finish()
-                    .map_err(|e| format!("COPY finish failed: {}", e))?;
+                    .map_err(|e| format!("COPY finish failed: {}", error_detail(&e)))?;
             }
         }
 
         Ok(())
     }
+}
+
+/// The inclusive `(first, last)` row ranges, 1-based, that split `rows_per_id`
+/// rows into chunks of `batch_size`; the last chunk is shorter when the
+/// division is not exact. `batch_size` is validated above 0 by `validate_spec`.
+fn batch_ranges(rows_per_id: u32, batch_size: u32) -> impl Iterator<Item = (u32, u32)> {
+    debug_assert!(batch_size > 0);
+    (1..=rows_per_id)
+        .step_by(batch_size.max(1) as usize)
+        .map(move |start| (start, (start + batch_size - 1).min(rows_per_id)))
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +566,12 @@ fn validate_spec(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
             problems.push(format!(
                 "load[{i}] ({}): rows_per_id must be a positive integer or a `{{{{expr}}}}` string, got {:?}",
                 load.table, load.rows_per_id
+            ));
+        }
+        if load.batch_size == 0 {
+            problems.push(format!(
+                "load[{i}] ({}): batch_size must be greater than 0",
+                load.table
             ));
         }
     }
@@ -853,7 +863,7 @@ schema:
     - {name: ix_bad, table: missing_c, columns: [id]}
 load:
   - {table: missing_d, copy_columns: [id], rows_per_id: true, row: "x"}
-  - {table: t, copy_columns: [id], rows_per_id: 0, row: "x"}
+  - {table: t, copy_columns: [id], rows_per_id: 0, batch_size: 0, row: "x"}
 load_script: load.lua
 transactions:
   - {id: 0, name: zero-id, weight: 0, sql: "SELECT 1"}
@@ -879,13 +889,14 @@ transactions:
             "`load` and `load_script` are mutually exclusive",
             "load[0] (missing_d): rows_per_id must be a positive integer",
             "load[1] (t): rows_per_id must be a positive integer",
+            "load[1] (t): batch_size must be greater than 0",
         ] {
             assert!(
                 joined.contains(expected),
                 "missing {expected:?} in:\n{joined}"
             );
         }
-        assert_eq!(problems.len(), 13, "{joined}");
+        assert_eq!(problems.len(), 14, "{joined}");
 
         let empty = spec_with_transactions("  []\n");
         assert_eq!(
@@ -1120,6 +1131,101 @@ transactions:
                 .unwrap_or_else(|e| panic!("{}: connection unusable after failure: {e}", tx.name));
             assert_eq!(row.get::<_, i32>(0), 42);
         }
+    }
+
+    // RELEASE_REVIEW F2: the COPY loader's batching arithmetic. Before the
+    // extraction it was `ceil(rows / batch)` batches of
+    // `[batch*size+1, min((batch+1)*size, rows)]`; a `batch_size` of 0 made
+    // `ceil(rows / 0)` saturate to u32::MAX and the loader never ended. That
+    // value is now rejected by `validate_spec` (checked above).
+    #[test]
+    fn batch_ranges_cover_every_row_exactly_once() {
+        let ranges = |rows, size| super::batch_ranges(rows, size).collect::<Vec<_>>();
+        assert_eq!(ranges(7, 3), vec![(1, 3), (4, 6), (7, 7)]);
+        assert_eq!(ranges(6, 3), vec![(1, 3), (4, 6)]);
+        assert_eq!(ranges(3, 3), vec![(1, 3)]);
+        assert_eq!(ranges(1, 10_000), vec![(1, 1)]);
+        assert_eq!(ranges(0, 3), vec![]);
+
+        // Every row from 1 to rows_per_id is in exactly one range, in order.
+        for (rows, size) in [
+            (1, 1),
+            (10, 1),
+            (10, 3),
+            (10, 4),
+            (10, 10),
+            (10, 11),
+            (99, 7),
+        ] {
+            let rows_seen: Vec<u32> = ranges(rows, size)
+                .into_iter()
+                .inspect(|&(s, e)| assert!(s <= e && e - s < size, "{rows}/{size}: {s}-{e}"))
+                .flat_map(|(s, e)| s..=e)
+                .collect();
+            assert_eq!(rows_seen, (1..=rows).collect::<Vec<_>>(), "{rows}/{size}");
+        }
+    }
+
+    // The same arithmetic driving a real COPY (skipped unless PGMETER_TEST_DSN
+    // is set): 7 rows per id in batches of 3 for two ids must land exactly
+    // the 14 distinct (id, i) pairs, with no row duplicated across batches.
+    #[test]
+    fn execute_load_copies_every_row_once() {
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS f2_load_rows; CREATE TABLE f2_load_rows (id int, i int)",
+            )
+            .unwrap();
+
+        let spec: BenchmarkSpec = serde_yaml::from_str(
+            r#"
+name: f2
+scaling:
+  unit: u
+  max_id_query: "SELECT 1"
+schema:
+  tables:
+    - name: f2_load_rows
+      columns: [{name: id, type: int}, {name: i, type: int}]
+load:
+  - table: f2_load_rows
+    copy_columns: [id, i]
+    rows_per_id: 7
+    batch_size: 3
+    row: "{{id}}\t{{i}}\n"
+transactions:
+  - {id: 1, name: t, weight: 1, sql: "SELECT 1"}
+"#,
+        )
+        .unwrap();
+        let benchmark = YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 2).unwrap();
+        benchmark
+            .execute_load(&mut client, &benchmark.spec.load[0], &[1, 2])
+            .unwrap();
+
+        let row = client
+            .query_one(
+                "SELECT COUNT(*)::int, COUNT(DISTINCT (id, i))::int, MIN(i), MAX(i) FROM f2_load_rows",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                row.get::<_, i32>(0),
+                row.get::<_, i32>(1),
+                row.get::<_, i32>(2),
+                row.get::<_, i32>(3)
+            ),
+            (14, 14, 1, 7)
+        );
+        client.batch_execute("DROP TABLE f2_load_rows").unwrap();
     }
 
     fn sample_spec() -> BenchmarkSpec {
