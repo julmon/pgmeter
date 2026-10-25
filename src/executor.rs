@@ -499,7 +499,7 @@ impl Executor {
 
     // Start the data collector thread. Data collector is in charge of storing transaction
     // informations into the log file and incrementing counters.
-    // Once the data collector has received the shutdown order (message with id=0), then
+    // Once the data collector has received the Terminate message, then
     // the counters are sent back to the main process through the tx_counters channel.
     fn start_data_collector(
         &mut self,
@@ -644,7 +644,7 @@ impl Executor {
         Client::connect(&self.dsn, self.tls.clone()).map_err(Error::from)
     }
 
-    // Initialize database schemabenchmark: create tables
+    // Initialize the database schema: create the tables of the benchmark
     pub fn init_db_schema(&mut self) -> Result<&mut Self, Error> {
         let command = "INIT";
         let message = "Executing database DDLs";
@@ -770,7 +770,7 @@ impl Executor {
         stmts: Vec<String>,
         use_transaction: bool,
     ) -> Result<(), Error> {
-        // We want to get one row per job and the ids balanced across the rowss.
+        // We want to get one row per job and the statements balanced across the rows.
         let mut rows = Vec::with_capacity(n_jobs as usize);
         for _ in 0..n_jobs {
             rows.push(Vec::new());
@@ -866,7 +866,7 @@ impl Executor {
         Ok(self)
     }
 
-    // Execute VACUUM statementsusing multiple concurrent jobs
+    // Execute VACUUM statements using multiple concurrent jobs
     pub fn vacuum(&mut self, n_jobs: u32) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark
         let benchmark = self.get_benchmark(0, 0, 0);

@@ -694,15 +694,6 @@ fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
     Ok(())
 }
 
-/// Pre-compile a row template into a Lua function.
-///
-/// Template: `"{{(id - 1) * 100 + i}}\t{{id}}\t0\t\n"`
-/// Compiled Lua:
-/// ```lua
-/// function(id, i)
-///   return tostring((id - 1) * 100 + i) .. "\t" .. tostring(id) .. "\t0\t\n"
-/// end
-/// ```
 /// Pre-compile a row template into a batched Lua function.
 /// Returns a function(id, i_start, i_end) that generates all rows for the range
 /// as a single concatenated string, using table.concat for efficiency.

@@ -362,11 +362,10 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
     })
 }
 
-// Linear histogram of response times, capped at the 99th percentile with a
-// trailing overflow bucket so a few outliers don't flatten the distribution.
 // Bounded-memory latency histogram: durations are tallied into exponentially
 // spaced bins (fixed count, independent of sample size). finish() caps the
-// display range at the 99th percentile with a trailing overflow bucket.
+// display range at the 99th percentile with a trailing overflow bucket so a
+// few outliers don't flatten the distribution.
 struct LatencyHistogram {
     counts: Vec<u64>,
     total: u64,
