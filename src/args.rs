@@ -5,7 +5,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use urlencoding::encode;
 use users::{get_current_uid, get_user_by_uid};
 
@@ -540,10 +540,32 @@ pub fn get_dsn(args: &PgMtrArgs) -> String {
 // the first line whose host:port:database:username fields match (with '*'
 // wildcards). Returns an empty string when nothing matches.
 fn resolve_password(host: &str, port: u16, dbname: &str, username: &str) -> String {
-    if let Ok(password) = env::var("PGPASSWORD") {
+    resolve_password_from(
+        env::var("PGPASSWORD").ok(),
+        pgpass_path(),
+        host,
+        port,
+        dbname,
+        username,
+    )
+}
+
+/// The environment-free core of `resolve_password`: `pgpassword` is the
+/// `$PGPASSWORD` override, `pgpass_file` the password file to scan (if any).
+fn resolve_password_from(
+    pgpassword: Option<String>,
+    pgpass_file: Option<PathBuf>,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    username: &str,
+) -> String {
+    if let Some(password) = pgpassword {
         return password;
     }
-    lookup_pgpass(host, port, dbname, username).unwrap_or_default()
+    pgpass_file
+        .and_then(|path| lookup_pgpass(&path, host, port, dbname, username))
+        .unwrap_or_default()
 }
 
 // Location of the password file: PGPASSFILE if set, otherwise ~/.pgpass.
@@ -560,9 +582,14 @@ fn pgpass_path() -> Option<PathBuf> {
 }
 
 // Scan the password file for the first entry matching the connection target.
-fn lookup_pgpass(host: &str, port: u16, dbname: &str, username: &str) -> Option<String> {
-    let path = pgpass_path()?;
-    let file = File::open(&path).ok()?;
+fn lookup_pgpass(
+    path: &Path,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    username: &str,
+) -> Option<String> {
+    let file = File::open(path).ok()?;
 
     // Like libpq, refuse a file that is group- or world-accessible.
     #[cfg(unix)]
@@ -669,20 +696,34 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        std::env::set_var("PGPASSFILE", &path);
-        std::env::remove_var("PGPASSWORD");
-
-        assert_eq!(
-            resolve_password("localhost", 5432, "db", "user"),
-            "hunter2".to_string(),
-        );
+        // RELEASE_REVIEW D10: the lookup is tested through its pure core, with
+        // the file path and the $PGPASSWORD override passed in, so the test
+        // neither mutates the process environment (a race under the parallel
+        // test runner, and `unsafe` in edition 2024) nor depends on it.
+        let resolve = |dbname: &str, user: &str| {
+            resolve_password_from(None, Some(path.clone()), "localhost", 5432, dbname, user)
+        };
+        assert_eq!(resolve("db", "user"), "hunter2");
         // No matching line -> empty password.
+        assert_eq!(resolve("db", "other"), "");
+        // $PGPASSWORD wins over the file.
         assert_eq!(
-            resolve_password("localhost", 5432, "db", "other"),
-            String::new()
+            resolve_password_from(
+                Some("env-wins".into()),
+                Some(path.clone()),
+                "localhost",
+                5432,
+                "db",
+                "user"
+            ),
+            "env-wins"
+        );
+        // No password file at all -> empty password, no panic.
+        assert_eq!(
+            resolve_password_from(None, None, "localhost", 5432, "db", "user"),
+            ""
         );
 
-        std::env::remove_var("PGPASSFILE");
         std::fs::remove_file(&path).ok();
     }
 
