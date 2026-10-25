@@ -67,6 +67,18 @@ impl YamlBenchmark {
             std::process::exit(1);
         });
 
+        Self::from_spec(spec, spec_dir, scalefactor, min_id, max_id)
+    }
+
+    /// Build the benchmark from an already parsed spec. Script and module
+    /// files referenced by the spec are resolved relative to `spec_dir`.
+    pub fn from_spec(
+        spec: BenchmarkSpec,
+        spec_dir: PathBuf,
+        scalefactor: u32,
+        min_id: u32,
+        max_id: u32,
+    ) -> YamlBenchmark {
         let table_ddls = Self::generate_table_ddls(&spec);
         let pkey_ddls = Self::generate_pkey_ddls(&spec);
         let fkey_ddls = Self::generate_fkey_ddls(&spec);
@@ -454,6 +466,37 @@ fn recover_connection(client: &mut Client) {
     let _ = client.batch_execute("ROLLBACK");
 }
 
+/// First column of the `max_id_query` result as an integer, whatever the
+/// integer width PostgreSQL chose (`COUNT(*)` is bigint, `MAX(int)` is int).
+fn max_id_column_value(row: &postgres::Row) -> Option<Option<i64>> {
+    if let Ok(v) = row.try_get::<_, Option<i64>>(0) {
+        return Some(v);
+    }
+    if let Ok(v) = row.try_get::<_, Option<i32>>(0) {
+        return Some(v.map(i64::from));
+    }
+    if let Ok(v) = row.try_get::<_, Option<i16>>(0) {
+        return Some(v.map(i64::from));
+    }
+    None
+}
+
+/// Validate the value returned by `max_id_query`: ids are 1-based `u32`s.
+fn max_id_from_value(value: Option<i64>) -> Result<u32, String> {
+    match value {
+        None => Err("max_id_query returned NULL: no data found, run `pgmeter init` first".into()),
+        Some(v) if v < 1 => Err(format!(
+            "max_id_query returned {v}: no data found, run `pgmeter init` first"
+        )),
+        Some(v) => u32::try_from(v).map_err(|_| {
+            format!(
+                "max_id_query returned {v}, which exceeds the maximum id {}",
+                u32::MAX
+            )
+        }),
+    }
+}
+
 impl ReadWriteSync for YamlBenchmark {
     fn prepare_statements(
         &self,
@@ -566,13 +609,30 @@ impl Benchmark for YamlBenchmark {
         Ok(start.elapsed().as_micros())
     }
 
-    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, postgres::Error> {
-        let row = client.query(&self.spec.scaling.max_id_query, &[])?;
+    /// Run the spec's `max_id_query` and turn its first column into the upper
+    /// bound of the id range. Accepts smallint, integer and bigint; NULL
+    /// (`MAX()` over an empty table), no rows, or a value below 1 mean the
+    /// dataset has not been loaded and are reported as errors, not panics.
+    fn get_default_max_id(
+        &self,
+        client: &mut Client,
+    ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+        let query = &self.spec.scaling.max_id_query;
+        let rows = client.query(query, &[])?;
+        let Some(row) = rows.first() else {
+            return Err(format!("max_id_query returned no rows: {query}").into());
+        };
         if row.is_empty() {
-            return Ok(1);
+            return Err(format!("max_id_query returned no columns: {query}").into());
         }
-        let max_id: i32 = row[0].get(0);
-        Ok(max_id as u32)
+        let value = max_id_column_value(row)
+            .ok_or_else(|| {
+                format!(
+                    "max_id_query must return an integer (smallint, integer or bigint), got {}: {query}",
+                    row.columns()[0].type_()
+                )
+            })?;
+        max_id_from_value(value).map_err(|e| format!("{e}: {query}").into())
     }
 
     fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction> {
@@ -600,6 +660,85 @@ impl Benchmark for YamlBenchmark {
 mod tests {
     use super::YamlBenchmark;
     use crate::executor::yaml_types::BenchmarkSpec;
+
+    #[test]
+    fn max_id_value_rejects_null_zero_negative_and_overflow() {
+        // Regression for RELEASE_REVIEW B4: these used to panic inside
+        // `Row::get` ("a Postgres value was NULL") or be accepted as 0.
+        assert!(super::max_id_from_value(None)
+            .unwrap_err()
+            .contains("run `pgmeter init` first"));
+        assert!(super::max_id_from_value(Some(0)).is_err());
+        assert!(super::max_id_from_value(Some(-3)).is_err());
+        assert!(super::max_id_from_value(Some(i64::from(u32::MAX) + 1)).is_err());
+        assert_eq!(super::max_id_from_value(Some(1)), Ok(1));
+        assert_eq!(
+            super::max_id_from_value(Some(i64::from(u32::MAX))),
+            Ok(u32::MAX)
+        );
+    }
+
+    // Regression for RELEASE_REVIEW B4 against a live server (skipped unless
+    // PGMETER_TEST_DSN is set): NULL from MAX() over an empty table, bigint
+    // from COUNT(*), smallint, and a non-integer column.
+    #[test]
+    fn max_id_query_handles_null_and_integer_widths() {
+        use crate::executor::benchmark::Benchmark;
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+
+        let bench = |query: &str| {
+            let mut spec = sample_spec();
+            spec.scaling.max_id_query = query.to_string();
+            YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 1)
+        };
+
+        // run before init: MAX over nothing is NULL -> clean error, no panic.
+        let err = bench("SELECT MAX(x) FROM (VALUES (1)) v(x) WHERE false")
+            .get_default_max_id(&mut client)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("run `pgmeter init` first"),
+            "{err}"
+        );
+
+        // Zero rows and zero value are errors too.
+        assert!(bench("SELECT 1 WHERE false")
+            .get_default_max_id(&mut client)
+            .is_err());
+        assert!(bench("SELECT 0").get_default_max_id(&mut client).is_err());
+
+        // Every integer width is accepted.
+        assert_eq!(
+            bench("SELECT 7::smallint")
+                .get_default_max_id(&mut client)
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            bench("SELECT 7::int")
+                .get_default_max_id(&mut client)
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            bench("SELECT COUNT(*) FROM (VALUES (1), (2)) v")
+                .get_default_max_id(&mut client)
+                .unwrap(),
+            2
+        );
+
+        // A non-integer column is reported, not panicked on.
+        let err = bench("SELECT 'abc'")
+            .get_default_max_id(&mut client)
+            .unwrap_err();
+        assert!(err.to_string().contains("must return an integer"), "{err}");
+    }
 
     // Regression for RELEASE_REVIEW B3. Needs a live server: set
     // PGMETER_TEST_DSN (CI's e2e job does); skipped otherwise.

@@ -194,7 +194,7 @@ impl Executor {
             let max_id = match benchmark_client.get_default_max_id(&mut client) {
                 Ok(max_id) => max_id,
                 Err(error) => {
-                    terminal::err_msg(error_detail(&error).as_str());
+                    terminal::err_msg(error_detail(error.as_ref()).as_str());
                     std::process::exit(1);
                 }
             };
