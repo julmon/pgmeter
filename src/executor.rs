@@ -51,6 +51,9 @@ pub struct Executor {
     rampup_end_ts: Option<i64>,
     rampup_time_ms: u128,
     total_time_ms: u128,
+    /// Set when Ctrl-C cut the workload short; the partial run is still
+    /// aggregated and reported, flagged as interrupted (RELEASE_REVIEW C5).
+    interrupted: bool,
     // Run parameters retained for reporting
     n_clients: u16,
     duration_s: u16,
@@ -132,6 +135,7 @@ impl Executor {
             benchmark,
             counters: HashMap::new(),
             rampup_end_ts: None,
+            interrupted: false,
             total_time_ms: 0,
             rampup_time_ms: 0,
             n_clients: 0,
@@ -217,6 +221,20 @@ impl Executor {
         );
         terminal::start_msg(command, message.as_str());
 
+        // Ctrl-C stops the clients at the end of their current transaction
+        // and lets the collector, aggregation and report run on the partial
+        // data; a second Ctrl-C (flag already raised) exits with status 130.
+        let interrupted = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register_conditional_shutdown(
+            signal_hook::consts::SIGINT,
+            130,
+            Arc::clone(&interrupted),
+        )
+        .and_then(|_| {
+            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&interrupted))
+        })
+        .map_err(|e| Error::io("Cannot install the Ctrl-C handler", e))?;
+
         // One std::thread per client, each on its own blocking connection
         // (matches pgbench's load-generation model). A client that cannot
         // start is reported after the collector has flushed the logs below.
@@ -232,10 +250,15 @@ impl Executor {
             Arc::clone(&live_commits),
             Arc::clone(&live_latency_us),
             args.progress,
+            Arc::clone(&interrupted),
         );
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
+        self.interrupted = interrupted.load(Ordering::Relaxed);
+        if self.interrupted {
+            terminal::interrupted_msg();
+        }
 
         // Send termination message to the data collector
         tx.send(TXMessage::terminate_data_collector()).unwrap();
@@ -269,6 +292,7 @@ impl Executor {
             "rampup_end_ts": self.rampup_end_ts,
             "throughput_unit": self.throughput_unit,
             "throughput_factor": self.throughput_factor,
+            "interrupted": self.interrupted,
         });
         let path = self.target_dir.join(RUN_FILE);
         if let Err(error) = std::fs::write(&path, format!("{:#}\n", doc)) {
@@ -317,6 +341,7 @@ impl Executor {
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
         progress: u16,
+        interrupted: Arc<AtomicBool>,
     ) -> Result<(), Error> {
         let mut client_threads: Vec<JoinHandle<Result<(), Error>>> =
             Vec::with_capacity(n_clients as usize);
@@ -331,7 +356,7 @@ impl Executor {
         for client_id in 1..=n_clients {
             let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
             sleep(Duration::from_millis(sleep_ms));
-            if abort.load(Ordering::Relaxed) {
+            if abort.load(Ordering::Relaxed) || interrupted.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -339,6 +364,7 @@ impl Executor {
             let benchmark = Arc::clone(&benchmark);
             let tx_clone = tx.clone();
             let abort = Arc::clone(&abort);
+            let interrupted = Arc::clone(&interrupted);
 
             let handle = thread::spawn(move || -> Result<(), Error> {
                 let setup = (|| {
@@ -406,6 +432,7 @@ impl Executor {
 
                     if loop_start.elapsed().as_millis() >= duration_limit
                         || abort.load(Ordering::Relaxed)
+                        || interrupted.load(Ordering::Relaxed)
                     {
                         break;
                     }
@@ -946,6 +973,7 @@ impl Executor {
                         &data_stats,
                         &throughput_unit,
                         summary.workload_secs,
+                        self.interrupted,
                     )
                 );
             }
@@ -999,6 +1027,7 @@ impl Executor {
             total_time_ms: self.total_time_ms,
             rampup_time_ms: self.rampup_time_ms,
             rampup_end_ts: self.rampup_end_ts,
+            interrupted: self.interrupted,
             clients: self.n_clients,
             duration_s: self.duration_s,
             rampup_s: self.rampup_s,

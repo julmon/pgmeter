@@ -263,6 +263,19 @@ pub fn kpi_banner(
     println!();
 }
 
+// Tell the user the workload was cut short by Ctrl-C and that the partial
+// run is being aggregated. Goes to stderr like the other status lines.
+pub fn interrupted_msg() {
+    if is_quiet() {
+        return;
+    }
+    eprintln!(
+        "{} {} Interrupted (Ctrl-C): aggregating the partial run; press Ctrl-C again to abort",
+        style("!").yellow().bold(),
+        style("RUN").dim(),
+    );
+}
+
 // Print the path of a generated artifact (e.g. the HTML report) on stderr,
 // indented to match the run header. Suppressed when quiet.
 pub fn artifact_path(label: &str, path: &str) {

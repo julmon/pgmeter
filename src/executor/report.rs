@@ -40,6 +40,8 @@ pub struct ReportInput<'a> {
     /// Log timestamp at which ramp-up ended; earlier samples are excluded from
     /// the histogram and shaded on the time-series charts.
     pub rampup_end_ts: Option<i64>,
+    /// The workload was cut short by Ctrl-C; the figures describe the partial run.
+    pub interrupted: bool,
     pub clients: u16,
     pub duration_s: u16,
     pub rampup_s: u16,
@@ -173,6 +175,7 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
             "duration": input.duration_s,
             "rampup": input.rampup_s,
             "rampupEndS": ts.rampup_end_s,
+            "interrupted": input.interrupted,
             "elapsedMs": input.total_time_ms,
             "scalingUnit": input.spec.scaling.unit,
             "throughputUnit": throughput_unit,
@@ -793,6 +796,7 @@ const metaItems = [
   ['Clients', DATA.meta.clients],
   ['Duration (s)', DATA.meta.duration],
   ['Ramp-up (s)', DATA.meta.rampup],
+  ['Status', DATA.meta.interrupted ? 'interrupted by Ctrl-C (partial run)' : 'completed'],
   ['Elapsed (s)', (DATA.meta.elapsedMs / 1000).toFixed(1)],
   ['Scaling unit', DATA.meta.scalingUnit || '-'],
   ['PostgreSQL', DATA.server.version || '-'],
@@ -1268,6 +1272,7 @@ transactions:
             total_time_ms: 3000,
             rampup_time_ms: 0,
             rampup_end_ts: None,
+            interrupted: false,
             clients: 2,
             duration_s: 3,
             rampup_s: 0,
