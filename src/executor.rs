@@ -58,6 +58,25 @@ const LOG_FILE: &str = "transaction.log";
 const ERROR_FILE: &str = "error.log";
 const RUN_FILE: &str = "run.json";
 
+/// `error.log` holds one record per line (`<ts> <clients> <tx_id> <message>`),
+/// but Lua errors carry a multi-line traceback and PostgreSQL errors can have
+/// `DETAIL:` / `HINT:` lines. Escape line breaks, tabs and the backslash itself
+/// (so the escaping is reversible, as in PostgreSQL's text COPY format) to keep
+/// one error per line for the report parser and for grep/awk users.
+fn escape_log_message(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    for c in message.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 // postgres::Error's Display prints only a terse category such as "db error";
 // the actual server message (e.g. ERROR: relation "warehouse" already exists)
 // lives in its source chain. Build a full message by appending each underlying
@@ -548,7 +567,7 @@ impl Executor {
 
                         // Generate timestamp locally
                         let tx_timestamp = start_time + start_instant.elapsed().as_secs() as i64;
-                        let error_str = msg.error.as_deref().unwrap_or("");
+                        let error_str = escape_log_message(msg.error.as_deref().unwrap_or(""));
 
                         // Format and write the line to the error log file
                         let _ = error_file.write(buffer_i.format(tx_timestamp).as_bytes());
@@ -1040,5 +1059,35 @@ impl Executor {
         }
 
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_log_message;
+
+    // Regression for RELEASE_REVIEW B11: a Lua traceback or a multi-line
+    // PostgreSQL error used to be written raw, breaking the one-record-per-line
+    // layout of error.log that the report parser and shell tools rely on.
+    #[test]
+    fn error_log_messages_stay_on_one_line() {
+        let lua = "runtime error: boom\nstack traceback:\n\t[C]: in function 'error'";
+        let escaped = escape_log_message(lua);
+        assert!(
+            !escaped.contains('\n') && !escaped.contains('\t'),
+            "{escaped}"
+        );
+        assert_eq!(
+            escaped,
+            "runtime error: boom\\nstack traceback:\\n\\t[C]: in function 'error'"
+        );
+
+        let pg = "ERROR: division by zero\r\nDETAIL: path C:\\data";
+        assert_eq!(
+            escape_log_message(pg),
+            "ERROR: division by zero\\r\\nDETAIL: path C:\\\\data"
+        );
+        // Plain messages pass through untouched.
+        assert_eq!(escape_log_message("plain message"), "plain message");
     }
 }

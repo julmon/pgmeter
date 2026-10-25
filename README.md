@@ -143,9 +143,12 @@ Each benchmark run creates a timestamped directory (e.g., `pgmeter-2024-01-15T10
 - `report.html` - Self-contained interactive HTML report (charts + tables, opens offline)
 - `run.json` - Run parameters, elapsed and ramp-up times, and `rampup_end_ts`, the
   `transaction.log` timestamp at which ramp-up ended
-- `transaction.log` - Raw transaction data (timestamp, client, transaction type, response time),
-  ramp-up included
-- `error.log` - Error details for failed transactions
+- `transaction.log` - One line per committed transaction, ramp-up included:
+  `<unix_timestamp> <active_clients> <transaction_id> <response_time_ms>`, space-separated
+- `error.log` - One line per failed transaction:
+  `<unix_timestamp> <active_clients> <transaction_id> <message>`. Line breaks, tabs and
+  backslashes inside the message are escaped as `\n`, `\r`, `\t` and `\\`, so a Lua
+  traceback or a multi-line PostgreSQL error stays on one line
 - `pgmeter-tpm-*.csv` - Transactions per minute over time for each transaction type (whole run)
 - `pgmeter-response-time-*.csv` - Response times over time (whole run)
 - `pgmeter-stats-*.csv` - Statistical summary (mean, std, min, max, percentiles) of the
