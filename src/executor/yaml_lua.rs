@@ -98,16 +98,8 @@ where
 pub fn create_lua_vm() -> LuaResult<Lua> {
     let lua = Lua::new();
 
-    // Register rand_int(min, max) -> integer
-    let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
-        Ok(with_rng(|rng| rng.gen_range(min..=max)))
-    })?;
-    lua.globals().set("rand_int", rand_int)?;
-
-    // Register rand_float(min, max) -> number
-    let rand_float = lua
-        .create_function(|_, (min, max): (f64, f64)| Ok(with_rng(|rng| rng.gen_range(min..max))))?;
-    lua.globals().set("rand_float", rand_float)?;
+    // rand_int(min, max) and rand_float(min, max)
+    register_rand_functions(&lua)?;
 
     // Register begin()
     let begin = lua.create_function(|_, ()| {
@@ -623,14 +615,31 @@ pub fn create_eval_vm_with_context(
     Ok(lua)
 }
 
+/// Register `rand_int(min, max)` (inclusive) and `rand_float(min, max)`
+/// (half-open). The ranges are validated first: `gen_range` panics on an empty
+/// range, and a panic inside an mlua callback takes the whole client or loader
+/// thread down. An empty range (e.g. `rand_int(1, max_id - 1)` with
+/// `max_id == 1`) is a script bug, reported as a Lua error that names the
+/// arguments.
 fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
     let rand_int = lua.create_function(|_, (min, max): (i64, i64)| {
+        if min > max {
+            return Err(LuaError::RuntimeError(format!(
+                "rand_int: empty range, min ({min}) is greater than max ({max})"
+            )));
+        }
         Ok(with_rng(|rng| rng.gen_range(min..=max)))
     })?;
     lua.globals().set("rand_int", rand_int)?;
 
-    let rand_float = lua
-        .create_function(|_, (min, max): (f64, f64)| Ok(with_rng(|rng| rng.gen_range(min..max))))?;
+    let rand_float = lua.create_function(|_, (min, max): (f64, f64)| {
+        if !min.is_finite() || !max.is_finite() || min >= max {
+            return Err(LuaError::RuntimeError(format!(
+                "rand_float: invalid range [{min}, {max}), min must be lower than max and both finite"
+            )));
+        }
+        Ok(with_rng(|rng| rng.gen_range(min..max)))
+    })?;
     lua.globals().set("rand_float", rand_float)?;
     Ok(())
 }
@@ -947,6 +956,37 @@ mod tests {
         for _ in 0..100 {
             let f: f64 = lua.load("return rand_float(1.0, 2.0)").eval().unwrap();
             assert!((1.0..2.0).contains(&f));
+        }
+    }
+
+    // Regression for RELEASE_REVIEW B5: an empty range used to panic inside
+    // the callback (`gen_range` "cannot sample empty range"), killing the
+    // client thread. It must be an ordinary Lua error the script can see.
+    #[test]
+    fn rand_int_and_float_reject_empty_ranges_without_panicking() {
+        for vm in [create_eval_vm().unwrap(), create_lua_vm().unwrap()] {
+            let err = vm.load("return rand_int(5, 1)").eval::<i64>().unwrap_err();
+            assert!(err.to_string().contains("rand_int: empty range"), "{err}");
+
+            for call in [
+                "rand_float(2.0, 1.0)",
+                "rand_float(1.0, 1.0)",
+                "rand_float(0/0, 1.0)",
+            ] {
+                let err = vm.load(format!("return {call}")).eval::<f64>().unwrap_err();
+                assert!(
+                    err.to_string().contains("rand_float: invalid range"),
+                    "{call}: {err}"
+                );
+            }
+
+            // pcall sees it as a regular error, so scripts can handle it.
+            let (ok, msg): (bool, String) = vm
+                .load("local ok, err = pcall(rand_int, 10, 2); return ok, tostring(err)")
+                .eval()
+                .unwrap();
+            assert!(!ok);
+            assert!(msg.contains("rand_int: empty range"), "{msg}");
         }
     }
 
