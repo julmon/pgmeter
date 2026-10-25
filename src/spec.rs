@@ -12,8 +12,7 @@ use tabled::{
     object::Columns,
     style::{HorizontalLine, Line},
     width::Width,
-    ModifyObject,
-    Style,
+    ModifyObject, Style,
 };
 
 static SAMPLES: Dir = include_dir!("$CARGO_MANIFEST_DIR/samples");
@@ -63,7 +62,11 @@ pub fn list_entries() -> Vec<SpecInfo> {
                 Some(m) => (m.name, m.description.map(|d| collapse_ws(&d))),
                 None => (dir.clone(), None),
             };
-            SpecInfo { dir, name, description }
+            SpecInfo {
+                dir,
+                name,
+                description,
+            }
         })
         .collect();
     infos.sort_by(|a, b| a.dir.cmp(&b.dir));
@@ -94,7 +97,11 @@ pub fn print_list() {
                 .off_vertical()
                 .horizontals([HorizontalLine::new(1, Line::filled('─'))]),
         )
-        .with(Columns::single(2).modify().with(Width::wrap(60).keep_words()));
+        .with(
+            Columns::single(2)
+                .modify()
+                .with(Width::wrap(60).keep_words()),
+        );
 
     println!("{}", table);
 }

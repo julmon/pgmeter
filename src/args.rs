@@ -1,13 +1,13 @@
 extern crate clap;
 
 use clap::{Arg, ArgAction, ColorChoice, Command};
-use std::ffi::OsString;
 use std::env;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use users::{get_user_by_uid, get_current_uid};
 use urlencoding::encode;
+use users::{get_current_uid, get_user_by_uid};
 
 // clap value parser for --spec: accept either a benchmark directory (resolved
 // to <dir>/spec.yaml) or a single spec file, and fail fast at parse time if
@@ -27,13 +27,16 @@ fn spec_file_value(s: &str) -> Result<PathBuf, String> {
     }
 }
 
-
 // The sub-command the user invoked.
 pub enum Action {
     Init,
     Run,
     // Scaffold an embedded benchmark spec to disk for editing.
-    SpecNew { benchmark: String, output: String, force: bool },
+    SpecNew {
+        benchmark: String,
+        output: String,
+        force: bool,
+    },
     // List the benchmarks available to scaffold.
     SpecList,
 }
@@ -52,7 +55,10 @@ fn output_format_value(s: &str) -> Result<OutputFormat, String> {
         "table" => Ok(OutputFormat::Table),
         "json" => Ok(OutputFormat::Json),
         "csv" => Ok(OutputFormat::Csv),
-        other => Err(format!("invalid output format '{}' (expected table, json or csv)", other)),
+        other => Err(format!(
+            "invalid output format '{}' (expected table, json or csv)",
+            other
+        )),
     }
 }
 
@@ -109,20 +115,31 @@ pub struct PgMtrArgs {
 // Implementation of RunArgs::empty()
 impl RunArgs {
     fn empty() -> Self {
-        RunArgs {client: 0, time: 0, rampup: 0, progress: 0}
+        RunArgs {
+            client: 0,
+            time: 0,
+            rampup: 0,
+            progress: 0,
+        }
     }
 }
 
 // Implementation of InitArgs::empty()
 impl InitArgs {
     fn empty() -> Self {
-        InitArgs {scalefactor: 0, jobs: 0, no_fkey: false, post_create_table: None}
+        InitArgs {
+            scalefactor: 0,
+            jobs: 0,
+            no_fkey: false,
+            post_create_table: None,
+        }
     }
 }
 
 impl PgMtrArgs {
     pub fn new(default_username: String) -> Self {
-        Self::new_from(default_username, std::env::args_os().into_iter()).unwrap_or_else(|e| e.exit())
+        Self::new_from(default_username, std::env::args_os().into_iter())
+            .unwrap_or_else(|e| e.exit())
     }
 
     fn new_from<I, T>(default_username: String, args: I) -> Result<Self, clap::Error>
@@ -130,7 +147,6 @@ impl PgMtrArgs {
         I: Iterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-
         // Global options
         // Define the global --host/-H command line option
         let host_option = Arg::new("host")
@@ -374,29 +390,24 @@ impl PgMtrArgs {
         let matches = cmd.try_get_matches_from(args)?;
 
         // Extract the actual values
-        let host = matches
-            .get_one::<String>("host")
-            .unwrap();
-        let port = *matches
-            .get_one::<u16>("port")
-            .unwrap();
-        let username = matches
-            .get_one::<String>("username")
-            .unwrap();
-        let dbname = matches
-            .get_one::<String>("dbname")
-            .unwrap();
+        let host = matches.get_one::<String>("host").unwrap();
+        let port = *matches.get_one::<u16>("port").unwrap();
+        let username = matches.get_one::<String>("username").unwrap();
+        let dbname = matches.get_one::<String>("dbname").unwrap();
 
         // Helper function to parse init arguments
         fn parse_init_args(bm_m: &clap::ArgMatches) -> InitArgs {
             let scalefactor = *bm_m.get_one::<u32>("scalefactor").unwrap();
             let jobs = *bm_m.get_one::<u32>("jobs").unwrap();
             let no_fkey = bm_m.get_flag("no_fkey");
-            let post_create_table = bm_m
-                .get_one::<String>("post_create_table")
-                .cloned();
+            let post_create_table = bm_m.get_one::<String>("post_create_table").cloned();
 
-            InitArgs {scalefactor, jobs, no_fkey, post_create_table}
+            InitArgs {
+                scalefactor,
+                jobs,
+                no_fkey,
+                post_create_table,
+            }
         }
 
         // Helper function to parse run arguments
@@ -406,7 +417,12 @@ impl PgMtrArgs {
             let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
             let progress = *bm_m.get_one::<u16>("progress").unwrap();
 
-            RunArgs {client, time, rampup, progress}
+            RunArgs {
+                client,
+                time,
+                rampup,
+                progress,
+            }
         }
 
         // Extract the validated --spec path as a string for downstream use.
@@ -416,65 +432,85 @@ impl PgMtrArgs {
         }
 
         // Extract subcommand options
-        let (run_args, init_args, action, spec_file, output_format, quiet) = match matches.subcommand_name() {
-            Some("init") => {
-                let init_m = matches.subcommand_matches("init").unwrap();
-                let init_args = parse_init_args(init_m);
-                let spec = spec_path(init_m);
-                let quiet = init_m.get_flag("quiet");
+        let (run_args, init_args, action, spec_file, output_format, quiet) =
+            match matches.subcommand_name() {
+                Some("init") => {
+                    let init_m = matches.subcommand_matches("init").unwrap();
+                    let init_args = parse_init_args(init_m);
+                    let spec = spec_path(init_m);
+                    let quiet = init_m.get_flag("quiet");
 
-                (RunArgs::empty(), init_args, Action::Init, spec, OutputFormat::Table, quiet)
-            },
-            Some("run") => {
-                let run_m = matches.subcommand_matches("run").unwrap();
-                let run_args = parse_run_args(run_m);
-                let spec = spec_path(run_m);
-                let format = *run_m.get_one::<OutputFormat>("format").unwrap();
-                let quiet = run_m.get_flag("quiet");
+                    (
+                        RunArgs::empty(),
+                        init_args,
+                        Action::Init,
+                        spec,
+                        OutputFormat::Table,
+                        quiet,
+                    )
+                }
+                Some("run") => {
+                    let run_m = matches.subcommand_matches("run").unwrap();
+                    let run_args = parse_run_args(run_m);
+                    let spec = spec_path(run_m);
+                    let format = *run_m.get_one::<OutputFormat>("format").unwrap();
+                    let quiet = run_m.get_flag("quiet");
 
-                (run_args, InitArgs::empty(), Action::Run, spec, format, quiet)
-            },
-            Some("spec") => {
-                let spec_m = matches.subcommand_matches("spec").unwrap();
-                let action = match spec_m.subcommand_name() {
-                    Some("new") => {
-                        let m = spec_m.subcommand_matches("new").unwrap();
-                        Action::SpecNew {
-                            benchmark: m.get_one::<String>("benchmark").unwrap().clone(),
-                            output: m.get_one::<String>("output").unwrap().clone(),
-                            force: m.get_flag("force"),
+                    (
+                        run_args,
+                        InitArgs::empty(),
+                        Action::Run,
+                        spec,
+                        format,
+                        quiet,
+                    )
+                }
+                Some("spec") => {
+                    let spec_m = matches.subcommand_matches("spec").unwrap();
+                    let action = match spec_m.subcommand_name() {
+                        Some("new") => {
+                            let m = spec_m.subcommand_matches("new").unwrap();
+                            Action::SpecNew {
+                                benchmark: m.get_one::<String>("benchmark").unwrap().clone(),
+                                output: m.get_one::<String>("output").unwrap().clone(),
+                                force: m.get_flag("force"),
+                            }
                         }
-                    },
-                    Some("list") => Action::SpecList,
-                    // subcommand_required(true) on `spec` guarantees a match.
-                    _ => unreachable!("a spec subcommand is required"),
-                };
+                        Some("list") => Action::SpecList,
+                        // subcommand_required(true) on `spec` guarantees a match.
+                        _ => unreachable!("a spec subcommand is required"),
+                    };
 
-                (RunArgs::empty(), InitArgs::empty(), action, None, OutputFormat::Table, false)
-            },
-            // subcommand_required(true) guarantees a subcommand was matched.
-            _ => unreachable!("a subcommand is required"),
-        };
+                    (
+                        RunArgs::empty(),
+                        InitArgs::empty(),
+                        action,
+                        None,
+                        OutputFormat::Table,
+                        false,
+                    )
+                }
+                // subcommand_required(true) guarantees a subcommand was matched.
+                _ => unreachable!("a subcommand is required"),
+            };
 
         // Resolve the password now that the connection target is known, so a
         // .pgpass lookup can match on host/port/database/user.
         let password = resolve_password(host, port, dbname, username);
 
-        Ok(
-            PgMtrArgs {
-                host: host.to_string(),
-                port: port,
-                username: username.to_string(),
-                password: password,
-                dbname: dbname.to_string(),
-                action: action,
-                quiet: quiet,
-                run_args: run_args,
-                init_args: init_args,
-                spec_file: spec_file,
-                output_format: output_format,
-            }
-        )
+        Ok(PgMtrArgs {
+            host: host.to_string(),
+            port: port,
+            username: username.to_string(),
+            password: password,
+            dbname: dbname.to_string(),
+            action: action,
+            quiet: quiet,
+            run_args: run_args,
+            init_args: init_args,
+            spec_file: spec_file,
+            output_format: output_format,
+        })
     }
 }
 
@@ -642,7 +678,10 @@ mod tests {
             "hunter2".to_string(),
         );
         // No matching line -> empty password.
-        assert_eq!(resolve_password("localhost", 5432, "db", "other"), String::new());
+        assert_eq!(
+            resolve_password("localhost", 5432, "db", "other"),
+            String::new()
+        );
 
         std::env::remove_var("PGPASSFILE");
         std::fs::remove_file(&path).ok();

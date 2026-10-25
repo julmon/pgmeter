@@ -63,7 +63,10 @@ struct Series {
 }
 
 // Generate the self-contained HTML report into the run's target directory.
-pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Box<dyn std::error::Error>> {
+pub fn generate(
+    input: &ReportInput,
+    client: &mut Client,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let server = fetch_server_info(client);
     let data_info = fetch_data_info(client, input.spec);
 
@@ -141,8 +144,8 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Box
     let peak_throughput = ts.total_tpm.iter().copied().fold(0u64, u64::max);
 
     let palette = [
-        "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1",
-        "#ff9da7", "#9c755f", "#bab0ac",
+        "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
+        "#9c755f", "#bab0ac",
     ];
 
     let per_tx_throughput: Vec<_> = ts
@@ -177,9 +180,7 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Box
         .collect();
     let percentiles: Vec<_> = tx_rows
         .iter()
-        .map(|r| {
-            json!({"name": r.name, "mean": r.mean, "p95": r.p95, "p99": r.p99, "max": r.max})
-        })
+        .map(|r| json!({"name": r.name, "mean": r.mean, "p95": r.p95, "p99": r.p99, "max": r.max}))
         .collect();
 
     let generated_at: DateTime<Utc> = Utc::now();
@@ -257,7 +258,10 @@ const TARGET_BUCKETS: u64 = 1000;
 // aggregates rows into at most TARGET_BUCKETS time buckets plus a
 // bounded-memory latency histogram. All series share the earliest timestamp as
 // their origin.
-fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Box<dyn std::error::Error>> {
+fn build_time_series(
+    input: &ReportInput,
+    factor: f64,
+) -> Result<TimeSeries, Box<dyn std::error::Error>> {
     let name_by_id: HashMap<u16, String> = input
         .transactions
         .iter()
@@ -270,7 +274,11 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Box
     let mut max_ts = i64::MIN;
     if let Ok(f) = File::open(&log_path) {
         for line in BufReader::new(f).lines().flatten() {
-            if let Some(ts) = line.split_whitespace().next().and_then(|v| v.parse::<i64>().ok()) {
+            if let Some(ts) = line
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<i64>().ok())
+            {
                 min_ts = min_ts.min(ts);
                 max_ts = max_ts.max(ts);
             }
@@ -313,7 +321,10 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Box
     // X axis is each bucket's start second, so "Elapsed (s)" stays meaningful.
     let time_axis: Vec<u64> = (0..n_buckets as u64).map(|b| b * bucket_secs).collect();
     // Throughput is a per-second rate (count / bucket width) scaled by the unit factor.
-    let total_tpm: Vec<u64> = total_count.iter().map(|c| (*c as f64 / bw * factor) as u64).collect();
+    let total_tpm: Vec<u64> = total_count
+        .iter()
+        .map(|c| (*c as f64 / bw * factor) as u64)
+        .collect();
 
     // Build one aligned series per transaction, preserving spec order.
     let mut series: Vec<Series> = Vec::new();
@@ -368,7 +379,10 @@ impl LatencyHistogram {
         ((HIST_MAX_MS / HIST_MIN_MS).ln() / HIST_GROWTH.ln()).ceil() as usize + 2
     }
     fn new() -> Self {
-        LatencyHistogram { counts: vec![0; Self::n_bins()], total: 0 }
+        LatencyHistogram {
+            counts: vec![0; Self::n_bins()],
+            total: 0,
+        }
     }
     fn upper_edge(i: usize) -> f64 {
         if i == 0 {
@@ -441,7 +455,11 @@ fn build_error_series(input: &ReportInput, min_ts: i64, bucket_secs: u64) -> (Ve
     let mut any = false;
     if let Ok(f) = File::open(&path) {
         for line in BufReader::new(f).lines().flatten() {
-            if let Some(ts) = line.split_whitespace().next().and_then(|v| v.parse::<i64>().ok()) {
+            if let Some(ts) = line
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<i64>().ok())
+            {
                 let sec = (ts - min_ts).max(0) as u64;
                 let bucket = sec / bucket_secs;
                 *by_bucket.entry(bucket).or_insert(0) += 1;
@@ -454,7 +472,9 @@ fn build_error_series(input: &ReportInput, min_ts: i64, bucket_secs: u64) -> (Ve
         return (Vec::new(), Vec::new());
     }
     let axis: Vec<u64> = (0..=max_bucket).map(|b| b * bucket_secs).collect();
-    let counts: Vec<u64> = (0..=max_bucket).map(|b| by_bucket.get(&b).copied().unwrap_or(0)).collect();
+    let counts: Vec<u64> = (0..=max_bucket)
+        .map(|b| by_bucket.get(&b).copied().unwrap_or(0))
+        .collect();
     (axis, counts)
 }
 
@@ -777,8 +797,18 @@ transactions:
 
         let spec = minimal_spec();
         let transactions = vec![
-            BenchmarkTransaction { id: 1, name: "alpha".into(), weight: 50, description: String::new() },
-            BenchmarkTransaction { id: 2, name: "beta".into(), weight: 50, description: String::new() },
+            BenchmarkTransaction {
+                id: 1,
+                name: "alpha".into(),
+                weight: 50,
+                description: String::new(),
+            },
+            BenchmarkTransaction {
+                id: 2,
+                name: "beta".into(),
+                weight: 50,
+                description: String::new(),
+            },
         ];
         let counters: HashMap<u16, Counter> = HashMap::new();
         let stats: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
@@ -838,7 +868,11 @@ transactions:
     #[test]
     fn inlined_chart_js_keeps_license_header_in_reports() {
         let html = render_html("{}");
-        for needle in ["Chart.js v", "Chart.js Contributors", "Released under the MIT License"] {
+        for needle in [
+            "Chart.js v",
+            "Chart.js Contributors",
+            "Released under the MIT License",
+        ] {
             assert!(CHART_JS.contains(needle), "vendored asset lacks {needle:?}");
             assert!(html.contains(needle), "rendered report lacks {needle:?}");
         }

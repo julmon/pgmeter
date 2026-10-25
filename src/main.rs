@@ -1,5 +1,5 @@
-mod executor;
 mod args;
+mod executor;
 mod spec;
 
 use args::{Action, OutputFormat};
@@ -14,8 +14,12 @@ fn main() {
         Action::SpecList => {
             spec::print_list();
             return;
-        },
-        Action::SpecNew { benchmark, output, force } => {
+        }
+        Action::SpecNew {
+            benchmark,
+            output,
+            force,
+        } => {
             match spec::new(benchmark, output, *force) {
                 Ok(path) => println!("Created {}", path.display()),
                 Err(e) => {
@@ -24,7 +28,7 @@ fn main() {
                 }
             }
             return;
-        },
+        }
         _ => {}
     }
 
@@ -46,7 +50,7 @@ fn main() {
                 .aggregate_data()
                 .generate_report()
                 .print_results(output_format);
-        },
+        }
         Action::Init => {
             executor::Executor::new(dsn, spec_file)
                 .init_db_schema()
@@ -57,7 +61,7 @@ fn main() {
                 .add_indexes(env.init_args.jobs)
                 .vacuum(env.init_args.jobs)
                 .checkpoint();
-        },
+        }
         // Spec subcommands are handled and returned above.
         Action::SpecNew { .. } | Action::SpecList => unreachable!(),
     }
@@ -71,10 +75,19 @@ mod tests {
     #[test]
     fn package_metadata_is_release_ready() {
         assert_eq!(env!("CARGO_PKG_LICENSE"), "PostgreSQL");
-        assert!(!env!("CARGO_PKG_DESCRIPTION").is_empty(), "description is required");
+        assert!(
+            !env!("CARGO_PKG_DESCRIPTION").is_empty(),
+            "description is required"
+        );
         assert!(!env!("CARGO_PKG_AUTHORS").is_empty(), "authors is required");
-        assert_eq!(env!("CARGO_PKG_REPOSITORY"), "https://github.com/julmon/pgmeter");
-        assert!(!env!("CARGO_PKG_HOMEPAGE").is_empty(), "homepage is required");
+        assert_eq!(
+            env!("CARGO_PKG_REPOSITORY"),
+            "https://github.com/julmon/pgmeter"
+        );
+        assert!(
+            !env!("CARGO_PKG_HOMEPAGE").is_empty(),
+            "homepage is required"
+        );
         assert_eq!(env!("CARGO_PKG_README"), "README.md");
     }
 
