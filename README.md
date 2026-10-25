@@ -238,7 +238,7 @@ are trademarks of the Transaction Processing Performance Council. See
 
 ## License
 
-This project is open source. See the LICENSE file for details.
+pgmeter is released under the [PostgreSQL License](LICENSE).
 
 ## Contributing
 
