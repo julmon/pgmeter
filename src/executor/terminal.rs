@@ -269,10 +269,9 @@ pub fn finish_run_bar(bar: ProgressBar, duration_ms: f64) {
         return;
     }
     eprintln!(
-        "{} {} {}  {}",
+        "{} {} Workload complete  {}",
         style("✔").green().bold(),
         style("RUN").dim(),
-        "Workload complete",
         style(fmt_duration_ms(duration_ms)).dim(),
     );
 }

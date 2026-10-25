@@ -11,10 +11,8 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use itoa;
 use postgres::{Client, NoTls};
 use rand::prelude::*;
-use ryu;
 
 mod benchmark;
 mod data_agg;
@@ -30,6 +28,9 @@ use benchmark::{
     Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics, TransactionSummary,
 };
 use txmessage::{TXMessage, TXMessageKind};
+
+/// Per-transaction counters returned by the data collector when it finishes.
+type Counters = HashMap<u16, Counter>;
 use yaml_benchmark::YamlBenchmark;
 
 pub struct Executor {
@@ -103,8 +104,8 @@ pub fn get_target_dir_path() -> PathBuf {
 impl Executor {
     pub fn new(dsn: String, spec_file: String) -> Executor {
         Executor {
-            dsn: dsn,
-            spec_file: spec_file,
+            dsn,
+            spec_file,
             counters: HashMap::new(),
             total_time_ms: 0,
             rampup_time_ms: 0,
@@ -136,10 +137,7 @@ impl Executor {
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
         // Channels used to send back the counters once data collector has finished its work.
-        let (tx_counters, rx_counters): (
-            Sender<HashMap<u16, Counter>>,
-            Receiver<HashMap<u16, Counter>>,
-        ) = unbounded();
+        let (tx_counters, rx_counters): (Sender<Counters>, Receiver<Counters>) = unbounded();
 
         // Track total execution time in ms
         let start = Instant::now();
@@ -164,7 +162,7 @@ impl Executor {
                 std::process::exit(1);
             }
         };
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         // Start data collector
         let dc_tx_counters = tx_counters.clone();
@@ -190,7 +188,7 @@ impl Executor {
                     std::process::exit(1);
                 }
             };
-            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+            terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
             max_id
         };
 
@@ -257,6 +255,8 @@ impl Executor {
 
     /// Benchmark execution using one std::thread per client, each on its own
     /// blocking connection (matches pgbench's load-generation model).
+    // TODO(RELEASE_REVIEW D3/D11): bundle the run parameters into a struct.
+    #[allow(clippy::too_many_arguments)]
     fn run_benchmark_sync(
         &mut self,
         n_clients: u16,
@@ -438,14 +438,16 @@ impl Executor {
                 // Exit thread
                 match msg.kind {
                     // Terminate data collector
-                    TXMessageKind::TERMINATE => {
+                    TXMessageKind::Terminate => {
                         break;
                     }
                     // Committed transaction
-                    TXMessageKind::COMMITTED => {
+                    TXMessageKind::Committed => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        if !client_ids.contains_key(&msg.client_id) {
-                            client_ids.insert(msg.client_id, true);
+                        if let std::collections::btree_map::Entry::Vacant(e) =
+                            client_ids.entry(msg.client_id)
+                        {
+                            e.insert(true);
                             n_client += 1;
                         }
 
@@ -487,10 +489,12 @@ impl Executor {
                         let _ = log_file.write(buffer_f.format(duration_ms).as_bytes());
                         let _ = log_file.write(b"\n");
                     }
-                    TXMessageKind::ERROR => {
+                    TXMessageKind::Error => {
                         // Keep a track of the client_ids and increment n_client if this is a new client_id
-                        if !client_ids.contains_key(&msg.client_id) {
-                            client_ids.insert(msg.client_id, true);
+                        if let std::collections::btree_map::Entry::Vacant(e) =
+                            client_ids.entry(msg.client_id)
+                        {
+                            e.insert(true);
                             n_client += 1;
                         }
 
@@ -522,10 +526,10 @@ impl Executor {
                         let _ = error_file.write(error_str.as_bytes());
                         let _ = error_file.write(b"\n");
                     }
-                    TXMessageKind::ENDOFRAMPUP => {
+                    TXMessageKind::EndOfRampup => {
                         ramping_up = false;
                     }
-                    TXMessageKind::DEFAULT => {
+                    TXMessageKind::Default => {
                         // Should not happen
                     }
                 }
@@ -567,7 +571,7 @@ impl Executor {
                 std::process::exit(1);
             }
         };
-        let duration_ms = duration_us as f64 / 1000 as f64;
+        let duration_ms = duration_us as f64 / 1000_f64;
 
         terminal::done_msg(duration_ms);
 
@@ -632,7 +636,7 @@ impl Executor {
                 std::process::exit(1);
             }
         };
-        let duration_ms = duration_us as f64 / 1000 as f64;
+        let duration_ms = duration_us as f64 / 1000_f64;
 
         terminal::done_msg(duration_ms);
 
@@ -686,7 +690,7 @@ impl Executor {
         for job in jobs {
             job.join().expect("the client thread panicked");
         }
-        let duration_ms = start.elapsed().as_micros() as f64 / 1000 as f64;
+        let duration_ms = start.elapsed().as_micros() as f64 / 1000_f64;
         terminal::done_msg(duration_ms);
 
         self
@@ -699,10 +703,8 @@ impl Executor {
         for _ in 0..n_jobs {
             rows.push(Vec::new());
         }
-        let mut n = 1;
-        for stmt in stmts.iter() {
-            rows[(n % n_jobs) as usize].push(stmt.sql.clone());
-            n += 1;
+        for (n, stmt) in stmts.iter().enumerate() {
+            rows[(n + 1) % n_jobs as usize].push(stmt.sql.clone());
         }
         let mut jobs = Vec::new();
 
@@ -774,7 +776,7 @@ impl Executor {
 
         terminal::start_msg("INIT", "Primary keys creation");
         self.exec_stmts(n_jobs, benchmark.get_pkey_ddls(), true);
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }
@@ -797,7 +799,7 @@ impl Executor {
 
         terminal::start_msg("INIT", "Foreign keys creation");
         self.exec_stmts(1, benchmark.get_fkey_ddls(), true);
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }
@@ -810,7 +812,7 @@ impl Executor {
 
         terminal::start_msg("INIT", "Additional indexes creation");
         self.exec_stmts(n_jobs, benchmark.get_index_ddls(), true);
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }
@@ -823,7 +825,7 @@ impl Executor {
 
         terminal::start_msg("INIT", "Vacuuming tables");
         self.exec_stmts(n_jobs, benchmark.get_vacuum_stmts(), false);
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }
@@ -843,7 +845,7 @@ impl Executor {
             }
         }
 
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }
@@ -864,7 +866,7 @@ impl Executor {
             }
         }
 
-        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000 as f64);
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
         self
     }

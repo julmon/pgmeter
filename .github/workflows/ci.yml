@@ -36,12 +36,9 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # Lints are reported but do not block yet: the tree still has pre-existing
-  # clippy warnings (RELEASE_REVIEW D2). Drop `continue-on-error` when D2 lands.
   clippy:
     name: clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

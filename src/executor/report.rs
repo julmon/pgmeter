@@ -273,7 +273,7 @@ fn build_time_series(
     let mut min_ts = i64::MAX;
     let mut max_ts = i64::MIN;
     if let Ok(f) = File::open(&log_path) {
-        for line in BufReader::new(f).lines().flatten() {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
             if let Some(ts) = line
                 .split_whitespace()
                 .next()
@@ -289,8 +289,8 @@ fn build_time_series(
     }
 
     let total_secs = (max_ts - min_ts) as u64 + 1;
-    let bucket_secs = ((total_secs + TARGET_BUCKETS - 1) / TARGET_BUCKETS).max(1);
-    let n_buckets = ((total_secs + bucket_secs - 1) / bucket_secs) as usize;
+    let bucket_secs = total_secs.div_ceil(TARGET_BUCKETS).max(1);
+    let n_buckets = total_secs.div_ceil(bucket_secs) as usize;
     let bw = bucket_secs as f64;
 
     let mut total_count = vec![0u64; n_buckets];
@@ -301,7 +301,7 @@ fn build_time_series(
 
     // Pass 2: aggregate into buckets and the histogram, still streaming.
     if let Ok(f) = File::open(&log_path) {
-        for line in BufReader::new(f).lines().flatten() {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
             let mut parts = line.split_whitespace();
             let ts = parts.next().and_then(|v| v.parse::<i64>().ok());
             let _client = parts.next();
@@ -454,7 +454,7 @@ fn build_error_series(input: &ReportInput, min_ts: i64, bucket_secs: u64) -> (Ve
     let mut max_bucket: u64 = 0;
     let mut any = false;
     if let Ok(f) = File::open(&path) {
-        for line in BufReader::new(f).lines().flatten() {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
             if let Some(ts) = line
                 .split_whitespace()
                 .next()
@@ -734,167 +734,6 @@ const DATA = {data};
         data = json_blob,
         app_js = APP_JS,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashMap;
-
-    fn minimal_spec() -> BenchmarkSpec {
-        let yaml = r#"
-name: test-bench
-description: a tiny spec
-scaling:
-  unit: tenant
-  max_id_query: "SELECT 1"
-schema:
-  tables: []
-transactions:
-  - id: 1
-    name: alpha
-    weight: 50
-  - id: 2
-    name: beta
-    weight: 50
-"#;
-        serde_yaml::from_str(yaml).expect("valid spec")
-    }
-
-    fn write(path: &PathBuf, contents: &str) {
-        let mut f = File::create(path).unwrap();
-        f.write_all(contents.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn histogram_caps_at_p99_with_overflow_bucket() {
-        // 99 values at 1.0 and one huge outlier; the outlier must land in the
-        // trailing overflow bucket rather than stretching every bin.
-        let mut hist = LatencyHistogram::new();
-        for _ in 0..99 {
-            hist.add(1.0);
-        }
-        hist.add(1000.0);
-        let (labels, counts) = hist.finish();
-        assert_eq!(labels.len(), 31);
-        assert_eq!(counts.len(), 31);
-        assert!(labels.last().unwrap().starts_with('>'));
-        assert_eq!(counts.iter().sum::<u64>(), 100);
-        assert_eq!(*counts.last().unwrap(), 1);
-    }
-
-    #[test]
-    fn time_series_align_on_shared_origin() {
-        let dir = std::env::temp_dir().join(format!("pgmeter-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // tx 1 at t=100,101; tx 2 at t=101,102. Shared origin = 100 -> 3 seconds.
-        write(
-            &dir.join("transaction.log"),
-            "100 1 1 5.0\n100 1 1 7.0\n101 1 2 3.0\n102 2 1 9.0\n102 2 2 4.0\n",
-        );
-        write(&dir.join("error.log"), "101 1 2 boom\n");
-
-        let spec = minimal_spec();
-        let transactions = vec![
-            BenchmarkTransaction {
-                id: 1,
-                name: "alpha".into(),
-                weight: 50,
-                description: String::new(),
-            },
-            BenchmarkTransaction {
-                id: 2,
-                name: "beta".into(),
-                weight: 50,
-                description: String::new(),
-            },
-        ];
-        let counters: HashMap<u16, Counter> = HashMap::new();
-        let stats: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
-        let input = ReportInput {
-            target_dir: &dir,
-            log_file: "transaction.log",
-            error_file: "error.log",
-            spec: &spec,
-            transactions: &transactions,
-            counters: &counters,
-            stats: &stats,
-            total_time_ms: 3000,
-            rampup_time_ms: 0,
-            clients: 2,
-            duration_s: 3,
-            rampup_s: 0,
-        };
-
-        let ts = build_time_series(&input, 60.0).unwrap();
-        assert_eq!(ts.time_axis, vec![0, 1, 2]);
-        // Total per-second counts *60: sec0=2, sec1=1, sec2=2.
-        assert_eq!(ts.total_tpm, vec![120, 60, 120]);
-        assert_eq!(ts.series.len(), 2);
-
-        let alpha = ts.series.iter().find(|s| s.name == "alpha").unwrap();
-        assert_eq!(alpha.tpm, vec![120, 0, 60]);
-        assert_eq!(alpha.latency[0], 6.0); // mean of 5.0 and 7.0
-
-        // One error at second 1 relative to origin.
-        assert_eq!(ts.error_time_axis, vec![0, 1]);
-        assert_eq!(ts.error_counts, vec![0, 1]);
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn rendered_html_embeds_data_and_canvases() {
-        let html = render_html(r#"{"meta":{"name":"x"}}"#);
-        assert!(html.contains("const DATA = {\"meta\":{\"name\":\"x\"}};"));
-        assert!(html.contains("id=\"throughput\""));
-        assert!(html.contains("id=\"histogram\""));
-        assert!(html.contains("Chart")); // inlined chart.js present
-    }
-
-    // Returns the version string from the vendored Chart.js license header,
-    // e.g. "4.4.1" from " * Chart.js v4.4.1".
-    fn chart_js_version() -> &'static str {
-        let marker = "Chart.js v";
-        let start = CHART_JS.find(marker).expect("Chart.js header missing") + marker.len();
-        let rest = &CHART_JS[start..];
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        &rest[..end]
-    }
-
-    // Chart.js is MIT licensed: its copyright and permission notice must
-    // survive in every generated report, which inlines the file verbatim.
-    #[test]
-    fn inlined_chart_js_keeps_license_header_in_reports() {
-        let html = render_html("{}");
-        for needle in [
-            "Chart.js v",
-            "Chart.js Contributors",
-            "Released under the MIT License",
-        ] {
-            assert!(CHART_JS.contains(needle), "vendored asset lacks {needle:?}");
-            assert!(html.contains(needle), "rendered report lacks {needle:?}");
-        }
-    }
-
-    // THIRD_PARTY_NOTICES.md must exist (include_str! fails to compile
-    // otherwise) and name the exact Chart.js version that is vendored, so a
-    // future asset bump also updates the notice.
-    #[test]
-    fn third_party_notices_cover_embedded_components() {
-        let notices = include_str!("../../THIRD_PARTY_NOTICES.md");
-        let version = chart_js_version();
-        assert!(!version.is_empty());
-        assert!(
-            notices.contains(&format!("Chart.js {version}")),
-            "THIRD_PARTY_NOTICES.md does not mention Chart.js {version}"
-        );
-        assert!(notices.contains("Chart.js Contributors"));
-        assert!(notices.contains("## Luau"));
-        assert!(notices.contains("Roblox Corporation"));
-        assert!(notices.contains("Lua.org, PUC-Rio"));
-    }
 }
 
 const APP_JS: &str = r##"
@@ -1319,3 +1158,164 @@ function applyTheme(name) {
 const themeSelect = document.getElementById('theme-select');
 themeSelect.addEventListener('change', () => applyTheme(themeSelect.value));
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn minimal_spec() -> BenchmarkSpec {
+        let yaml = r#"
+name: test-bench
+description: a tiny spec
+scaling:
+  unit: tenant
+  max_id_query: "SELECT 1"
+schema:
+  tables: []
+transactions:
+  - id: 1
+    name: alpha
+    weight: 50
+  - id: 2
+    name: beta
+    weight: 50
+"#;
+        serde_yaml::from_str(yaml).expect("valid spec")
+    }
+
+    fn write(path: &PathBuf, contents: &str) {
+        let mut f = File::create(path).unwrap();
+        f.write_all(contents.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn histogram_caps_at_p99_with_overflow_bucket() {
+        // 99 values at 1.0 and one huge outlier; the outlier must land in the
+        // trailing overflow bucket rather than stretching every bin.
+        let mut hist = LatencyHistogram::new();
+        for _ in 0..99 {
+            hist.add(1.0);
+        }
+        hist.add(1000.0);
+        let (labels, counts) = hist.finish();
+        assert_eq!(labels.len(), 31);
+        assert_eq!(counts.len(), 31);
+        assert!(labels.last().unwrap().starts_with('>'));
+        assert_eq!(counts.iter().sum::<u64>(), 100);
+        assert_eq!(*counts.last().unwrap(), 1);
+    }
+
+    #[test]
+    fn time_series_align_on_shared_origin() {
+        let dir = std::env::temp_dir().join(format!("pgmeter-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // tx 1 at t=100,101; tx 2 at t=101,102. Shared origin = 100 -> 3 seconds.
+        write(
+            &dir.join("transaction.log"),
+            "100 1 1 5.0\n100 1 1 7.0\n101 1 2 3.0\n102 2 1 9.0\n102 2 2 4.0\n",
+        );
+        write(&dir.join("error.log"), "101 1 2 boom\n");
+
+        let spec = minimal_spec();
+        let transactions = vec![
+            BenchmarkTransaction {
+                id: 1,
+                name: "alpha".into(),
+                weight: 50,
+                description: String::new(),
+            },
+            BenchmarkTransaction {
+                id: 2,
+                name: "beta".into(),
+                weight: 50,
+                description: String::new(),
+            },
+        ];
+        let counters: HashMap<u16, Counter> = HashMap::new();
+        let stats: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
+        let input = ReportInput {
+            target_dir: &dir,
+            log_file: "transaction.log",
+            error_file: "error.log",
+            spec: &spec,
+            transactions: &transactions,
+            counters: &counters,
+            stats: &stats,
+            total_time_ms: 3000,
+            rampup_time_ms: 0,
+            clients: 2,
+            duration_s: 3,
+            rampup_s: 0,
+        };
+
+        let ts = build_time_series(&input, 60.0).unwrap();
+        assert_eq!(ts.time_axis, vec![0, 1, 2]);
+        // Total per-second counts *60: sec0=2, sec1=1, sec2=2.
+        assert_eq!(ts.total_tpm, vec![120, 60, 120]);
+        assert_eq!(ts.series.len(), 2);
+
+        let alpha = ts.series.iter().find(|s| s.name == "alpha").unwrap();
+        assert_eq!(alpha.tpm, vec![120, 0, 60]);
+        assert_eq!(alpha.latency[0], 6.0); // mean of 5.0 and 7.0
+
+        // One error at second 1 relative to origin.
+        assert_eq!(ts.error_time_axis, vec![0, 1]);
+        assert_eq!(ts.error_counts, vec![0, 1]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rendered_html_embeds_data_and_canvases() {
+        let html = render_html(r#"{"meta":{"name":"x"}}"#);
+        assert!(html.contains("const DATA = {\"meta\":{\"name\":\"x\"}};"));
+        assert!(html.contains("id=\"throughput\""));
+        assert!(html.contains("id=\"histogram\""));
+        assert!(html.contains("Chart")); // inlined chart.js present
+    }
+
+    // Returns the version string from the vendored Chart.js license header,
+    // e.g. "4.4.1" from " * Chart.js v4.4.1".
+    fn chart_js_version() -> &'static str {
+        let marker = "Chart.js v";
+        let start = CHART_JS.find(marker).expect("Chart.js header missing") + marker.len();
+        let rest = &CHART_JS[start..];
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    // Chart.js is MIT licensed: its copyright and permission notice must
+    // survive in every generated report, which inlines the file verbatim.
+    #[test]
+    fn inlined_chart_js_keeps_license_header_in_reports() {
+        let html = render_html("{}");
+        for needle in [
+            "Chart.js v",
+            "Chart.js Contributors",
+            "Released under the MIT License",
+        ] {
+            assert!(CHART_JS.contains(needle), "vendored asset lacks {needle:?}");
+            assert!(html.contains(needle), "rendered report lacks {needle:?}");
+        }
+    }
+
+    // THIRD_PARTY_NOTICES.md must exist (include_str! fails to compile
+    // otherwise) and name the exact Chart.js version that is vendored, so a
+    // future asset bump also updates the notice.
+    #[test]
+    fn third_party_notices_cover_embedded_components() {
+        let notices = include_str!("../../THIRD_PARTY_NOTICES.md");
+        let version = chart_js_version();
+        assert!(!version.is_empty());
+        assert!(
+            notices.contains(&format!("Chart.js {version}")),
+            "THIRD_PARTY_NOTICES.md does not mention Chart.js {version}"
+        );
+        assert!(notices.contains("Chart.js Contributors"));
+        assert!(notices.contains("## Luau"));
+        assert!(notices.contains("Roblox Corporation"));
+        assert!(notices.contains("Lua.org, PUC-Rio"));
+    }
+}
