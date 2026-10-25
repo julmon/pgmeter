@@ -7,9 +7,12 @@ local carrier_id = rand_int(1, 10)
 begin()
 
 for district_id = 1, 10 do
-    -- Find oldest undelivered order
+    -- Find the oldest undelivered order and lock it. SKIP LOCKED makes two
+    -- clients delivering the same warehouse/district pick different orders
+    -- instead of both processing the same one (the second DELETE would then
+    -- affect no row while orders and customer were still updated).
     local rows = query(
-        "SELECT no_o_id FROM new_order WHERE no_w_id = $1 AND no_d_id = $2 ORDER BY no_o_id ASC LIMIT 1",
+        "SELECT no_o_id FROM new_order WHERE no_w_id = $1 AND no_d_id = $2 ORDER BY no_o_id ASC LIMIT 1 FOR UPDATE SKIP LOCKED",
         warehouse_id, district_id
     )
 
