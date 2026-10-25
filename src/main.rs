@@ -62,3 +62,19 @@ fn main() {
         Action::SpecNew { .. } | Action::SpecList => unreachable!(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Cargo exposes the manifest's package metadata at compile time. These
+    // checks pin the fields a published release needs so an accidental
+    // removal fails the build's tests rather than `cargo publish`.
+    #[test]
+    fn package_metadata_is_release_ready() {
+        assert_eq!(env!("CARGO_PKG_LICENSE"), "PostgreSQL");
+        assert!(!env!("CARGO_PKG_DESCRIPTION").is_empty(), "description is required");
+        assert!(!env!("CARGO_PKG_AUTHORS").is_empty(), "authors is required");
+        assert_eq!(env!("CARGO_PKG_REPOSITORY"), "https://github.com/julmon/pgmeter");
+        assert!(!env!("CARGO_PKG_HOMEPAGE").is_empty(), "homepage is required");
+        assert_eq!(env!("CARGO_PKG_README"), "README.md");
+    }
+}
