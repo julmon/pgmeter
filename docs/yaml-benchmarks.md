@@ -143,6 +143,31 @@ pgmeter [conn opts] run --spec <FILE> [-c <N>] [-T <N>] [-r <N>] [-P <N>] [--for
 > **Use the same `--spec` file for `init` and `run`.** The spec is the single
 > source of truth for both the schema and the workload.
 
+### `spec list` and `spec new`
+
+The bundled workloads are embedded in the binary. `spec list` prints them with
+their title and description; `spec new` writes an editable copy of one into a
+directory, which is the recommended way to start your own benchmark:
+
+```bash
+pgmeter spec list
+pgmeter spec new pgm-c -o .          # creates ./pgm-c/spec.yaml and ./pgm-c/scripts/*.lua
+pgmeter spec new custom-simple -o .  # the smallest template: one table, one transaction
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<BENCHMARK>` | (required) | Name from `spec list` (`pgm-b`, `pgm-c`, `pgm-h`, `pgm-ds`, `pgm-iot`, `custom-simple`) |
+| `-o, --output` | `.` | Directory the benchmark folder is written into |
+| `--force` | false | Overwrite the destination if it already exists |
+
+Edit the copy, then point `init` and `run` at the folder:
+
+```bash
+pgmeter -d benchmark init --spec pgm-c -s 10 -j 4
+pgmeter -d benchmark run  --spec pgm-c -c 8 -T 60
+```
+
 ---
 
 ## 3. Anatomy of a spec file

@@ -76,6 +76,20 @@ pgmeter -H localhost -d benchmark run --spec samples/pgm-b -c 8 -T 60 -r 10
 Swap the `--spec` file to run a different workload — the same `init`/`run` flow
 applies to every spec, including your own.
 
+The bundled workloads are embedded in the binary, so you do not need a source
+checkout to use them. `spec list` shows them and `spec new` writes an editable
+copy (the `spec.yaml` plus its Lua scripts) that you can then tune and run:
+
+```bash
+pgmeter spec list                  # bundled benchmarks and what they model
+pgmeter spec new pgm-c -o .        # writes ./pgm-c/spec.yaml and ./pgm-c/scripts/
+#   ... edit pgm-c/spec.yaml (schema, constants, weights, SQL) ...
+pgmeter -d benchmark init --spec pgm-c -s 10 -j 4
+pgmeter -d benchmark run  --spec pgm-c -c 8 -T 60
+```
+
+`spec new` refuses to overwrite an existing directory unless `--force` is given.
+
 ### Bundled Reference Specs
 
 | Spec | Workload | Type | Derived from | Scale unit |
@@ -89,10 +103,13 @@ applies to every spec, including your own.
 
 ### Writing Your Own Benchmark
 
-The full authoring guide — every spec field, the row-template language, both
-data-loading styles, the simple/script transaction modes, and the complete Lua
-API reference — lives in [`docs/yaml-benchmarks.md`](docs/yaml-benchmarks.md).
-It includes a worked from-scratch example.
+Start from the smallest template, `pgmeter spec new custom-simple -o .`, which
+scaffolds a single-table, single-transaction spec, or from the bundled workload
+closest to yours. The full authoring guide — every spec field, the row-template
+language, both data-loading styles, the simple/script transaction modes, and
+the complete Lua API reference — lives in
+[`docs/yaml-benchmarks.md`](docs/yaml-benchmarks.md). It includes a worked
+from-scratch example.
 
 ## Command Options
 
