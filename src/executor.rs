@@ -28,14 +28,22 @@ use super::args::{OutputFormat, RunArgs};
 use benchmark::{Benchmark, BenchmarkStmt, Counter, ReadWriteSync, ResponseTimeStatistics};
 use txmessage::{TXMessage, TXMessageKind};
 
-/// Per-transaction counters returned by the data collector when it finishes.
-type Counters = HashMap<u16, Counter>;
+/// What the data collector hands back when it finishes: the post-ramp-up
+/// per-transaction counters and the log timestamp (unix seconds, same clock
+/// as `transaction.log`) at which ramp-up ended.
+struct CollectorResult {
+    counters: HashMap<u16, Counter>,
+    rampup_end_ts: Option<i64>,
+}
 use yaml_benchmark::YamlBenchmark;
 
 pub struct Executor {
     dsn: String,
     spec_file: String,
     counters: HashMap<u16, Counter>,
+    /// Log timestamp at which ramp-up ended; samples before it are excluded
+    /// from the statistics and the histogram (RELEASE_REVIEW B2).
+    rampup_end_ts: Option<i64>,
     rampup_time_ms: u128,
     total_time_ms: u128,
     // Run parameters retained for reporting
@@ -48,6 +56,7 @@ pub struct Executor {
 
 const LOG_FILE: &str = "transaction.log";
 const ERROR_FILE: &str = "error.log";
+const RUN_FILE: &str = "run.json";
 
 // postgres::Error's Display prints only a terse category such as "db error";
 // the actual server message (e.g. ERROR: relation "warehouse" already exists)
@@ -106,6 +115,7 @@ impl Executor {
             dsn,
             spec_file,
             counters: HashMap::new(),
+            rampup_end_ts: None,
             total_time_ms: 0,
             rampup_time_ms: 0,
             n_clients: 0,
@@ -136,7 +146,8 @@ impl Executor {
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
         // Channels used to send back the counters once data collector has finished its work.
-        let (tx_counters, rx_counters): (Sender<Counters>, Receiver<Counters>) = unbounded();
+        let (tx_counters, rx_counters): (Sender<CollectorResult>, Receiver<CollectorResult>) =
+            unbounded();
 
         // Track total execution time in ms
         let start = Instant::now();
@@ -224,9 +235,32 @@ impl Executor {
             .expect("the data collector thread panicked");
 
         // Receive counters from the data collector
-        self.counters = rx_counters.recv().unwrap();
+        let result = rx_counters.recv().unwrap();
+        self.counters = result.counters;
+        self.rampup_end_ts = result.rampup_end_ts;
+
+        self.write_run_metadata();
 
         self
+    }
+
+    // Write `run.json` next to the logs: the run parameters and the ramp-up
+    // boundary, so the raw `transaction.log` can be re-analysed with the same
+    // steady-state window the statistics use.
+    fn write_run_metadata(&self) {
+        let doc = serde_json::json!({
+            "clients": self.n_clients,
+            "duration_s": self.duration_s,
+            "rampup_s": self.rampup_s,
+            "total_time_ms": self.total_time_ms,
+            "rampup_time_ms": self.rampup_time_ms,
+            "workload_secs": summary::workload_secs(self.total_time_ms, self.rampup_time_ms),
+            "rampup_end_ts": self.rampup_end_ts,
+        });
+        let path = self.target_dir.join(RUN_FILE);
+        if let Err(error) = std::fs::write(&path, format!("{:#}\n", doc)) {
+            terminal::err_msg(&format!("cannot write {}: {}", path.display(), error));
+        }
     }
 
     // Echo the run configuration to stderr so the output is self-documenting and
@@ -392,7 +426,7 @@ impl Executor {
     fn start_data_collector(
         &mut self,
         rx: Receiver<TXMessage>,
-        tx_counters: Sender<HashMap<u16, Counter>>,
+        tx_counters: Sender<CollectorResult>,
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
     ) -> JoinHandle<()> {
@@ -423,6 +457,7 @@ impl Executor {
             let mut client_ids = BTreeMap::new();
 
             let mut ramping_up: bool = true;
+            let mut rampup_end_ts: Option<i64> = None;
             let mut buffer_i = itoa::Buffer::new();
             let mut buffer_f = ryu::Buffer::new();
 
@@ -527,6 +562,7 @@ impl Executor {
                     }
                     TXMessageKind::EndOfRampup => {
                         ramping_up = false;
+                        rampup_end_ts = Some(start_time + start_instant.elapsed().as_secs() as i64);
                     }
                     TXMessageKind::Default => {
                         // Should not happen
@@ -537,7 +573,12 @@ impl Executor {
             let _ = log_file.flush();
             let _ = error_file.flush();
             // Send counters
-            tx_counters.send(counters).unwrap();
+            tx_counters
+                .send(CollectorResult {
+                    counters,
+                    rampup_end_ts,
+                })
+                .unwrap();
         })
     }
 
@@ -857,7 +898,12 @@ impl Executor {
 
         let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
 
-        match data_agg::aggregate_transaction_data(LOG_FILE, &self.target_dir, &transactions) {
+        match data_agg::aggregate_transaction_data(
+            LOG_FILE,
+            &self.target_dir,
+            &transactions,
+            self.rampup_end_ts,
+        ) {
             Ok(_) => (),
             Err(error) => {
                 terminal::err_msg(error_detail(error.as_ref()).as_str());
@@ -979,6 +1025,7 @@ impl Executor {
             stats: &stats,
             total_time_ms: self.total_time_ms,
             rampup_time_ms: self.rampup_time_ms,
+            rampup_end_ts: self.rampup_end_ts,
             clients: self.n_clients,
             duration_s: self.duration_s,
             rampup_s: self.rampup_s,
