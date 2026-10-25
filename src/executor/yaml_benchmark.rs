@@ -9,7 +9,7 @@ use super::benchmark::{
     Benchmark, BenchmarkStmt, BenchmarkTransaction, PreparedStatements, ReadWriteSync,
 };
 use super::yaml_lua;
-use super::yaml_types::BenchmarkSpec;
+use super::yaml_types::{BenchmarkSpec, TransactionMode};
 
 pub struct YamlBenchmark {
     pub spec: BenchmarkSpec,
@@ -470,13 +470,13 @@ fn validate_transactions(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
     let mut problems = Vec::new();
     for tx in &spec.transactions {
         let who = format!("transaction {} ({})", tx.id, tx.name);
-        match tx.mode.as_str() {
-            "simple" => {
+        match tx.mode {
+            TransactionMode::Simple => {
                 if tx.sql.as_deref().is_none_or(|s| s.trim().is_empty()) {
                     problems.push(format!("{who}: mode `simple` requires a non-empty `sql`"));
                 }
             }
-            "script" => match (&tx.script, &tx.script_file) {
+            TransactionMode::Script => match (&tx.script, &tx.script_file) {
                 (None, None) => problems.push(format!(
                     "{who}: mode `script` requires `script` or `script_file`"
                 )),
@@ -488,9 +488,6 @@ fn validate_transactions(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
                 }
                 _ => {}
             },
-            other => problems.push(format!(
-                "{who}: unknown mode `{other}` (expected `simple` or `script`)"
-            )),
         }
     }
     if problems.is_empty() {
@@ -567,17 +564,17 @@ impl ReadWriteSync for YamlBenchmark {
                 format!("Transaction id {} not found in spec", transaction.id).into()
             })?;
 
-        let result = match tx_spec.mode.as_str() {
+        let result = match tx_spec.mode {
             // Evaluate bindings, substitute into the SQL template, execute.
             // No `?` here: a failure must fall through to the recovery below.
-            "simple" => self.render_simple_sql(tx_spec).and_then(|sql| {
+            TransactionMode::Simple => self.render_simple_sql(tx_spec).and_then(|sql| {
                 let start = Instant::now();
                 client
                     .batch_execute(&sql)
                     .map(|_| start.elapsed().as_micros())
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
             }),
-            "script" => {
+            TransactionMode::Script => {
                 // Execute Lua script. Validation at load time guarantees one
                 // exists; never fall back to an empty chunk, which would run,
                 // "commit" nothing and inflate throughput.
@@ -601,7 +598,6 @@ impl ReadWriteSync for YamlBenchmark {
                     transaction.id,
                 )
             }
-            other => Err(format!("Unknown transaction mode: {}", other).into()),
         };
 
         if result.is_err() {
@@ -742,17 +738,15 @@ mod tests {
             "  - {id: 1, name: both, weight: 10, mode: script, script: 'exec(\"SELECT 1\")', script_file: x.lua}\n\
              \x20 - {id: 2, name: empty-script, weight: 10, mode: script, script: '  '}\n\
              \x20 - {id: 3, name: no-sql, weight: 10, mode: simple}\n\
-             \x20 - {id: 4, name: bad-mode, weight: 10, mode: extended, sql: 'SELECT 1'}\n\
              \x20 - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
              \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script_file: tx.lua}\n",
         );
         let problems = super::validate_transactions(&spec).unwrap_err();
         let joined = problems.join("\n");
-        assert_eq!(problems.len(), 4, "{joined}");
+        assert_eq!(problems.len(), 3, "{joined}");
         assert!(joined.contains("(both): `script` and `script_file` are mutually exclusive"));
         assert!(joined.contains("(empty-script): `script` is empty"));
         assert!(joined.contains("(no-sql): mode `simple` requires a non-empty `sql`"));
-        assert!(joined.contains("(bad-mode): unknown mode `extended`"));
 
         let valid = spec_with_transactions(
             "  - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\

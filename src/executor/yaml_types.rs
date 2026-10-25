@@ -162,8 +162,10 @@ pub struct IndexSpec {
 #[allow(dead_code)]
 pub struct LoadSpec {
     pub table: String,
-    #[serde(default = "default_method")]
-    pub method: String,
+    /// How rows are loaded. Only `copy` exists; the field is an enum so a typo
+    /// or an unsupported method is rejected when the spec is parsed.
+    #[serde(default)]
+    pub method: LoadMethod,
     pub copy_columns: Vec<String>,
     pub rows_per_id: serde_yaml::Value,
     #[serde(default = "default_batch_size")]
@@ -171,8 +173,13 @@ pub struct LoadSpec {
     pub row: String,
 }
 
-fn default_method() -> String {
-    "copy".to_string()
+/// Data loading method for a `load:` entry.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LoadMethod {
+    /// `COPY ... FROM STDIN`, the only implemented method.
+    #[default]
+    Copy,
 }
 
 fn default_batch_size() -> u32 {
@@ -186,8 +193,9 @@ pub struct TransactionSpec {
     pub weight: u16,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "default_mode")]
-    pub mode: String,
+    /// How the transaction is executed; rejected at parse time if unknown.
+    #[serde(default)]
+    pub mode: TransactionMode,
     /// Binding expressions, kept in declaration order so that later bindings
     /// may reference earlier ones. serde_yaml::Mapping preserves insertion order.
     #[serde(default)]
@@ -197,8 +205,15 @@ pub struct TransactionSpec {
     pub script_file: Option<String>,
 }
 
-fn default_mode() -> String {
-    "simple".to_string()
+/// Execution mode of a transaction.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TransactionMode {
+    /// `sql` template with `bindings` substituted, run with the simple protocol.
+    #[default]
+    Simple,
+    /// Lua `script` / `script_file` driving the database bridge.
+    Script,
 }
 
 /// Optional list of Lua files to pre-load into every thread's Lua VM.
@@ -244,6 +259,31 @@ mod tests {
         assert_eq!(m.per, ThroughputPer::Minute);
     }
 
+    // Regression for RELEASE_REVIEW B7: `mode` and `method` were free strings.
+    // An unknown mode failed on every execution (thousands of identical error
+    // lines) and an unknown method was silently ignored.
+    #[test]
+    fn unknown_mode_and_method_are_rejected_at_parse_time() {
+        let tx: Result<TransactionSpec, _> =
+            serde_yaml::from_str("id: 1\nname: t\nweight: 1\nmode: extended\nsql: SELECT 1\n");
+        let err = tx.unwrap_err().to_string();
+        assert!(err.contains("unknown variant `extended`"), "{err}");
+        assert!(
+            err.contains("`simple`") && err.contains("`script`"),
+            "{err}"
+        );
+
+        let load: Result<LoadSpec, _> = serde_yaml::from_str(
+            "table: t\nmethod: insert\ncopy_columns: [id]\nrows_per_id: 1\nrow: x\n",
+        );
+        let err = load.unwrap_err().to_string();
+        assert!(err.contains("unknown variant `insert`"), "{err}");
+
+        let tx: TransactionSpec =
+            serde_yaml::from_str("id: 1\nname: t\nweight: 1\nmode: script\nscript: x\n").unwrap();
+        assert_eq!(tx.mode, TransactionMode::Script);
+    }
+
     #[test]
     fn spec_applies_field_defaults() {
         let yaml = r#"
@@ -270,11 +310,11 @@ transactions:
         // metrics block omitted -> default TPM/minute.
         assert_eq!(spec.metrics.throughput_unit, "TPM");
         assert_eq!(spec.metrics.per, ThroughputPer::Minute);
-        // load method defaults to "copy", batch_size to 10_000.
-        assert_eq!(spec.load[0].method, "copy");
+        // load method defaults to copy, batch_size to 10_000.
+        assert_eq!(spec.load[0].method, LoadMethod::Copy);
         assert_eq!(spec.load[0].batch_size, 10_000);
-        // transaction mode defaults to "simple".
-        assert_eq!(spec.transactions[0].mode, "simple");
+        // transaction mode defaults to simple.
+        assert_eq!(spec.transactions[0].mode, TransactionMode::Simple);
         // column type rename ("type" -> col_type) works.
         assert_eq!(spec.schema.tables[0].columns[0].col_type, "int");
     }
