@@ -442,6 +442,18 @@ impl YamlBenchmark {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
+/// A failed statement leaves the connection inside an aborted transaction
+/// block (a `simple` template stops at the first error before its COMMIT; a
+/// script errors after `begin()`), and every later statement on that
+/// connection then fails with "current transaction is aborted". Issue a
+/// best-effort ROLLBACK so the next transaction starts clean. Outside a
+/// transaction block PostgreSQL only emits a warning, so this is always safe;
+/// a failure here means the connection itself is gone, which the next
+/// transaction reports on its own.
+fn recover_connection(client: &mut Client) {
+    let _ = client.batch_execute("ROLLBACK");
+}
+
 impl ReadWriteSync for YamlBenchmark {
     fn prepare_statements(
         &self,
@@ -466,16 +478,16 @@ impl ReadWriteSync for YamlBenchmark {
                 format!("Transaction id {} not found in spec", transaction.id).into()
             })?;
 
-        match tx_spec.mode.as_str() {
-            "simple" => {
-                // Evaluate bindings and substitute into SQL template
-                let sql = self.render_simple_sql(tx_spec)?;
+        let result = match tx_spec.mode.as_str() {
+            // Evaluate bindings, substitute into the SQL template, execute.
+            // No `?` here: a failure must fall through to the recovery below.
+            "simple" => self.render_simple_sql(tx_spec).and_then(|sql| {
                 let start = Instant::now();
                 client
                     .batch_execute(&sql)
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
-                Ok(start.elapsed().as_micros())
-            }
+                    .map(|_| start.elapsed().as_micros())
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+            }),
             "script" => {
                 // Execute Lua script
                 let script = self
@@ -497,7 +509,12 @@ impl ReadWriteSync for YamlBenchmark {
                 )
             }
             other => Err(format!("Unknown transaction mode: {}", other).into()),
+        };
+
+        if result.is_err() {
+            recover_connection(client);
         }
+        result
     }
 }
 
@@ -583,6 +600,78 @@ impl Benchmark for YamlBenchmark {
 mod tests {
     use super::YamlBenchmark;
     use crate::executor::yaml_types::BenchmarkSpec;
+
+    // Regression for RELEASE_REVIEW B3. Needs a live server: set
+    // PGMETER_TEST_DSN (CI's e2e job does); skipped otherwise.
+    //
+    // A failing statement leaves the connection in an aborted transaction
+    // block. Before the fix, every statement after the failure on that
+    // connection errored with "current transaction is aborted, commands
+    // ignored until end of transaction block", in both transaction modes.
+    #[test]
+    fn failed_transaction_leaves_connection_usable() {
+        use crate::executor::benchmark::{Benchmark, ReadWriteSync};
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("pgmeter-b3-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec_path = dir.join("spec.yaml");
+        std::fs::write(
+            &spec_path,
+            r#"
+name: b3
+scaling:
+  unit: thing
+  max_id_query: "SELECT 1"
+schema:
+  tables: []
+transactions:
+  - id: 1
+    name: simple-fails
+    weight: 50
+    mode: simple
+    sql: |
+      BEGIN;
+      SELECT 1 / 0;
+      COMMIT;
+  - id: 2
+    name: script-fails
+    weight: 50
+    mode: script
+    script: |
+      begin()
+      exec("SELECT 1 / 0")
+      commit()
+"#,
+        )
+        .unwrap();
+
+        let benchmark = YamlBenchmark::from_file(spec_path.to_str().unwrap(), 1, 1, 1);
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        let prepared = benchmark.prepare_statements(&mut client).unwrap();
+
+        for tx in benchmark.get_transactions_rw() {
+            let err = benchmark
+                .execute_rw_transaction_sync(&mut client, &prepared, &tx)
+                .expect_err("division by zero must fail");
+            // postgres::Error displays only "db error" (the server message is
+            // in its source chain), and the Lua bridge currently flattens it
+            // to that text (RELEASE_REVIEW B16), so only check that it failed.
+            assert!(!err.to_string().is_empty(), "{}: empty error", tx.name);
+            // The connection must be out of the aborted block again.
+            let row = client
+                .query_one("SELECT 42", &[])
+                .unwrap_or_else(|e| panic!("{}: connection unusable after failure: {e}", tx.name));
+            assert_eq!(row.get::<_, i32>(0), 42);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn sample_spec() -> BenchmarkSpec {
         let yaml = r#"
