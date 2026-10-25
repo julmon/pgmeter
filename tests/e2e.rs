@@ -108,6 +108,42 @@ fn file_names(dir: &Path) -> Vec<String> {
     names
 }
 
+/// Needs no server: a connection failure must come back as one clean error
+/// line and exit status 1, from `init` and from `run` alike. Before C2 a
+/// client thread called process::exit itself, bypassing the collector and
+/// the result files.
+#[test]
+fn unreachable_server_is_reported_cleanly() {
+    // Nothing listens on this port on the loopback interface.
+    let env = vec![
+        ("PGHOST", "127.0.0.1".to_string()),
+        ("PGPORT", "1".to_string()),
+        ("PGUSER", "nobody".to_string()),
+        ("PGDATABASE", "nowhere".to_string()),
+    ];
+    let cwd = workdir("unreachable");
+    let spec = sample("custom-simple");
+    for args in [
+        vec!["init", "--spec", spec.to_str().unwrap()],
+        vec![
+            "run",
+            "--spec",
+            spec.to_str().unwrap(),
+            "-c",
+            "2",
+            "-T",
+            "1",
+        ],
+    ] {
+        let out = pgmeter(&env, &cwd, &args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("error:"), "{args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+    }
+    fs::remove_dir_all(&cwd).ok();
+}
+
 #[test]
 fn custom_simple_init_then_run_with_json_output() {
     let Some(env) = connection_env() else {

@@ -779,6 +779,7 @@ impl Benchmark for YamlBenchmark {
 #[cfg(test)]
 mod tests {
     use super::YamlBenchmark;
+    use crate::executor::error::Error;
     use crate::executor::yaml_types::BenchmarkSpec;
 
     fn spec_with_transactions(transactions_yaml: &str) -> BenchmarkSpec {
@@ -890,6 +891,62 @@ transactions:
             super::validate_spec(&empty).unwrap_err(),
             vec!["no transactions declared".to_string()]
         );
+    }
+
+    // Regression for RELEASE_REVIEW C2/D8: loading problems come back as
+    // values. Before, each of these printed a message and called
+    // process::exit(1), which also killed the test binary.
+    fn err_of<T>(result: Result<T, Error>) -> Error {
+        match result {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn spec_loading_failures_are_errors_not_exits() {
+        let dir = std::env::temp_dir().join(format!("pgmeter-c2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("nope.yaml");
+        let err = err_of(YamlBenchmark::from_file(missing.to_str().unwrap(), 1, 1, 1));
+        assert!(matches!(err, Error::Io { .. }), "{err:?}");
+        assert!(err.to_string().contains("nope.yaml"), "{err}");
+
+        let bad_yaml = dir.join("bad.yaml");
+        std::fs::write(&bad_yaml, "name: [unterminated\n").unwrap();
+        let err = err_of(YamlBenchmark::from_file(
+            bad_yaml.to_str().unwrap(),
+            1,
+            1,
+            1,
+        ));
+        assert!(matches!(err, Error::Spec(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("Failed to parse YAML spec"),
+            "{err}"
+        );
+
+        // Valid YAML, invalid spec (no transactions) and a missing script file.
+        let invalid = spec_with_transactions("  []\n");
+        let err = err_of(YamlBenchmark::from_spec(invalid, dir.clone(), 1, 1, 1));
+        assert!(
+            err.to_string().contains("no transactions declared"),
+            "{err}"
+        );
+
+        let mut with_script = spec_with_transactions(
+            "  - {id: 1, name: t, weight: 1, mode: script, script_file: missing.lua}\n",
+        );
+        with_script.name = "scripted".into();
+        let err = err_of(YamlBenchmark::from_spec(with_script, dir.clone(), 1, 1, 1));
+        assert!(matches!(err, Error::Io { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("Lua script") && err.to_string().contains("missing.lua"),
+            "{err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Every bundled sample must pass the same validation users' specs get.
