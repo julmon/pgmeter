@@ -79,6 +79,15 @@ impl YamlBenchmark {
         min_id: u32,
         max_id: u32,
     ) -> YamlBenchmark {
+        if let Err(problems) = validate_transactions(&spec) {
+            super::terminal::err_msg(&format!(
+                "Invalid benchmark spec '{}':\n  - {}",
+                spec.name,
+                problems.join("\n  - ")
+            ));
+            std::process::exit(1);
+        }
+
         let table_ddls = Self::generate_table_ddls(&spec);
         let pkey_ddls = Self::generate_pkey_ddls(&spec);
         let fkey_ddls = Self::generate_fkey_ddls(&spec);
@@ -454,6 +463,43 @@ impl YamlBenchmark {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
+/// Check that every transaction carries what its mode needs: `simple` needs
+/// `sql`, `script` needs exactly one of `script` / `script_file`. Returns every
+/// problem found so a spec author fixes them in one pass.
+fn validate_transactions(spec: &BenchmarkSpec) -> Result<(), Vec<String>> {
+    let mut problems = Vec::new();
+    for tx in &spec.transactions {
+        let who = format!("transaction {} ({})", tx.id, tx.name);
+        match tx.mode.as_str() {
+            "simple" => {
+                if tx.sql.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                    problems.push(format!("{who}: mode `simple` requires a non-empty `sql`"));
+                }
+            }
+            "script" => match (&tx.script, &tx.script_file) {
+                (None, None) => problems.push(format!(
+                    "{who}: mode `script` requires `script` or `script_file`"
+                )),
+                (Some(_), Some(_)) => problems.push(format!(
+                    "{who}: `script` and `script_file` are mutually exclusive"
+                )),
+                (Some(s), None) if s.trim().is_empty() => {
+                    problems.push(format!("{who}: `script` is empty"))
+                }
+                _ => {}
+            },
+            other => problems.push(format!(
+                "{who}: unknown mode `{other}` (expected `simple` or `script`)"
+            )),
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
 /// A failed statement leaves the connection inside an aborted transaction
 /// block (a `simple` template stops at the first error before its COMMIT; a
 /// script errors after `begin()`), and every later statement on that
@@ -532,12 +578,16 @@ impl ReadWriteSync for YamlBenchmark {
                     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
             }),
             "script" => {
-                // Execute Lua script
-                let script = self
-                    .lua_scripts
-                    .get(&transaction.id)
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
+                // Execute Lua script. Validation at load time guarantees one
+                // exists; never fall back to an empty chunk, which would run,
+                // "commit" nothing and inflate throughput.
+                let Some(script) = self.lua_scripts.get(&transaction.id) else {
+                    return Err(format!(
+                        "transaction {} ({}) is in script mode but has no script",
+                        transaction.id, transaction.name
+                    )
+                    .into());
+                };
 
                 yaml_lua::execute_script(
                     client,
@@ -660,6 +710,80 @@ impl Benchmark for YamlBenchmark {
 mod tests {
     use super::YamlBenchmark;
     use crate::executor::yaml_types::BenchmarkSpec;
+
+    fn spec_with_transactions(transactions_yaml: &str) -> BenchmarkSpec {
+        let yaml = format!(
+            "name: v\nscaling:\n  unit: u\n  max_id_query: \"SELECT 1\"\nschema:\n  tables: []\ntransactions:\n{transactions_yaml}"
+        );
+        serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    // Regression for RELEASE_REVIEW B6: a `mode: script` transaction with no
+    // script used to load fine and run an empty chunk that counted as a commit.
+    #[test]
+    fn validate_rejects_script_mode_without_a_script() {
+        let spec =
+            spec_with_transactions("  - {id: 1, name: no-script, weight: 50, mode: script}\n");
+        let problems = super::validate_transactions(&spec).unwrap_err();
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems[0].contains("transaction 1 (no-script)"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[0].contains("requires `script` or `script_file`"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_reports_every_problem_and_accepts_valid_specs() {
+        let spec = spec_with_transactions(
+            "  - {id: 1, name: both, weight: 10, mode: script, script: 'exec(\"SELECT 1\")', script_file: x.lua}\n\
+             \x20 - {id: 2, name: empty-script, weight: 10, mode: script, script: '  '}\n\
+             \x20 - {id: 3, name: no-sql, weight: 10, mode: simple}\n\
+             \x20 - {id: 4, name: bad-mode, weight: 10, mode: extended, sql: 'SELECT 1'}\n\
+             \x20 - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
+             \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script_file: tx.lua}\n",
+        );
+        let problems = super::validate_transactions(&spec).unwrap_err();
+        let joined = problems.join("\n");
+        assert_eq!(problems.len(), 4, "{joined}");
+        assert!(joined.contains("(both): `script` and `script_file` are mutually exclusive"));
+        assert!(joined.contains("(empty-script): `script` is empty"));
+        assert!(joined.contains("(no-sql): mode `simple` requires a non-empty `sql`"));
+        assert!(joined.contains("(bad-mode): unknown mode `extended`"));
+
+        let valid = spec_with_transactions(
+            "  - {id: 5, name: ok-simple, weight: 10, sql: 'SELECT 1'}\n\
+             \x20 - {id: 6, name: ok-script, weight: 10, mode: script, script: 'exec(\"SELECT 1\")'}\n",
+        );
+        assert!(super::validate_transactions(&valid).is_ok());
+    }
+
+    // Every bundled sample must pass the same validation users' specs get.
+    #[test]
+    fn bundled_samples_pass_transaction_validation() {
+        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&samples).unwrap() {
+            let spec_path = entry.unwrap().path().join("spec.yaml");
+            if !spec_path.is_file() {
+                continue;
+            }
+            let yaml = std::fs::read_to_string(&spec_path).unwrap();
+            let spec: BenchmarkSpec = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("{}: {e}", spec_path.display()));
+            if let Err(problems) = super::validate_transactions(&spec) {
+                panic!("{}: {}", spec_path.display(), problems.join("; "));
+            }
+            checked += 1;
+        }
+        assert!(
+            checked >= 6,
+            "expected the six bundled samples, found {checked}"
+        );
+    }
 
     #[test]
     fn max_id_value_rejects_null_zero_negative_and_overflow() {
@@ -870,9 +994,11 @@ transactions:
     name: tx-one
     weight: 70
     description: first
+    sql: "SELECT 1"
   - id: 2
     name: tx-two
     weight: 30
+    sql: "SELECT 2"
 "#;
         serde_yaml::from_str(yaml).expect("valid spec")
     }
