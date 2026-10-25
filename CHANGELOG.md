@@ -40,11 +40,13 @@ First public release.
   the time-series charts show the whole run with ramp-up shaded.
 - Specs are validated when loaded: unknown keys, unknown modes or load
   methods, missing `sql` or `script`, duplicate or colliding transaction ids
-  and names, a zero total weight, undeclared tables and `load` together with
-  `load_script` are reported together before anything touches the database.
+  and names, a zero total weight, a zero `batch_size`, undeclared tables and
+  `load` together with `load_script` are reported together before anything
+  touches the database.
 - A failed transaction rolls back and the connection stays usable; a script
-  that fails mid-COPY has its stream aborted; Lua bridge errors carry the
-  PostgreSQL server message.
+  that fails mid-COPY has its stream aborted; Lua bridge and loader errors
+  carry the PostgreSQL server message. Lua `NaN` and infinite numbers reach
+  the server as `float8` literals.
 - Connection settings follow libpq conventions: `PGHOST`, `PGPORT`, `PGUSER`,
   `PGDATABASE`, `PGPASSWORD` and `~/.pgpass`. The default user name falls back
   to `$USER`, `$LOGNAME` and `postgres` when the UID has no passwd entry.

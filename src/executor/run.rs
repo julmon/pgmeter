@@ -23,6 +23,18 @@ use super::txmessage::{TXMessage, TXMessageKind};
 use super::{redact_dsn, summary, terminal, Executor, ERROR_FILE, LOG_FILE, RUN_FILE};
 use crate::args::RunArgs;
 
+/// Weighted transaction selection: the index of the first cumulative weight
+/// that `rand_val` (drawn uniformly from `1..=total_weight`) does not exceed.
+/// A transaction with weight 0 shares its cumulative value with the one before
+/// it and is therefore never picked. A value beyond the total, which cannot
+/// come from the draw, falls back to the first transaction.
+fn pick_transaction(cumulative_weights: &[u32], rand_val: u32) -> usize {
+    cumulative_weights
+        .iter()
+        .position(|&w| rand_val <= w)
+        .unwrap_or(0)
+}
+
 /// What the data collector hands back when it finishes: the post-ramp-up
 /// per-transaction counters and the log timestamp (unix seconds, same clock
 /// as `transaction.log`) at which ramp-up ended.
@@ -307,14 +319,9 @@ impl Executor {
 
                 loop {
                     // Fast weighted random selection
-                    let tx_idx = {
-                        let rand_val: u32 = rand::rng().random_range(1..=total_weight);
-                        cumulative_weights
-                            .iter()
-                            .position(|&w| rand_val <= w)
-                            .unwrap_or(0)
-                    };
-                    let transaction = &transactions[tx_idx];
+                    let rand_val: u32 = rand::rng().random_range(1..=total_weight);
+                    let transaction =
+                        &transactions[pick_transaction(&cumulative_weights, rand_val)];
 
                     // Execute the transaction
                     match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
@@ -535,7 +542,48 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_log_message;
+    use super::{escape_log_message, pick_transaction};
+
+    // RELEASE_REVIEW F2: the weighted selection the client loop runs on every
+    // transaction. Weights 70/30 give cumulative [70, 100]; each draw in
+    // 1..=70 must select the first transaction, 71..=100 the second.
+    #[test]
+    fn pick_transaction_honours_the_cumulative_boundaries() {
+        let cumulative = [70, 100];
+        assert_eq!(pick_transaction(&cumulative, 1), 0);
+        assert_eq!(pick_transaction(&cumulative, 70), 0);
+        assert_eq!(pick_transaction(&cumulative, 71), 1);
+        assert_eq!(pick_transaction(&cumulative, 100), 1);
+
+        // Exhaustively: the share of draws per transaction is exactly its weight.
+        let picks: Vec<usize> = (1..=100)
+            .map(|v| pick_transaction(&cumulative, v))
+            .collect();
+        assert_eq!(picks.iter().filter(|&&i| i == 0).count(), 70);
+        assert_eq!(picks.iter().filter(|&&i| i == 1).count(), 30);
+
+        // A single transaction always wins.
+        assert_eq!(pick_transaction(&[5], 5), 0);
+        // A value beyond the total cannot be drawn; it falls back to index 0
+        // rather than panicking on an out-of-range index.
+        assert_eq!(pick_transaction(&cumulative, 101), 0);
+    }
+
+    // A transaction with weight 0 is valid (the spec only requires the total
+    // to be above 0) and must never run: it shares its cumulative value with
+    // its predecessor, which `position` finds first.
+    #[test]
+    fn pick_transaction_never_selects_a_zero_weight_transaction() {
+        let cumulative = [10, 10, 20]; // weights 10, 0, 10
+        let picks: Vec<usize> = (1..=20).map(|v| pick_transaction(&cumulative, v)).collect();
+        assert!(!picks.contains(&1), "{picks:?}");
+        assert_eq!(picks.iter().filter(|&&i| i == 0).count(), 10);
+        assert_eq!(picks.iter().filter(|&&i| i == 2).count(), 10);
+
+        // Leading zero weight: index 0 has cumulative 0, never matched by v >= 1.
+        let leading = [0, 10]; // weights 0, 10
+        assert!((1..=10).all(|v| pick_transaction(&leading, v) == 1));
+    }
 
     // Regression for RELEASE_REVIEW B11: a Lua traceback or a multi-line
     // PostgreSQL error used to be written raw, breaking the one-record-per-line

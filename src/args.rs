@@ -912,6 +912,26 @@ mod tests {
 
     #[test]
     fn spec_file_value_rejects_missing_path() {
-        assert!(spec_file_value("/definitely/not/here.yaml").is_err());
+        let err = spec_file_value("/definitely/not/here.yaml").unwrap_err();
+        assert!(err.contains("spec file not found"), "{err}");
+    }
+
+    // RELEASE_REVIEW F2: `--spec` accepts a benchmark directory (which must
+    // hold a spec.yaml) or a spec file, and fails at parse time otherwise.
+    #[test]
+    fn spec_file_value_accepts_a_directory_or_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let dir_str = dir.to_str().unwrap();
+
+        let err = spec_file_value(dir_str).unwrap_err();
+        assert!(err.contains("spec directory has no spec.yaml"), "{err}");
+
+        std::fs::write(dir.join("spec.yaml"), "name: x\n").unwrap();
+        assert_eq!(spec_file_value(dir_str).unwrap(), PathBuf::from(dir_str));
+
+        let file = dir.join("other.yaml");
+        std::fs::write(&file, "name: y\n").unwrap();
+        assert_eq!(spec_file_value(file.to_str().unwrap()).unwrap(), file);
     }
 }

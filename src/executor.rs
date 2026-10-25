@@ -69,14 +69,25 @@ const RUN_FILE: &str = "run.json";
 // Mask the password in a libpq URL so the connection target can be echoed in the
 // run header without leaking the secret: postgresql://user:pass@host:port/db
 // becomes postgresql://user:****@host:port/db.
+/// The DSN as printed in the run header: the password is masked in both
+/// forms the driver accepts, `scheme://user:password@host...` and the
+/// keyword form `host=... password=...`. A DSN without a password is
+/// returned unchanged.
 fn redact_dsn(dsn: &str) -> String {
     if let Some((scheme, rest)) = dsn.split_once("://") {
         if let Some((cred, hostpart)) = rest.split_once('@') {
             let user = cred.split_once(':').map(|(u, _)| u).unwrap_or(cred);
             return format!("{}://{}:****@{}", scheme, user, hostpart);
         }
+        return dsn.to_string();
     }
-    dsn.to_string()
+    dsn.split_whitespace()
+        .map(|kv| match kv.split_once('=') {
+            Some(("password", _)) => "password=****".to_string(),
+            _ => kv.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // Forward the quiet switch to the terminal module (which is private to this
@@ -284,7 +295,37 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-    use super::Executor;
+    use super::{redact_dsn, Executor};
+
+    // RELEASE_REVIEW F2: the run header prints the target DSN; the password
+    // must never reach the terminal, in either DSN syntax the driver accepts.
+    #[test]
+    fn redact_dsn_masks_the_password_only() {
+        assert_eq!(
+            redact_dsn("postgresql://alice:s3cr:et@db.example:5432/app?sslmode=require"),
+            "postgresql://alice:****@db.example:5432/app?sslmode=require"
+        );
+        // A user without a password still gets the mask: the header cannot
+        // tell whether one was given, and nothing is lost by hiding it.
+        assert_eq!(
+            redact_dsn("postgres://alice@localhost/app"),
+            "postgres://alice:****@localhost/app"
+        );
+        // No credentials at all: untouched.
+        assert_eq!(
+            redact_dsn("postgresql://localhost:5432/app"),
+            "postgresql://localhost:5432/app"
+        );
+        // Keyword form: only the password value is replaced.
+        assert_eq!(
+            redact_dsn("host=localhost user=alice password=s3cret dbname=app"),
+            "host=localhost user=alice password=**** dbname=app"
+        );
+        assert_eq!(
+            redact_dsn("host=localhost dbname=app"),
+            "host=localhost dbname=app"
+        );
+    }
 
     // Regression for RELEASE_REVIEW C3: the spec is read and parsed once, at
     // construction. Before, every pipeline step and every client thread

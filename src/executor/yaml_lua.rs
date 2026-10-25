@@ -481,6 +481,17 @@ fn collect_params_as_literals(args: impl Iterator<Item = LuaValue>) -> LuaResult
     for arg in args {
         match arg {
             LuaValue::Integer(i) => params.push(i.to_string()),
+            // Rust prints the specials as `NaN`, `inf` and `-inf`, which are
+            // not SQL; PostgreSQL spells them as quoted float8 literals.
+            LuaValue::Number(f) if f.is_nan() => params.push("'NaN'::float8".to_string()),
+            LuaValue::Number(f) if f.is_infinite() => params.push(
+                if f > 0.0 {
+                    "'Infinity'::float8"
+                } else {
+                    "'-Infinity'::float8"
+                }
+                .to_string(),
+            ),
             LuaValue::Number(f) => params.push(format!("{}", f)),
             LuaValue::String(s) => {
                 let s = s.to_str()?.to_string();
@@ -914,6 +925,79 @@ fn db_err(context: &str, e: &dyn std::error::Error) -> LuaError {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    // RELEASE_REVIEW F2: the literal each Lua argument becomes in the
+    // simple-protocol SQL. Floats were printed with Rust's Display, which
+    // spells the specials `NaN`, `inf` and `-inf`: an unknown column and two
+    // syntax errors once interpolated.
+    #[test]
+    fn collect_params_as_literals_spells_every_type_as_sql() {
+        let lua = Lua::new();
+        let literal = |v: LuaValue| {
+            collect_params_as_literals([v].into_iter())
+                .unwrap()
+                .remove(0)
+        };
+
+        assert_eq!(literal(LuaValue::Integer(-42)), "-42");
+        assert_eq!(literal(LuaValue::Number(2.5)), "2.5");
+        assert_eq!(literal(LuaValue::Number(-0.0)), "-0");
+        assert_eq!(literal(LuaValue::Number(1e300)), format!("{}", 1e300));
+        assert_eq!(literal(LuaValue::Number(f64::NAN)), "'NaN'::float8");
+        assert_eq!(
+            literal(LuaValue::Number(f64::INFINITY)),
+            "'Infinity'::float8"
+        );
+        assert_eq!(
+            literal(LuaValue::Number(f64::NEG_INFINITY)),
+            "'-Infinity'::float8"
+        );
+        assert_eq!(
+            literal(LuaValue::String(lua.create_string("it's").unwrap())),
+            "'it''s'"
+        );
+        assert_eq!(literal(LuaValue::Boolean(true)), "true");
+        assert_eq!(literal(LuaValue::Boolean(false)), "false");
+        assert_eq!(literal(LuaValue::Nil), "NULL");
+
+        let err =
+            collect_params_as_literals([LuaValue::Table(lua.create_table().unwrap())].into_iter())
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("Unsupported parameter type"),
+            "{err}"
+        );
+    }
+
+    // The specials round-trip through a live server (skipped unless
+    // PGMETER_TEST_DSN is set). PostgreSQL prints them as `NaN`, `Infinity`
+    // and `-Infinity`, which `str_to_lua_value` keeps as text on purpose.
+    #[test]
+    fn float_specials_round_trip_through_query_one() {
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        let constants = HashMap::new();
+        let scripts = HashMap::new();
+        let script = r#"
+            local function check(value, expected)
+                local got = query_one("SELECT $1::float8", value)
+                if got ~= expected then
+                    error(string.format("expected %q, got %s", expected, tostring(got)))
+                end
+            end
+            check(0 / 0, "NaN")
+            check(math.huge, "Infinity")
+            check(-math.huge, "-Infinity")
+            check(2.5, 2.5)
+            exec("SELECT $1::float8, $2::float8", 0 / 0, math.huge)
+        "#;
+        execute_script(&mut client, script, 1, 1, 1, &constants, &scripts, &[], 930).unwrap();
+    }
 
     #[test]
     fn interpolate_params_substitutes_in_reverse_order() {
