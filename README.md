@@ -1,5 +1,7 @@
 # pgmeter
 
+[![CI](https://github.com/julmon/pgmeter/actions/workflows/ci.yml/badge.svg)](https://github.com/julmon/pgmeter/actions/workflows/ci.yml)
+
 A next-generation PostgreSQL benchmarking tool written in Rust. pgmeter runs
 **user-defined benchmarks described in YAML + Lua**: you declare your schema,
 data loading, and transaction mix in a spec file, and pgmeter initializes the

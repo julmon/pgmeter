@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: test (Rust ${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Stable, plus the MSRV declared as `package.rust-version` in Cargo.toml.
+        rust: [stable, "1.85"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  # Formatting and lints are reported but do not block yet: the tree still has
+  # pre-existing rustfmt diffs (RELEASE_REVIEW D1) and clippy warnings (D2).
+  # Drop `continue-on-error` when those land.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  release-build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - run: target/release/pgmeter --version
+      - run: cargo package --locked
+
+  # End-to-end smoke test against a real server: init and a short run of one
+  # `simple`-mode (PGM-B) and one `script`-mode (PGM-C) benchmark, on the
+  # oldest supported PostgreSQL and the current major.
+  e2e:
+    name: e2e (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [12, 18]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: pgmeter
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: pgmeter
+      PGDATABASE: postgres
+      PGMETER_TEST_DSN: postgresql://postgres:pgmeter@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - name: PGM-B (simple mode)
+        run: |
+          set -euo pipefail
+          target/debug/pgmeter init --spec samples/pgm-b/spec.yaml -s 2 -j 2
+          target/debug/pgmeter run --spec samples/pgm-b/spec.yaml -c 2 -T 3 --format json > pgm-b.json
+          python3 -c 'import json; d = json.load(open("pgm-b.json")); print(json.dumps(d, indent=1)[:800])'
+          test -f pgmeter-*/report.html
+          rm -r pgmeter-*
+      - name: PGM-C (script mode)
+        run: |
+          set -euo pipefail
+          target/debug/pgmeter init --spec samples/pgm-c/spec.yaml -s 1 -j 2
+          target/debug/pgmeter run --spec samples/pgm-c/spec.yaml -c 2 -T 3
+          test -f pgmeter-*/report.html
+          test -f pgmeter-*/transaction.log
+      # Runs any Rust integration test gated on PGMETER_TEST_DSN (RELEASE_REVIEW F1).
+      - run: cargo test --locked -- --include-ignored
