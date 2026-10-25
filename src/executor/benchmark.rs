@@ -112,7 +112,10 @@ pub trait Benchmark {
     fn initialize_schema(&self, client: &mut Client) -> Result<u128, postgres::Error>;
     fn pre_load_data(&self, client: &mut Client) -> Result<u128, String>;
     fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, String>;
-    fn get_default_max_id(&self, client: &mut Client) -> Result<u32, postgres::Error>;
+    fn get_default_max_id(
+        &self,
+        client: &mut Client,
+    ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>>;
     fn get_transactions_rw(&self) -> Vec<BenchmarkTransaction>;
     fn get_pkey_ddls(&self) -> Vec<BenchmarkStmt>;
     fn get_fkey_ddls(&self) -> Vec<BenchmarkStmt>;
