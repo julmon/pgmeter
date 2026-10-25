@@ -96,7 +96,7 @@ pgmeter -d benchmark run  --spec pgm-c -c 8 -T 60
 | Spec | Workload | Type | Derived from | Scale unit |
 |------|----------|------|--------------|------------|
 | `samples/pgm-b` | Banking debit/credit (single transaction) | OLTP | TPC-B | branch |
-| `samples/pgm-c` | Order-entry (New-Order, Payment, Order-Status, Delivery, Stock-Level) | OLTP | TPC-C | warehouse |
+| `samples/pgm-c` | Order-entry (New-Order, Payment, Order-Status, Delivery, Stock-Level); ~1% of New-Orders roll back by design and show up as errors | OLTP | TPC-C | warehouse |
 | `samples/pgm-iot` | IoT gateway (Data-Ingestion, Scan/Device/Alert queries, Threshold-Update) | TIMESERIES | TPCx-IoT | substation |
 | `samples/pgm-h` | Decision-support (22 analytical queries) | OLAP | TPC-H | scale factor |
 | `samples/pgm-ds` | Decision-support, snowflake schema (24 tables) | OLAP | TPC-DS | scale factor |
