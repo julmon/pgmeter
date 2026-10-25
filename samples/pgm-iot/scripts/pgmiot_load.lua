@@ -15,33 +15,8 @@ local now_ts = query_one("SELECT EXTRACT(EPOCH FROM NOW())::bigint")
 local base_24h = now_ts - 86400   -- 24 hours ago
 local base_12h = now_ts - 43200   -- 12 hours ago
 
--- Convert epoch seconds to timestamp string (pure Lua, no SQL)
-local function epoch_to_ts(epoch)
-    -- PostgreSQL epoch is seconds since 1970-01-01
-    -- We use os.date if available, otherwise format via integer math
-    local s = epoch % 60
-    local m = math.floor(epoch / 60) % 60
-    local h = math.floor(epoch / 3600) % 24
-    -- For the date part, we need to convert epoch to Y-M-D
-    -- Simplified: use a query once to get the base date, then offset
-    -- Actually, let's just use string formatting from a pre-computed base
-    return nil -- will use batch approach instead
-end
-
--- Better approach: pre-compute all timestamps we need as a batch,
--- or use a simple offset string approach.
--- Simplest: generate timestamps relative to 'now' using SQL interval arithmetic
--- in the COPY data itself. PostgreSQL will parse timestamp strings.
--- We fetch "now" as a string and build timestamps by computing Y/M/D/H/M/S offsets.
-
--- Fetch now as components
-local base_row = query("SELECT EXTRACT(YEAR FROM NOW())::int AS y, EXTRACT(MONTH FROM NOW())::int AS mo, "
-    .. "EXTRACT(DAY FROM NOW())::int AS d, EXTRACT(HOUR FROM NOW())::int AS h, "
-    .. "EXTRACT(MINUTE FROM NOW())::int AS mi, EXTRACT(SECOND FROM NOW())::int AS s")
-local now = base_row[1]
-
--- Simple timestamp formatter: base epoch + offset in seconds -> "YYYY-MM-DD HH:MM:SS"
--- We'll just format the epoch via integer division (UTC)
+-- Epoch seconds -> "YYYY-MM-DD HH:MM:SS" (UTC), computed in pure Lua so the
+-- COPY data needs no per-row SQL.
 local function fmt_ts(epoch)
     -- Days since epoch
     local days = math.floor(epoch / 86400)
