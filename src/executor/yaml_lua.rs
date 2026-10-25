@@ -261,17 +261,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
 
     // Register rand_string(min_len, max_len) -- random alphanumeric string
     let rand_string_fn = lua.create_function(|_, (min_len, max_len): (usize, usize)| {
-        let len = if min_len < max_len {
-            rand::thread_rng().gen_range(min_len..=max_len)
-        } else {
-            max_len
-        };
-        let s: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(len)
-            .map(char::from)
-            .collect();
-        Ok(s)
+        Ok(with_rng(|rng| random_alphanumeric(rng, min_len, max_len)))
     })?;
     lua.globals().set("rand_string", rand_string_fn)?;
 
@@ -282,17 +272,7 @@ pub fn create_lua_vm() -> LuaResult<Lua> {
             let table = lua.create_table_with_capacity(count, 0)?;
             with_rng(|rng| {
                 for i in 1..=count {
-                    let len = if min_len < max_len {
-                        rng.gen_range(min_len..=max_len)
-                    } else {
-                        max_len
-                    };
-                    let s: String = (&mut *rng)
-                        .sample_iter(&Alphanumeric)
-                        .take(len)
-                        .map(char::from)
-                        .collect();
-                    table.set(i, s)?;
+                    table.set(i, random_alphanumeric(rng, min_len, max_len))?;
                 }
                 Ok(table)
             })
@@ -310,32 +290,29 @@ pub fn inject_context(
     scalefactor: u32,
     constants: &HashMap<String, serde_yaml::Value>,
 ) -> LuaResult<()> {
+    set_scaling_globals(lua, min_id, max_id, scalefactor)?;
+    inject_constants(lua, constants)
+}
+
+/// Alphanumeric string of a length drawn from `min_len..=max_len` (or exactly
+/// `max_len` when the range is empty), shared by rand_string and rand_strings.
+fn random_alphanumeric(rng: &mut impl Rng, min_len: usize, max_len: usize) -> String {
+    let len = if min_len < max_len {
+        rng.gen_range(min_len..=max_len)
+    } else {
+        max_len
+    };
+    rng.sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+/// The three scaling globals every script and binding expression can read.
+fn set_scaling_globals(lua: &Lua, min_id: u32, max_id: u32, scalefactor: u32) -> LuaResult<()> {
     lua.globals().set("min_id", min_id)?;
     lua.globals().set("max_id", max_id)?;
-    lua.globals().set("scalefactor", scalefactor)?;
-
-    let const_table = lua.create_table()?;
-    for (key, value) in constants {
-        match value {
-            serde_yaml::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    const_table.set(key.as_str(), i)?;
-                } else if let Some(f) = n.as_f64() {
-                    const_table.set(key.as_str(), f)?;
-                }
-            }
-            serde_yaml::Value::String(s) => {
-                const_table.set(key.as_str(), s.as_str())?;
-            }
-            serde_yaml::Value::Bool(b) => {
-                const_table.set(key.as_str(), *b)?;
-            }
-            _ => {}
-        }
-    }
-    lua.globals().set("const", const_table)?;
-
-    Ok(())
+    lua.globals().set("scalefactor", scalefactor)
 }
 
 /// Execute a Lua script on the current thread's VM, using the given client.
@@ -644,10 +621,7 @@ pub fn create_eval_vm_with_context(
 ) -> LuaResult<Lua> {
     let lua = Lua::new();
     register_rand_functions(&lua)?;
-    lua.globals().set("min_id", min_id)?;
-    lua.globals().set("max_id", max_id)?;
-    lua.globals().set("scalefactor", scalefactor)?;
-    inject_constants(&lua, constants)?;
+    inject_context(&lua, min_id, max_id, scalefactor, constants)?;
     Ok(lua)
 }
 
@@ -802,11 +776,7 @@ pub fn eval_bindings_simple(
         let lua = vm_opt.as_ref().unwrap();
 
         // Set context globals (cheap: just integer assignments)
-        lua.globals().set("min_id", min_id).map_err(Error::from)?;
-        lua.globals().set("max_id", max_id).map_err(Error::from)?;
-        lua.globals()
-            .set("scalefactor", scalefactor)
-            .map_err(Error::from)?;
+        set_scaling_globals(lua, min_id, max_id, scalefactor)?;
 
         // Compile this transaction's binding function once per thread
         EVAL_FUNCS.with(|set_cell| {
@@ -1089,6 +1059,39 @@ mod tests {
         assert_eq!(n, 2);
 
         client.batch_execute("DROP TABLE b10_copy").unwrap();
+    }
+
+    // RELEASE_REVIEW D4: the eval VM and the transaction VM expose the same
+    // context through the same helper.
+    #[test]
+    fn eval_vm_context_matches_inject_context() {
+        let mut constants = HashMap::new();
+        constants.insert("items".to_string(), serde_yaml::Value::from(100_000));
+        constants.insert("label".to_string(), serde_yaml::Value::from("x"));
+        constants.insert("flag".to_string(), serde_yaml::Value::from(true));
+        let lua = create_eval_vm_with_context(2, 9, 3, &constants).unwrap();
+        let (min, max, sf): (u32, u32, u32) = lua
+            .load("return min_id, max_id, scalefactor")
+            .eval()
+            .unwrap();
+        assert_eq!((min, max, sf), (2, 9, 3));
+        let (items, label, flag): (i64, String, bool) = lua
+            .load("return const.items, const.label, const.flag")
+            .eval()
+            .unwrap();
+        assert_eq!((items, label.as_str(), flag), (100_000, "x", true));
+
+        // rand_string / rand_strings (registered with the DB functions) share
+        // the length rule and the RNG.
+        let lua = create_lua_vm().unwrap();
+        let s: String = lua.load("return rand_string(3, 3)").eval().unwrap();
+        assert_eq!(s.len(), 3);
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric()));
+        let v: Vec<String> = lua.load("return rand_strings(4, 2, 5)").eval().unwrap();
+        assert_eq!(v.len(), 4);
+        assert!(v.iter().all(|s| (2..=5).contains(&s.len())));
+        let fixed: String = lua.load("return rand_string(8, 2)").eval().unwrap();
+        assert_eq!(fixed.len(), 2, "empty range falls back to max_len");
     }
 
     #[test]
