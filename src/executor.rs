@@ -415,7 +415,7 @@ impl Executor {
                 loop {
                     // Fast weighted random selection
                     let tx_idx = {
-                        let rand_val: u32 = thread_rng().gen_range(1..=total_weight);
+                        let rand_val: u32 = rand::rng().random_range(1..=total_weight);
                         cumulative_weights
                             .iter()
                             .position(|&w| rand_val <= w)

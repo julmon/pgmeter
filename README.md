@@ -29,7 +29,7 @@ below — they are not audited, full-specification TPC benchmarks.
 
 ## Requirements
 
-- Rust 1.85 or later (declared as `rust-version` in `Cargo.toml`)
+- Rust 1.87 or later (declared as `rust-version` in `Cargo.toml`)
 - PostgreSQL 12 or later
 - Linux or macOS (developed and tested on Linux; Windows is not supported)
 

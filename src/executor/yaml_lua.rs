@@ -5,7 +5,7 @@ use std::io::Write;
 
 use mlua::prelude::*;
 use postgres::Client;
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -45,10 +45,10 @@ thread_local! {
 
     /// Thread-local non-cryptographic RNG for data generation. Seeded once per
     /// thread from the OS, then reused across the millions of rand_int/rand_float
-    /// calls a load script makes. Avoids rand::thread_rng()'s per-call handle
+    /// calls a load script makes. Avoids rand::rng()'s per-call handle
     /// clone + reseed check and its crypto-grade ChaCha generator, neither of
     /// which we need for synthetic benchmark data.
-    static FAST_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_entropy());
+    static FAST_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_os_rng());
 }
 
 /// Run a closure with a mutable borrow of the thread-local fast RNG.
@@ -298,7 +298,7 @@ pub fn inject_context(
 /// `max_len` when the range is empty), shared by rand_string and rand_strings.
 fn random_alphanumeric(rng: &mut impl Rng, min_len: usize, max_len: usize) -> String {
     let len = if min_len < max_len {
-        rng.gen_range(min_len..=max_len)
+        rng.random_range(min_len..=max_len)
     } else {
         max_len
     };
@@ -638,7 +638,7 @@ fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
                 "rand_int: empty range, min ({min}) is greater than max ({max})"
             )));
         }
-        Ok(with_rng(|rng| rng.gen_range(min..=max)))
+        Ok(with_rng(|rng| rng.random_range(min..=max)))
     })?;
     lua.globals().set("rand_int", rand_int)?;
 
@@ -648,7 +648,7 @@ fn register_rand_functions(lua: &Lua) -> LuaResult<()> {
                 "rand_float: invalid range [{min}, {max}), min must be lower than max and both finite"
             )));
         }
-        Ok(with_rng(|rng| rng.gen_range(min..max)))
+        Ok(with_rng(|rng| rng.random_range(min..max)))
     })?;
     lua.globals().set("rand_float", rand_float)?;
     Ok(())

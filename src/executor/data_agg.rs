@@ -7,17 +7,16 @@ use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, Transaction
 use super::error::Error;
 use tabled::{
     builder::Builder,
-    object::{Columns, Object, Rows},
-    style::{HorizontalLine, Line},
-    width::Width,
-    Alignment, ModifyObject, Style, Table,
+    settings::{
+        object::{Columns, Object, Rows},
+        style::HorizontalLine,
+        Alignment, Format, Modify, Style, Width,
+    },
+    Table,
 };
 
 // Widest rendered line (in characters) of a table.
-fn rendered_width<R>(table: &Table<R>) -> usize
-where
-    Table<R>: std::fmt::Display,
-{
+fn rendered_width(table: &Table) -> usize {
     table
         .to_string()
         .lines()
@@ -228,15 +227,13 @@ pub fn print_transactions_tables(
     stats: &[ResponseTimeStatistics],
     throughput_unit: &str,
 ) {
-    let header_rule = || {
-        Style::blank()
-            .off_vertical()
-            .horizontals([HorizontalLine::new(1, Line::filled('─'))])
-    };
+    // Frame-less style with a single rule under the header row.
+    let header_rule =
+        || Style::blank().horizontals([(1, HorizontalLine::new('─').intersection('─'))]);
 
     // Summary table.
     let mut builder = Builder::default();
-    builder.set_columns([
+    builder.push_record([
         "Transaction",
         "Committed",
         "Errors",
@@ -244,7 +241,7 @@ pub fn print_transactions_tables(
         throughput_unit,
     ]);
     for row in summary {
-        builder.add_record([
+        builder.push_record([
             row.name.clone(),
             super::terminal::fmt_int(row.n_commits),
             super::terminal::fmt_int(row.n_errors),
@@ -255,25 +252,20 @@ pub fn print_transactions_tables(
     let mut summary_table = builder.build();
     summary_table
         .with(header_rule())
-        .with(Rows::first().modify().with(Alignment::center()))
-        .with(
-            Columns::new(1..)
-                .not(Rows::first())
-                .modify()
-                .with(Alignment::right()),
-        );
+        .with(Modify::new(Rows::first()).with(Alignment::center()))
+        .with(Modify::new(Columns::new(1..).not(Rows::first())).with(Alignment::right()));
 
     // Response-time stats table.
-    let mut stats_table = Table::from_iter(stats);
+    let mut stats_table = Table::new(stats);
     stats_table
         .with(header_rule())
-        .with(Rows::first().modify().with(Alignment::center()));
+        .with(Modify::new(Rows::first()).with(Alignment::center()));
     for col in 1..=6 {
         stats_table.with(
-            Columns::single(col)
-                .not(Rows::first())
-                .modify()
-                .with(|s: &str| format!("{val:.*}", 3, val = s.parse::<f64>().unwrap()))
+            Modify::new(Columns::new(col..=col).not(Rows::first()))
+                .with(Format::content(|s: &str| {
+                    format!("{val:.*}", 3, val = s.parse::<f64>().unwrap())
+                }))
                 .with(Alignment::right()),
         );
     }

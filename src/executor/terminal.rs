@@ -55,7 +55,7 @@ pub fn fmt_int(n: u64) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     let first = bytes.len() % 3;
     for (i, b) in bytes.iter().enumerate() {
-        if i >= first && i != 0 && (i - first) % 3 == 0 {
+        if i >= first && i != 0 && (i - first).is_multiple_of(3) {
             out.push(' ');
         }
         out.push(*b as char);
