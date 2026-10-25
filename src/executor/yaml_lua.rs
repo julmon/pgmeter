@@ -404,22 +404,19 @@ pub fn execute_script(
         let globals = lua.globals();
         let func: LuaResult<LuaFunction> = globals.get(&*func_name);
 
-        match func {
-            Ok(f) => {
-                f.call::<()>(())
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(e.to_string()))
-                    })?;
-            }
-            Err(_) => {
-                // Fallback: execute inline script directly
-                lua.load(script).exec().map_err(
-                    |e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(e.to_string()))
-                    },
-                )?;
-            }
-        }
+        let outcome: LuaResult<()> = match func {
+            Ok(f) => f.call::<()>(()),
+            // Fallback: execute inline script directly
+            Err(_) => lua.load(script).exec(),
+        };
+        // A script that errors between copy_start and copy_end leaves the
+        // connection in COPY mode; settle the stream before anything else
+        // touches the connection (the ROLLBACK issued on error, the next
+        // transaction).
+        settle_copy_stream(outcome.is_ok());
+        outcome.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::other(e.to_string()))
+        })?;
 
         Ok(start.elapsed().as_micros())
     });
@@ -459,17 +456,12 @@ pub fn execute_load_script(
             .map_err(|e| e.to_string())?;
 
         let start = std::time::Instant::now();
-        lua.load(script)
+        let outcome = lua
+            .load(script)
             .exec()
-            .map_err(|e| format!("Load script failed: {}", e))?;
-
-        // Ensure any open COPY stream is cleaned up
-        COPY_WRITER.with(|cell| {
-            let mut holder = cell.borrow_mut();
-            if let Some(writer) = holder.0.take() {
-                let _ = writer.finish();
-            }
-        });
+            .map_err(|e| format!("Load script failed: {}", e));
+        settle_copy_stream(outcome.is_ok());
+        outcome?;
 
         Ok(start.elapsed().as_micros())
     })();
@@ -858,6 +850,24 @@ fn lua_to_sync_err(e: LuaError) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::other(e.to_string()))
 }
 
+/// Close a COPY stream a script left open. After a successful script the
+/// stream is finished so the rows it wrote are kept (a script may rely on the
+/// implicit `copy_end`); after a failed script it is dropped, which aborts the
+/// COPY server-side so partial rows are discarded and the connection leaves
+/// COPY mode. Either way the thread-local no longer holds a writer that
+/// borrows a client pointer about to be cleared.
+fn settle_copy_stream(script_succeeded: bool) {
+    COPY_WRITER.with(|cell| {
+        if let Some(writer) = cell.borrow_mut().0.take() {
+            if script_succeeded {
+                let _ = writer.finish();
+            } else {
+                drop(writer);
+            }
+        }
+    });
+}
+
 /// Turn a database-bridge failure into a Lua runtime error that carries the
 /// full message. `postgres::Error`'s Display is only a category such as
 /// "db error"; the server's message (`division by zero`, the constraint name,
@@ -945,6 +955,62 @@ mod tests {
         let f = compile_batch_row_template(&lua, "{{id}}|{{i}}\n").unwrap();
         let out: String = f.call((3i64, 1i64, 3i64)).unwrap();
         assert_eq!(out, "3|1\n3|2\n3|3\n");
+    }
+
+    // Regression for RELEASE_REVIEW B10. Needs a live server (skipped unless
+    // PGMETER_TEST_DSN is set): a transaction script that fails between
+    // copy_start and copy_end must leave the connection usable and must not
+    // keep a stale writer around for the next script on this thread.
+    #[test]
+    fn failed_script_mid_copy_leaves_connection_usable() {
+        use postgres::{Client, NoTls};
+
+        let Ok(dsn) = std::env::var("PGMETER_TEST_DSN") else {
+            eprintln!("PGMETER_TEST_DSN not set, skipping");
+            return;
+        };
+        let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
+        client
+            .batch_execute("DROP TABLE IF EXISTS b10_copy; CREATE TABLE b10_copy (v int)")
+            .unwrap();
+        let constants = HashMap::new();
+        let scripts = HashMap::new();
+        let run = |client: &mut Client, script: &str| {
+            execute_script(client, script, 1, 1, 1, &constants, &scripts, &[], 910)
+        };
+
+        // 1. Fails mid-COPY inside a transaction block.
+        let err = run(
+            &mut client,
+            "begin()\ncopy_start('COPY b10_copy FROM STDIN')\ncopy_write('1\\n')\nerror('boom')",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("boom"), "{err}");
+
+        // 2. The connection must come back (the executor issues this ROLLBACK
+        //    on error, see B3) and the partial COPY must not have landed.
+        client
+            .batch_execute("ROLLBACK")
+            .unwrap_or_else(|e| panic!("connection unusable after mid-COPY failure: {e}"));
+        let n: i64 = client
+            .query_one("SELECT COUNT(*) FROM b10_copy", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 0, "aborted COPY must not keep partial rows");
+
+        // 3. A later script on the same thread can run its own COPY to the end.
+        run(
+            &mut client,
+            "copy_start('COPY b10_copy FROM STDIN')\ncopy_write('7\\n8\\n')\ncopy_end()",
+        )
+        .unwrap();
+        let n: i64 = client
+            .query_one("SELECT COUNT(*) FROM b10_copy", &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 2);
+
+        client.batch_execute("DROP TABLE b10_copy").unwrap();
     }
 
     #[test]
