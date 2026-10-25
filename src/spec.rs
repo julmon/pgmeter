@@ -147,3 +147,84 @@ fn write_dir(dir: &Dir, output: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pgmeter-spec-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn list_contains_every_bundled_benchmark_sorted() {
+        let names = list();
+        assert_eq!(
+            names,
+            [
+                "custom-simple",
+                "pgm-b",
+                "pgm-c",
+                "pgm-ds",
+                "pgm-h",
+                "pgm-iot"
+            ]
+        );
+        let entries = list_entries();
+        assert_eq!(entries.len(), names.len());
+        let pgm_c = entries.iter().find(|e| e.dir == "pgm-c").unwrap();
+        assert_eq!(pgm_c.name, "PGM-C");
+        assert!(pgm_c.description.as_deref().unwrap_or("").contains("TPC-C"));
+    }
+
+    #[test]
+    fn new_scaffolds_spec_and_scripts_and_refuses_to_overwrite() {
+        let out = temp_dir("new");
+        let out_str = out.to_str().unwrap();
+
+        let dest = new("pgm-c", out_str, false).unwrap();
+        assert_eq!(dest, out.join("pgm-c"));
+        assert!(dest.join("spec.yaml").is_file());
+        assert!(dest.join("scripts").join("pgmc_new_order.lua").is_file());
+        // The copy is byte-identical to the embedded sample.
+        let embedded = SAMPLES.get_file("pgm-c/spec.yaml").unwrap().contents();
+        assert_eq!(std::fs::read(dest.join("spec.yaml")).unwrap(), embedded);
+
+        // Existing destination: refused without --force, replaced with it.
+        std::fs::write(dest.join("spec.yaml"), "edited").unwrap();
+        let err = new("pgm-c", out_str, false).unwrap_err();
+        assert!(
+            err.contains("already exists") && err.contains("--force"),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("spec.yaml")).unwrap(),
+            "edited"
+        );
+        new("pgm-c", out_str, true).unwrap();
+        assert_eq!(std::fs::read(dest.join("spec.yaml")).unwrap(), embedded);
+
+        // A spec-only sample has no scripts/ directory.
+        let simple = new("custom-simple", out_str, false).unwrap();
+        assert!(simple.join("spec.yaml").is_file());
+        assert!(!simple.join("scripts").exists());
+
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    #[test]
+    fn new_rejects_unknown_benchmark_and_lists_the_available_ones() {
+        let out = temp_dir("unknown");
+        let err = new("pgm-x", out.to_str().unwrap(), false).unwrap_err();
+        assert!(err.contains("unknown benchmark 'pgm-x'"), "{err}");
+        assert!(
+            err.contains("custom-simple, pgm-b, pgm-c, pgm-ds, pgm-h, pgm-iot"),
+            "{err}"
+        );
+        assert!(!out.join("pgm-x").exists());
+        std::fs::remove_dir_all(&out).ok();
+    }
+}
