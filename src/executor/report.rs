@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::benchmark::{BenchmarkTransaction, Counter, ResponseTimeStatistics};
+use super::error::Error;
 use super::summary;
 use super::yaml_types::BenchmarkSpec;
 
@@ -67,10 +68,7 @@ struct Series {
 }
 
 // Generate the self-contained HTML report into the run's target directory.
-pub fn generate(
-    input: &ReportInput,
-    client: &mut Client,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
+pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Error> {
     let server = fetch_server_info(client);
     let data_info = fetch_data_info(client, input.spec);
 
@@ -243,10 +241,7 @@ const TARGET_BUCKETS: u64 = 1000;
 // aggregates rows into at most TARGET_BUCKETS time buckets plus a
 // bounded-memory latency histogram. All series share the earliest timestamp as
 // their origin.
-fn build_time_series(
-    input: &ReportInput,
-    factor: f64,
-) -> Result<TimeSeries, Box<dyn std::error::Error>> {
+fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Error> {
     let name_by_id: HashMap<u16, String> = input
         .transactions
         .iter()
