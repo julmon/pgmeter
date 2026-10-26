@@ -314,7 +314,9 @@ fn custom_simple_init_then_run_with_json_output() {
 
 /// A spec made of `simple` transactions runs on the async engine with the
 /// requested worker threads, and says so in the run header (which `--format
-/// json` would suppress, so this run uses the default table output).
+/// json` would suppress, so this run uses the default table output). Own
+/// tables: the e2e tests run in parallel, and `init` drops and recreates the
+/// tables of the spec it is given.
 #[test]
 fn simple_mode_specs_run_on_the_async_engine() {
     let Some(env) = connection_env() else {
@@ -323,39 +325,56 @@ fn simple_mode_specs_run_on_the_async_engine() {
     };
     let tmp = workdir("async-engine");
     let cwd = tmp.path().to_path_buf();
-    let spec = sample("custom-simple");
-
-    let init = pgmeter(
-        &env,
-        &cwd,
-        &[
-            "init",
-            "--spec",
-            spec.to_str().unwrap(),
-            "-s",
-            "2",
-            "-j",
-            "2",
-        ],
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-async-engine
+scaling:
+  unit: thing
+  max_id_query: "SELECT MAX(id) FROM e2e_async"
+schema:
+  tables:
+    - name: e2e_async
+      columns: [{name: id, type: int}, {name: hits, type: int}]
+      primary_key: [id]
+load:
+  - table: e2e_async
+    copy_columns: [id, hits]
+    rows_per_id: 1
+    row: "{{id}}\t0\n"
+transactions:
+  - id: 1
+    name: read
+    weight: 50
+    bindings:
+      tid: "rand_int(min_id, max_id)"
+    sql: "SELECT hits FROM e2e_async WHERE id = {{tid}}"
+  - id: 2
+    name: write
+    weight: 50
+    bindings:
+      tid: "rand_int(min_id, max_id)"
+    sql:
+      - BEGIN
+      - UPDATE e2e_async SET hits = hits + 1 WHERE id = {{tid}}
+      - COMMIT
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+    assert_success(
+        &pgmeter(&env, &cwd, &["init", "--spec", spec, "-s", "8"]),
+        "init async-engine",
     );
-    assert_success(&init, "init custom-simple");
 
     let run = pgmeter(
         &env,
         &cwd,
-        &[
-            "run",
-            "--spec",
-            spec.to_str().unwrap(),
-            "-c",
-            "4",
-            "-T",
-            "2",
-            "-j",
-            "2",
-        ],
+        &["run", "--spec", spec, "-c", "4", "-T", "2", "-j", "2"],
     );
-    assert_success(&run, "run custom-simple with --threads 2");
+    assert_success(&run, "run async-engine with --threads 2");
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
         stderr.contains("engine:   2 worker thread(s), one task per client"),
