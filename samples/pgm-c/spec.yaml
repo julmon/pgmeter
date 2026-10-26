@@ -4,14 +4,16 @@
 # audited, spec-compliant TPC benchmark, and its results are NOT comparable to
 # official published TPC-C results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
 # are trademarks of the Transaction Processing Performance Council (tpc.org).
-# Transaction logic is implemented in Lua scripts in the scripts/ folder.
+# The five transactions are PL/pgSQL functions created by post_ddls below;
+# each transaction script makes one call. See PGM-C-client for the same
+# workload driven from the client in Lua.
 #
 # Expected "errors": TPC-C requires about 1% of New-Order transactions to be
-# rolled back (an order for an invalid item). pgmc_new_order.lua does this with
-# rollback() + error(), and pgmeter counts every Lua error as a transaction
-# error, so a correct PGM-C run shows a New-Order error rate near 1% (around
-# 0.45% of all transactions) with "New-order rollback: item not found" in
-# error.log. Any other error text is a real problem.
+# rolled back (an order for an invalid item). pgmc_new_order raises an
+# exception for it, and pgmeter counts every failed transaction as an error,
+# so a correct PGM-C run shows a New-Order error rate near 1% (around 0.45%
+# of all transactions) with "New-Order rollback: unknown item" in error.log.
+# Any other error text is a real problem.
 
 name: PGM-C
 description: >

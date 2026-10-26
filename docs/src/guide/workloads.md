@@ -1,6 +1,6 @@
 # Bundled workloads
 
-Six specs are embedded in the binary. `pgmeter spec list` prints them;
+Seven specs are embedded in the binary: six workloads and a template. `pgmeter spec list` prints them;
 `pgmeter spec new <name> -o <dir>` writes an editable copy, which is what
 `init` and `run` take:
 

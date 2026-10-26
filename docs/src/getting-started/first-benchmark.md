@@ -29,7 +29,7 @@ pgmeter spec new pgm-b -o .
 ls pgm-b
 ```
 
-The directory holds `spec.yaml`, the whole benchmark: the three tables and
+The directory holds `spec.yaml`, the whole benchmark: the four tables and
 their indexes, how to fill them and the one transaction with its weights and
 SQL. Workloads with Lua scripts also get a `scripts/` folder.
 
@@ -41,9 +41,9 @@ pgmeter -H db -U postgres -d benchmark init --spec pgm-b -s 10 -j 4
 
 `-s 10` is the scale factor: PGM-B's unit is a branch, with 10 tellers and
 100,000 accounts each, so this creates one million accounts. `-j 4` loads with
-four parallel connections. The steps print as they run: schema, loading,
-primary keys, foreign keys, indexes, vacuum, checkpoint. At scale 10 this
-takes a few seconds.
+four parallel connections. The steps print as they run: schema,
+pre-loading, loading, primary keys, foreign keys, indexes, vacuum,
+checkpoint. At scale 10 this takes well under a minute.
 
 ## 4. Run the workload
 
@@ -52,8 +52,9 @@ pgmeter -H db -U postgres -d benchmark run --spec pgm-b -c 8 -T 60 -r 10 -P 10
 ```
 
 Eight clients run for 60 seconds after a 10 second ramp-up during which they
-start one by one; `-P 10` prints the throughput and average latency every 10
-seconds. The ramp-up is excluded from every statistic. Press Ctrl-C to end a
+start one by one; `-P 10` prints the current throughput and average latency
+every 10 seconds when the output is not a terminal (on a terminal a progress
+bar shows them live). The ramp-up is excluded from every statistic. Press Ctrl-C to end a
 run early with the results of what ran so far.
 
 ## 5. Read the results

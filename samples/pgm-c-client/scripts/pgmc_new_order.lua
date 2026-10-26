@@ -85,7 +85,7 @@ for _, ol in ipairs(order_lines) do
     local item_rows = query("SELECT i_price, i_name, i_data FROM item WHERE i_id = $1", ol_i_id)
     if #item_rows == 0 then
         rollback()
-        error("New-order rollback: item not found")
+        error("New-Order rollback: unknown item")
     end
 
     local i_price = item_rows[1]["i_price"]

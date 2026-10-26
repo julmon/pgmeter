@@ -6,9 +6,10 @@ load the data and the transaction mix, and pgmeter initializes the database
 and drives the workload. Adding a workload never means writing Rust or
 recompiling anything.
 
-Five reference workloads ship inside the binary, ready to run: PGM-B, PGM-C,
-PGM-H, PGM-DS and PGM-IoT, derived from the TPC-B, TPC-C, TPC-H, TPC-DS and
-TPCx-IoT specifications. They are not audited TPC benchmarks and their results
+Six reference workloads ship inside the binary, ready to run: PGM-B, PGM-C
+and its client-driven variant, PGM-H, PGM-DS and PGM-IoT, derived from the
+TPC-B, TPC-C, TPC-H, TPC-DS and TPCx-IoT specifications, plus a minimal
+template to start your own. They are not audited TPC benchmarks and their results
 are not comparable to official TPC results; see
 [License and trademarks](project/license.md).
 

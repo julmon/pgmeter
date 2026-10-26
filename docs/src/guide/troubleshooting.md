@@ -21,10 +21,13 @@ others.
 **`server does not support TLS` with `--sslmode require` or `verify-*`**: the
 server has no TLS. Use `prefer` or `disable`, or enable TLS on the server.
 
-**`certificate verify failed` with `verify-ca` or `verify-full`**: the
-server's CA is not in the system certificate store. A custom CA file is not
-supported yet; use `require` to encrypt without verifying, or install the CA
-in the system store.
+**A TLS error naming the certificate (`invalid peer certificate`, an
+unknown issuer, a host name mismatch) with `verify-ca` or `verify-full`**:
+the server's certificate is not signed by a CA in the system store, or does
+not match the host name. A custom CA file is not supported yet; use
+`require` to encrypt without verifying, or install the CA in the system
+store. **`no CA certificate could be loaded from the system store`** means
+the store itself is empty or unreadable.
 
 **`too many clients already`**: the server's `max_connections` is below the
 client count plus the connections already open. Lower `-c` or raise the
@@ -32,17 +35,18 @@ setting.
 
 ## Initializing
 
-**`max_id_query returned NULL: no data found, run pgmeter init first`** on
-`run`: the tables exist but are empty, or `run` was given a different spec
-or database than `init`.
+**``max_id_query returned NULL: no data found, run `pgmeter init` first``**
+(or `returned 0`) on `run`: the tables exist but are empty, or `run` was
+given a different spec or database than `init`.
 
 **`relation "..." does not exist`** on `run`: `init` was not run against this
 database, or the spec's `max_id_query` or transactions name a table the
 schema does not create.
 
-**`init` reports a spec problem** such as ``mode `simple` requires a non-empty
-`sql` `` or ``transaction 3 is in script mode but has no script``: the spec
-is invalid and nothing was touched. The message names the field;
+**`init` reports a spec problem** such as ``transaction 1 (read): mode `simple`
+requires a non-empty `sql` `` or ``transaction 3 (order): mode `script`
+requires `script` or `script_file` ``: the spec is invalid and nothing was
+touched. The message names the field;
 [Writing benchmarks](../writing/index.md) has the rules.
 
 **`deadlock detected` during `init`**: two `init`s are running against the
