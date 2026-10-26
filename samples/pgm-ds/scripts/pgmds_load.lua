@@ -134,6 +134,7 @@ local CLASSES_BY_CATEGORY = {
 local SYLLABLES = {"ought", "able", "pri", "ese", "anti", "cally", "ation",
     "eing", "bar", "n st"}
 local N_MANUFACT = 1000
+local BRAND_ROOTS = {"amalg", "edu pack", "scholar", "importo", "exporti", "brand", "univ", "nameless", "corp"}
 local function syllable_name(n)
     return SYLLABLES[(math.floor((n - 1) / 10) % 10) + 1] .. SYLLABLES[((n - 1) % 10) + 1]
 end
@@ -149,7 +150,9 @@ local COLORS = {"almond", "antique", "aquamarine", "azure", "beige", "black",
 local DIVISIONS = {"able", "ation", "anti", "bar", "cally", "eing", "ese",
     "ought", "pri", "anti"}
 
-local function zip() return string.format("%05d", rand_int(10000, 99999)) end
+-- A pool of 1,000 zip codes shared by addresses, stores and the other
+-- outlets, so that a store's zip is a zip customers live in (q24 joins them).
+local function zip() return string.format("%05d", 10000 + rand_int(0, 999) * 89) end
 -- A few percent of some dimension keys are NULL in TPC-DS data (q76 counts the
 -- sales with a missing store, ship customer or ship address). COPY text NULL.
 local function maybe_null(sk) if rand_int(1, 100) <= 3 then return "\\N" end return tostring(sk) end
@@ -253,13 +256,17 @@ do
             local cat_id = rand_int(1, #CATEGORIES)
             local classes = CLASSES_BY_CATEGORY[cat_id]
             local class_id = rand_int(1, #classes)
-            local brand_id = rand_int(1, 50)
+            -- Brand names follow the TPC-DS pattern: two roots and a number
+            -- ("amalgimporto #1"), i_brand_id encodes them.
+            local root1, root2, brand_n = rand_int(1, #BRAND_ROOTS), rand_int(1, #BRAND_ROOTS), rand_int(1, 16)
+            local brand_id = root1 * 1000 + root2 * 100 + brand_n
+            local brand = BRAND_ROOTS[root1] .. BRAND_ROOTS[root2] .. " #" .. brand_n
             local manu_id = rand_int(1, N_MANUFACT)
             buf[n] = string.format(
-                "%d\tAAAAAAAA%08d\t1997-10-27\t2000-10-26\t%s\t%.2f\t%.2f\t%d\t%s #%d\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\tUnknown\t%d\t%s\n",
+                "%d\tAAAAAAAA%08d\t1997-10-27\t2000-10-26\t%s\t%.2f\t%.2f\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\tUnknown\t%d\t%s\n",
                 gk, gk, descs[n],
                 rand_float(0.99, 99.99), rand_float(0.50, 80.00),
-                brand_id, CATEGORIES[cat_id], brand_id,
+                brand_id, brand,
                 class_id, classes[class_id],
                 cat_id, CATEGORIES[cat_id],
                 manu_id, syllable_name(manu_id),
@@ -467,8 +474,8 @@ do
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
-                sold_date, sold_time, item, cust, cdemo, hdemo, addr, maybe_null(store),
+                "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                sold_date, sold_time, item, cust, cdemo, hdemo, maybe_null(addr), maybe_null(store),
                 rand_int(1, N_PROMO), ticket, q, wc, lp, sp, ext_disc, ext_sales,
                 ext_wholesale, ext_list, ext_tax, coupon, net_paid, net_paid_tax, net_profit)
             rows = rows + 1
@@ -572,8 +579,8 @@ do
                 ret[rn] = string.format(
                     "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
-                    bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
-                    ship_addr, call_center, catalog_page, ship_mode, warehouse,
+                    bill_cdemo, bill_hdemo, bill_addr, bill_cust, bill_cdemo, bill_hdemo,
+                    bill_addr, call_center, catalog_page, ship_mode, warehouse,
                     rand_int(1, N_REASON), order, rq, r_amt, r_tax, r_amt + r_tax, fee,
                     r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
                 if rn >= BATCH then
@@ -657,8 +664,8 @@ do
                 ret[rn] = string.format(
                     "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
-                    bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
-                    ship_addr, web_page, rand_int(1, N_REASON), order, rq, r_amt, r_tax,
+                    bill_cdemo, bill_hdemo, bill_addr, bill_cust, bill_cdemo, bill_hdemo,
+                    bill_addr, web_page, rand_int(1, N_REASON), order, rq, r_amt, r_tax,
                     r_amt + r_tax, fee, r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
                 if rn >= BATCH then
                     flush_copy("COPY web_returns FROM stdin", ret, rn); rn = 0
