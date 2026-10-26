@@ -862,6 +862,41 @@ mod tests {
         let help = err.to_string();
         assert!(help.contains("drops and recreates the tables"), "{help}");
     }
+
+    // The command-line reference of the documentation site is written by
+    // hand; every option clap knows must be in it, so adding or renaming an
+    // option without documenting it fails here.
+    #[test]
+    fn cli_reference_documents_every_option() {
+        let reference = include_str!("../docs/src/reference/cli.md");
+        for command in [
+            vec!["pgmeter", "--help"],
+            vec!["pgmeter", "init", "--help"],
+            vec!["pgmeter", "run", "--help"],
+            vec!["pgmeter", "spec", "new", "--help"],
+            vec!["pgmeter", "spec", "list", "--help"],
+        ] {
+            let Err(err) = CliArgs::new_from("u".to_string(), command.clone().into_iter()) else {
+                panic!("{command:?} must exit through a clap error");
+            };
+            let help = err.to_string();
+            for word in help.split(|c: char| c.is_whitespace() || c == ',' || c == '[') {
+                if let Some(option) = word.strip_prefix("--") {
+                    let name: String = option
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        .collect();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    assert!(
+                        reference.contains(&format!("--{name}")),
+                        "docs/src/reference/cli.md does not mention --{name} (from {command:?})"
+                    );
+                }
+            }
+        }
+    }
     use std::io::Write;
 
     #[test]

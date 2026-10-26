@@ -72,14 +72,6 @@ light and a dark theme.
 
 The figures that matter for a comparison are the headline throughput and
 the per-transaction percentiles, at the same scale factor, client count and
-duration. A few habits make the comparison hold:
-
-- Reload with `init` before each run, so every run starts from the same data.
-- Discard the first run after a load, or make it a warm-up: the first
-  autovacuum and autoanalyze pass lands during it.
-- Use a ramp-up long enough for every client to be running and the caches to
-  settle, and a measured window of at least a minute or two.
-- Repeat each configuration at least twice and look at the spread before
-  reading anything into a difference.
-- Watch the server log for checkpoints: a small `max_wal_size` turns a
-  write-heavy run into a series of checkpoints that distort it.
+duration. [Measuring well](measuring.md) lists the habits that make such a
+comparison hold: reload before each run, discard the first run after a load,
+ramp up and measure long enough, repeat, and watch the server log.
