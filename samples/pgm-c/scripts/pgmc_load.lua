@@ -71,7 +71,7 @@ for _, wh_id in ipairs(ids) do
                 "%d\t%d\t%d\t%s\tOE\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t50000.00\t%.2f\t-10.00\t10.00\t1\t0\t%s\n",
                 c_id, d_id, wh_id,
                 rand_string(8, 16),         -- c_first
-                gen_last(c_id),             -- c_last
+                gen_last(c_id - 1),         -- c_last (TPC-C 4.3.3.1)
                 rand_string(10, 20),        -- c_street_1
                 rand_string(10, 20),        -- c_street_2
                 rand_string(10, 20),        -- c_city
@@ -127,7 +127,7 @@ for _, wh_id in ipairs(ids) do
         for i_id = batch_start, batch_end do
             local s_data = make_original(rand_string(26, 50))
             copy_write(string.format(
-                "%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t%s\n",
+                "%d\t%d\t%d\t0\t0\t0\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
                 i_id, wh_id, rand_int(10, 100),
                 rand_string(24, 24), rand_string(24, 24), rand_string(24, 24),
                 rand_string(24, 24), rand_string(24, 24), rand_string(24, 24),

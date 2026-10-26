@@ -1,0 +1,236 @@
+# PGM-C Benchmark Specification (order-entry OLTP, 5 transaction types)
+#
+# PGM-C is an open workload DERIVED FROM the TPC-C specification. It is not an
+# audited, spec-compliant TPC benchmark, and its results are NOT comparable to
+# official published TPC-C results. TPC, TPC-B, TPC-C, TPC-H, TPC-DS and TPCx
+# are trademarks of the Transaction Processing Performance Council (tpc.org).
+# Transaction logic is implemented in Lua scripts in the scripts/ folder.
+#
+# Expected "errors": TPC-C requires about 1% of New-Order transactions to be
+# rolled back (an order for an invalid item). pgmc_new_order.lua does this with
+# rollback() + error(), and pgmeter counts every Lua error as a transaction
+# error, so a correct PGM-C run shows a New-Order error rate near 1% (around
+# 0.45% of all transactions) with "New-order rollback: item not found" in
+# error.log. Any other error text is a real problem.
+
+name: PGM-C-client
+description: >
+  PGM-C-client: the PGM-C order-entry workload (derived from the TPC-C
+  specification; not an audited, spec-compliant TPC benchmark) driven from the
+  client in Lua, one SQL statement per round trip, the way an application
+  without stored procedures runs it. Its results are not comparable to
+  HammerDB's TPROC-C; use PGM-C for that.
+
+# ---------------------------------------------------------------------------
+# Scaling rules
+# ---------------------------------------------------------------------------
+scaling:
+  unit: warehouse
+  max_id_query: "SELECT MAX(w_id) AS max_id FROM warehouse"
+  constants:
+    districts_per_warehouse: 10
+    customers_per_district: 3000
+    items: 100000
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+schema:
+  tables:
+    - name: warehouse
+      columns:
+        - { name: w_id, type: INTEGER }
+        - { name: w_name, type: "VARCHAR(10)" }
+        - { name: w_street_1, type: "VARCHAR(20)" }
+        - { name: w_street_2, type: "VARCHAR(20)" }
+        - { name: w_city, type: "VARCHAR(20)" }
+        - { name: w_state, type: "CHAR(2)" }
+        - { name: w_zip, type: "CHAR(9)" }
+        - { name: w_tax, type: REAL }
+        - { name: w_ytd, type: "NUMERIC(24, 12)" }
+      primary_key: [w_id]
+
+    - name: district
+      columns:
+        - { name: d_id, type: INTEGER }
+        - { name: d_w_id, type: INTEGER }
+        - { name: d_name, type: "VARCHAR(10)" }
+        - { name: d_street_1, type: "VARCHAR(20)" }
+        - { name: d_street_2, type: "VARCHAR(20)" }
+        - { name: d_city, type: "VARCHAR(20)" }
+        - { name: d_state, type: "CHAR(2)" }
+        - { name: d_zip, type: "CHAR(9)" }
+        - { name: d_tax, type: REAL }
+        - { name: d_ytd, type: "NUMERIC(24, 12)" }
+        - { name: d_next_o_id, type: INTEGER }
+      primary_key: [d_w_id, d_id]
+
+    - name: customer
+      columns:
+        - { name: c_id, type: INTEGER }
+        - { name: c_d_id, type: INTEGER }
+        - { name: c_w_id, type: INTEGER }
+        - { name: c_first, type: "VARCHAR(16)" }
+        - { name: c_middle, type: "CHAR(2)" }
+        - { name: c_last, type: "VARCHAR(16)" }
+        - { name: c_street_1, type: "VARCHAR(20)" }
+        - { name: c_street_2, type: "VARCHAR(20)" }
+        - { name: c_city, type: "VARCHAR(20)" }
+        - { name: c_state, type: "CHAR(2)" }
+        - { name: c_zip, type: "CHAR(9)" }
+        - { name: c_phone, type: "CHAR(16)" }
+        - { name: c_since, type: TIMESTAMP }
+        - { name: c_credit, type: "CHAR(2)" }
+        - { name: c_credit_lim, type: "NUMERIC(24, 12)" }
+        - { name: c_discount, type: REAL }
+        - { name: c_balance, type: "NUMERIC(24, 12)" }
+        - { name: c_ytd_payment, type: "NUMERIC(24, 12)" }
+        - { name: c_payment_cnt, type: REAL }
+        - { name: c_delivery_cnt, type: REAL }
+        - { name: c_data, type: "VARCHAR(500)" }
+      primary_key: [c_w_id, c_d_id, c_id]
+
+    - name: history
+      columns:
+        - { name: h_c_id, type: INTEGER }
+        - { name: h_c_d_id, type: INTEGER }
+        - { name: h_c_w_id, type: INTEGER }
+        - { name: h_d_id, type: INTEGER }
+        - { name: h_w_id, type: INTEGER }
+        - { name: h_date, type: TIMESTAMP }
+        - { name: h_amount, type: REAL }
+        - { name: h_data, type: "VARCHAR(24)" }
+
+    - name: new_order
+      columns:
+        - { name: no_o_id, type: INTEGER }
+        - { name: no_d_id, type: INTEGER }
+        - { name: no_w_id, type: INTEGER }
+      primary_key: [no_w_id, no_d_id, no_o_id]
+
+    - name: orders
+      columns:
+        - { name: o_id, type: INTEGER }
+        - { name: o_d_id, type: INTEGER }
+        - { name: o_w_id, type: INTEGER }
+        - { name: o_c_id, type: INTEGER }
+        - { name: o_entry_d, type: TIMESTAMP }
+        - { name: o_carrier_id, type: INTEGER }
+        - { name: o_ol_cnt, type: INTEGER }
+        - { name: o_all_local, type: INTEGER }
+      primary_key: [o_w_id, o_d_id, o_id]
+
+    - name: order_line
+      columns:
+        - { name: ol_o_id, type: INTEGER }
+        - { name: ol_d_id, type: INTEGER }
+        - { name: ol_w_id, type: INTEGER }
+        - { name: ol_number, type: INTEGER }
+        - { name: ol_i_id, type: INTEGER }
+        - { name: ol_supply_w_id, type: INTEGER }
+        - { name: ol_delivery_d, type: TIMESTAMP }
+        - { name: ol_quantity, type: INTEGER }
+        - { name: ol_amount, type: REAL }
+        - { name: ol_dist_info, type: "VARCHAR(24)" }
+      primary_key: [ol_w_id, ol_d_id, ol_o_id, ol_number]
+
+    - name: item
+      columns:
+        - { name: i_id, type: INTEGER }
+        - { name: i_im_id, type: INTEGER }
+        - { name: i_name, type: "VARCHAR(24)" }
+        - { name: i_price, type: REAL }
+        - { name: i_data, type: "VARCHAR(50)" }
+      primary_key: [i_id]
+
+    - name: stock
+      columns:
+        - { name: s_i_id, type: INTEGER }
+        - { name: s_w_id, type: INTEGER }
+        - { name: s_quantity, type: INTEGER }
+        # The three counters New-Order maintains sit next to s_quantity on
+        # purpose: PostgreSQL logs the changed span of an updated row, so
+        # keeping them together keeps a stock update's WAL at a few dozen
+        # bytes instead of the 240 bytes of s_dist_* in between.
+        - { name: s_ytd, type: "NUMERIC(16, 8)" }
+        - { name: s_order_cnt, type: REAL }
+        - { name: s_remote_cnt, type: REAL }
+        - { name: s_dist_01, type: "VARCHAR(24)" }
+        - { name: s_dist_02, type: "VARCHAR(24)" }
+        - { name: s_dist_03, type: "VARCHAR(24)" }
+        - { name: s_dist_04, type: "VARCHAR(24)" }
+        - { name: s_dist_05, type: "VARCHAR(24)" }
+        - { name: s_dist_06, type: "VARCHAR(24)" }
+        - { name: s_dist_07, type: "VARCHAR(24)" }
+        - { name: s_dist_08, type: "VARCHAR(24)" }
+        - { name: s_dist_09, type: "VARCHAR(24)" }
+        - { name: s_dist_10, type: "VARCHAR(24)" }
+        - { name: s_data, type: "VARCHAR(50)" }
+      primary_key: [s_w_id, s_i_id]
+
+  # No foreign keys and no index beyond the TPC-C ones below, on purpose:
+  # HammerDB's TPROC-C schema declares neither, and TPC-C does not require
+  # declared constraints. With them, every New-Order paid about 12 extra
+  # index probes (order lines -> stock, orders -> customer, ...) and the
+  # (s_w_id, s_i_id, s_quantity) index turned Stock-Level into a hash join
+  # over every low-stock item of the warehouse: 1.8 ms and 3.9 ms per call
+  # instead of 0.8 ms and 0.7 ms at 10 warehouses. Add them back if you want
+  # to measure their cost.
+  indexes:
+    - { name: i_customer_last_first, table: customer, columns: [c_w_id, c_d_id, c_last, c_first, c_id], unique: true }
+    - { name: i_orders,              table: orders,    columns: [o_w_id, o_d_id, o_c_id, o_id],          unique: true }
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+# Pre-load: populate the item table (100K rows, shared across all warehouses)
+# Shared Lua helpers, loaded into the loaders' and the transactions' VMs.
+scripts:
+  modules:
+    - scripts/pgmc_common.lua
+
+pre_load_script: scripts/pgmc_pre_load.lua
+# Per-warehouse loading: warehouse, district, customer, history, stock, orders, new_order, order_line
+load_script: scripts/pgmc_load.lua
+
+# ---------------------------------------------------------------------------
+# Transactions (workload)
+# ---------------------------------------------------------------------------
+# Every transaction is a Lua script issuing its statements one by one
+# (a New-Order with 10 items makes about 45 round trips). PGM-C runs the same
+# logic as server-side functions in one round trip.
+transactions:
+  - id: 1
+    name: Delivery
+    weight: 4
+    description: The Delivery transaction
+    mode: script
+    script_file: scripts/pgmc_delivery.lua
+
+  - id: 2
+    name: New-Order
+    weight: 45
+    description: The New-Order transaction
+    mode: script
+    script_file: scripts/pgmc_new_order.lua
+
+  - id: 3
+    name: Payment
+    weight: 43
+    description: The Payment transaction
+    mode: script
+    script_file: scripts/pgmc_payment.lua
+
+  - id: 4
+    name: Order-Status
+    weight: 4
+    description: The Order-Status transaction
+    mode: script
+    script_file: scripts/pgmc_order_status.lua
+
+  - id: 5
+    name: Stock-Level
+    weight: 4
+    description: The Stock-Level transaction
+    mode: script
+    script_file: scripts/pgmc_stock_level.lua

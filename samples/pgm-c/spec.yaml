@@ -19,7 +19,8 @@ description: >
   specification (not an audited, spec-compliant TPC benchmark; results are not
   comparable to official TPC-C results). Simulates a complete order-entry
   environment with warehouses, districts, customers, orders, and inventory
-  management.
+  management. The five transactions run as PL/pgSQL functions, one round trip
+  each, the model HammerDB's TPROC-C uses for PostgreSQL.
 
 # ---------------------------------------------------------------------------
 # Scaling rules
@@ -148,6 +149,13 @@ schema:
         - { name: s_i_id, type: INTEGER }
         - { name: s_w_id, type: INTEGER }
         - { name: s_quantity, type: INTEGER }
+        # The three counters New-Order maintains sit next to s_quantity on
+        # purpose: PostgreSQL logs the changed span of an updated row, so
+        # keeping them together keeps a stock update's WAL at a few dozen
+        # bytes instead of the 240 bytes of s_dist_* in between.
+        - { name: s_ytd, type: "NUMERIC(16, 8)" }
+        - { name: s_order_cnt, type: REAL }
+        - { name: s_remote_cnt, type: REAL }
         - { name: s_dist_01, type: "VARCHAR(24)" }
         - { name: s_dist_02, type: "VARCHAR(24)" }
         - { name: s_dist_03, type: "VARCHAR(24)" }
@@ -158,34 +166,235 @@ schema:
         - { name: s_dist_08, type: "VARCHAR(24)" }
         - { name: s_dist_09, type: "VARCHAR(24)" }
         - { name: s_dist_10, type: "VARCHAR(24)" }
-        - { name: s_ytd, type: "NUMERIC(16, 8)" }
-        - { name: s_order_cnt, type: REAL }
-        - { name: s_remote_cnt, type: REAL }
         - { name: s_data, type: "VARCHAR(50)" }
       primary_key: [s_w_id, s_i_id]
 
-  foreign_keys:
-    - { name: fk_district_warehouse,  table: district,   columns: [d_w_id],                    references: { table: warehouse, columns: [w_id] } }
-    - { name: fk_customer_district,   table: customer,   columns: [c_w_id, c_d_id],             references: { table: district,  columns: [d_w_id, d_id] } }
-    - { name: fk_history_customer,    table: history,    columns: [h_c_w_id, h_c_d_id, h_c_id], references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
-    - { name: fk_history_district,    table: history,    columns: [h_w_id, h_d_id],              references: { table: district,  columns: [d_w_id, d_id] } }
-    - { name: fk_new_order_orders,    table: new_order,  columns: [no_w_id, no_d_id, no_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
-    - { name: fk_orders_customer,     table: orders,     columns: [o_w_id, o_d_id, o_c_id],      references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
-    - { name: fk_order_line_orders,   table: order_line, columns: [ol_w_id, ol_d_id, ol_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
-    - { name: fk_order_line_stock,    table: order_line, columns: [ol_supply_w_id, ol_i_id],     references: { table: stock,     columns: [s_w_id, s_i_id] } }
-    - { name: fk_stock_warehouse,     table: stock,      columns: [s_w_id],                     references: { table: warehouse, columns: [w_id] } }
-    - { name: fk_stock_item,          table: stock,      columns: [s_i_id],                     references: { table: item,      columns: [i_id] } }
-
+  # No foreign keys and no index beyond the TPC-C ones below, on purpose:
+  # HammerDB's TPROC-C schema declares neither, and TPC-C does not require
+  # declared constraints. With them, every New-Order paid about 12 extra
+  # index probes (order lines -> stock, orders -> customer, ...) and the
+  # (s_w_id, s_i_id, s_quantity) index turned Stock-Level into a hash join
+  # over every low-stock item of the warehouse: 1.8 ms and 3.9 ms per call
+  # instead of 0.8 ms and 0.7 ms at 10 warehouses. Add them back if you want
+  # to measure their cost.
   indexes:
     - { name: i_customer_last_first, table: customer, columns: [c_w_id, c_d_id, c_last, c_first, c_id], unique: true }
     - { name: i_orders,              table: orders,    columns: [o_w_id, o_d_id, o_c_id, o_id],          unique: true }
-    - { name: i_stock_quantity,      table: stock,     columns: [s_w_id, s_i_id, s_quantity] }
 
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 # Pre-load: populate the item table (100K rows, shared across all warehouses)
 # Shared Lua helpers, loaded into the loaders' and the transactions' VMs.
+  post_ddls:
+    # The five TPC-C transactions as PL/pgSQL functions: one round trip per
+    # transaction, set-based statements over the order lines. This is the
+    # model HammerDB's TPROC-C uses for PostgreSQL, so PGM-C figures are
+    # comparable with its NOPM/TPM. An unknown item (TPC-C 2.4.1.4, 1% of
+    # New-Orders) raises no_data_found, which rolls the statement back and
+    # is counted as an error by pgmeter.
+    - |
+      CREATE OR REPLACE FUNCTION pgmc_new_order(
+          p_w_id int, p_d_id int, p_c_id int,
+          p_item_ids int[], p_supply_w_ids int[], p_quantities int[])
+      RETURNS numeric LANGUAGE plpgsql AS $$
+      DECLARE
+          v_w_tax      real;
+          v_d_tax      real;
+          v_c_discount real;
+          v_o_id       int;
+          v_prices     real[];
+          v_total      numeric;
+      BEGIN
+          SELECT w_tax, c_discount INTO STRICT v_w_tax, v_c_discount
+            FROM warehouse, customer
+           WHERE w_id = p_w_id AND c_w_id = p_w_id AND c_d_id = p_d_id AND c_id = p_c_id;
+
+          UPDATE district SET d_next_o_id = d_next_o_id + 1
+           WHERE d_w_id = p_w_id AND d_id = p_d_id
+           RETURNING d_next_o_id - 1, d_tax INTO v_o_id, v_d_tax;
+
+          SELECT array_agg(i_price ORDER BY u.ord) INTO v_prices
+            FROM unnest(p_item_ids) WITH ORDINALITY AS u(item_id, ord)
+            LEFT JOIN item ON i_id = u.item_id;
+          IF array_position(v_prices, NULL) IS NOT NULL THEN
+              RAISE EXCEPTION 'New-Order rollback: unknown item' USING ERRCODE = 'no_data_found';
+          END IF;
+
+          INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_ol_cnt, o_all_local)
+          VALUES (v_o_id, p_d_id, p_w_id, p_c_id, now(), cardinality(p_item_ids),
+                  CASE WHEN p_supply_w_ids <@ ARRAY[p_w_id] THEN 1 ELSE 0 END);
+          INSERT INTO new_order (no_o_id, no_d_id, no_w_id) VALUES (v_o_id, p_d_id, p_w_id);
+
+          WITH line AS (
+              -- Sorted so that concurrent orders lock their stock rows in the
+              -- same order and cannot deadlock each other.
+              SELECT * FROM unnest(p_item_ids, p_supply_w_ids, p_quantities, v_prices)
+                     WITH ORDINALITY AS l(item_id, supply_w_id, quantity, price, ol_number)
+               ORDER BY supply_w_id, item_id
+          ), stock_update AS (
+              UPDATE stock
+                 SET s_quantity   = CASE WHEN s_quantity - line.quantity >= 10
+                                         THEN s_quantity - line.quantity
+                                         ELSE s_quantity - line.quantity + 91 END,
+                     s_ytd        = s_ytd + line.quantity,
+                     s_order_cnt  = s_order_cnt + 1,
+                     s_remote_cnt = s_remote_cnt + CASE WHEN line.supply_w_id <> p_w_id THEN 1 ELSE 0 END
+                FROM line
+               WHERE s_w_id = line.supply_w_id AND s_i_id = line.item_id
+           RETURNING line.ol_number, line.item_id, line.supply_w_id, line.quantity,
+                     (line.quantity * line.price)::real AS amount,
+                     CASE p_d_id WHEN 1 THEN s_dist_01 WHEN 2 THEN s_dist_02 WHEN 3 THEN s_dist_03
+                                 WHEN 4 THEN s_dist_04 WHEN 5 THEN s_dist_05 WHEN 6 THEN s_dist_06
+                                 WHEN 7 THEN s_dist_07 WHEN 8 THEN s_dist_08 WHEN 9 THEN s_dist_09
+                                 ELSE s_dist_10 END AS dist_info
+          ), lines AS (
+              INSERT INTO order_line (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id,
+                                      ol_supply_w_id, ol_quantity, ol_amount, ol_dist_info)
+              SELECT v_o_id, p_d_id, p_w_id, ol_number, item_id, supply_w_id, quantity, amount, dist_info
+                FROM stock_update
+           RETURNING ol_amount
+          )
+          SELECT sum(ol_amount) INTO v_total FROM lines;
+
+          RETURN v_total * (1 + v_w_tax + v_d_tax) * (1 - v_c_discount);
+      END $$;
+    - |
+      CREATE OR REPLACE FUNCTION pgmc_payment(
+          p_w_id int, p_d_id int, p_c_w_id int, p_c_d_id int, p_c_id int,
+          p_by_name boolean, p_c_last varchar, p_h_amount numeric)
+      RETURNS int LANGUAGE plpgsql AS $$
+      DECLARE
+          v_w_name varchar;
+          v_d_name varchar;
+          v_c_id   int := p_c_id;
+      BEGIN
+          UPDATE warehouse SET w_ytd = w_ytd + p_h_amount
+           WHERE w_id = p_w_id RETURNING w_name INTO v_w_name;
+          UPDATE district SET d_ytd = d_ytd + p_h_amount
+           WHERE d_w_id = p_w_id AND d_id = p_d_id RETURNING d_name INTO v_d_name;
+
+          IF p_by_name THEN
+              -- TPC-C 2.5.2.2: the customer in the middle of the list sorted by first name
+              SELECT c_id INTO STRICT v_c_id
+                FROM (SELECT c_id, row_number() OVER (ORDER BY c_first) AS rn, count(*) OVER () AS n
+                        FROM customer
+                       WHERE c_w_id = p_c_w_id AND c_d_id = p_c_d_id AND c_last = p_c_last) s
+               WHERE rn = n / 2 + 1;
+          END IF;
+
+          UPDATE customer
+             SET c_balance     = c_balance - p_h_amount,
+                 c_ytd_payment = c_ytd_payment + p_h_amount,
+                 c_payment_cnt = c_payment_cnt + 1,
+                 c_data        = CASE WHEN c_credit = 'BC'
+                                      THEN substr(format('%s %s %s %s %s %s |', c_id, c_d_id, c_w_id,
+                                                         p_d_id, p_w_id, p_h_amount) || c_data, 1, 500)
+                                      ELSE c_data END
+           WHERE c_w_id = p_c_w_id AND c_d_id = p_c_d_id AND c_id = v_c_id;
+
+          INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data)
+          VALUES (v_c_id, p_c_d_id, p_c_w_id, p_d_id, p_w_id, now(), p_h_amount,
+                  v_w_name || '    ' || v_d_name);
+          RETURN v_c_id;
+      END $$;
+    - |
+      CREATE OR REPLACE FUNCTION pgmc_delivery(p_w_id int, p_carrier_id int)
+      RETURNS int LANGUAGE plpgsql AS $$
+      DECLARE
+          v_delivered int := 0;
+          v_d_id      int;
+          v_o_id      int;
+          v_c_id      int;
+          v_amount    numeric;
+      BEGIN
+          -- Districts are visited in order so that two concurrent deliveries of
+          -- the same warehouse take their row locks in the same order and
+          -- cannot deadlock each other.
+          FOR v_d_id IN 1..10 LOOP
+              SELECT min(no_o_id) INTO v_o_id
+                FROM new_order WHERE no_w_id = p_w_id AND no_d_id = v_d_id;
+              IF v_o_id IS NULL THEN
+                  CONTINUE;  -- nothing to deliver in this district
+              END IF;
+              DELETE FROM new_order
+               WHERE no_w_id = p_w_id AND no_d_id = v_d_id AND no_o_id = v_o_id;
+              IF NOT FOUND THEN
+                  CONTINUE;  -- a concurrent delivery took it first
+              END IF;
+              UPDATE orders SET o_carrier_id = p_carrier_id
+               WHERE o_w_id = p_w_id AND o_d_id = v_d_id AND o_id = v_o_id
+           RETURNING o_c_id INTO v_c_id;
+              WITH lines AS (
+                  UPDATE order_line SET ol_delivery_d = now()
+                   WHERE ol_w_id = p_w_id AND ol_d_id = v_d_id AND ol_o_id = v_o_id
+               RETURNING ol_amount
+              )
+              SELECT sum(ol_amount) INTO v_amount FROM lines;
+              UPDATE customer
+                 SET c_balance = c_balance + v_amount, c_delivery_cnt = c_delivery_cnt + 1
+               WHERE c_w_id = p_w_id AND c_d_id = v_d_id AND c_id = v_c_id;
+              v_delivered := v_delivered + 1;
+          END LOOP;
+          RETURN v_delivered;
+      END $$;
+    - |
+      CREATE OR REPLACE FUNCTION pgmc_order_status(
+          p_w_id int, p_d_id int, p_c_id int, p_by_name boolean, p_c_last varchar)
+      RETURNS int LANGUAGE plpgsql AS $$
+      DECLARE
+          v_c_id    int := p_c_id;
+          v_balance numeric;
+          v_first   varchar;
+          v_middle  char(2);
+          v_last    varchar;
+          v_o_id    int;
+          v_entry   timestamp;
+          v_carrier int;
+          v_lines   int;
+      BEGIN
+          IF p_by_name THEN
+              SELECT c_id INTO STRICT v_c_id
+                FROM (SELECT c_id, row_number() OVER (ORDER BY c_first) AS rn, count(*) OVER () AS n
+                        FROM customer
+                       WHERE c_w_id = p_w_id AND c_d_id = p_d_id AND c_last = p_c_last) s
+               WHERE rn = n / 2 + 1;
+          END IF;
+          SELECT c_balance, c_first, c_middle, c_last INTO STRICT v_balance, v_first, v_middle, v_last
+            FROM customer WHERE c_w_id = p_w_id AND c_d_id = p_d_id AND c_id = v_c_id;
+          SELECT o_id, o_entry_d, o_carrier_id INTO v_o_id, v_entry, v_carrier
+            FROM orders WHERE o_w_id = p_w_id AND o_d_id = p_d_id AND o_c_id = v_c_id
+           ORDER BY o_id DESC LIMIT 1;
+          SELECT count(*) INTO v_lines
+            FROM (SELECT ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_delivery_d
+                    FROM order_line
+                   WHERE ol_w_id = p_w_id AND ol_d_id = p_d_id AND ol_o_id = v_o_id) l;
+          RETURN v_lines;
+      END $$;
+    - |
+      CREATE OR REPLACE FUNCTION pgmc_stock_level(p_w_id int, p_d_id int, p_threshold int)
+      RETURNS int LANGUAGE plpgsql AS $$
+      DECLARE
+          v_next_o_id int;
+          v_count     int;
+      BEGIN
+          -- Two steps, as TPC-C describes them. Joining district in would hide
+          -- the 20-order window from the planner (it compares order lines with
+          -- a column, not a value), and once the first autoanalyze of a fresh
+          -- database lands it picks a hash join over every order line of the
+          -- district and every low-stock item of the warehouse: 150 ms instead
+          -- of 2 ms, for about a minute.
+          SELECT d_next_o_id INTO STRICT v_next_o_id
+            FROM district WHERE d_w_id = p_w_id AND d_id = p_d_id;
+          SELECT count(DISTINCT s_i_id) INTO v_count
+            FROM order_line
+            JOIN stock ON s_w_id = ol_w_id AND s_i_id = ol_i_id
+           WHERE ol_w_id = p_w_id AND ol_d_id = p_d_id
+             AND ol_o_id >= v_next_o_id - 20 AND ol_o_id < v_next_o_id
+             AND s_quantity < p_threshold;
+          RETURN v_count;
+      END $$;
+
 scripts:
   modules:
     - scripts/pgmc_common.lua
@@ -197,39 +406,93 @@ load_script: scripts/pgmc_load.lua
 # ---------------------------------------------------------------------------
 # Transactions (workload)
 # ---------------------------------------------------------------------------
-# All TPC-C transactions use Lua scripts for their procedural logic.
+# Each transaction is one call to its PL/pgSQL function (schema.post_ddls):
+# the client generates the TPC-C inputs in Lua and makes a single round trip,
+# like HammerDB's TPROC-C. See PGM-C-client for the same workload driven
+# statement by statement from the client.
 transactions:
   - id: 1
     name: Delivery
     weight: 4
-    description: The Delivery transaction
+    description: The Delivery transaction (the oldest undelivered order of each of the 10 districts)
     mode: script
-    script_file: scripts/pgmc_delivery.lua
+    script: |
+      query_one("SELECT pgmc_delivery($1, $2)", rand_int(min_id, max_id), rand_int(1, 10))
 
   - id: 2
     name: New-Order
     weight: 45
-    description: The New-Order transaction
+    description: The New-Order transaction (5 to 15 order lines; 1% roll back on an unknown item)
     mode: script
-    script_file: scripts/pgmc_new_order.lua
+    script: |
+      local w_id = rand_int(min_id, max_id)
+      local d_id = rand_int(1, const.districts_per_warehouse)
+      local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
+      local ol_cnt = rand_int(5, 15)
+      local rbk = rand_int(1, 100)
+      local items, supply, quantities, seen = {}, {}, {}, {}
+      for i = 1, ol_cnt do
+          local item
+          repeat item = nurand(8191, C_ITEM, 1, const.items) until not seen[item]
+          seen[item] = true
+          -- TPC-C 2.4.1.4: 1% of the orders carry an unused item number on their
+          -- last line and roll back.
+          if rbk == 1 and i == ol_cnt then item = const.items + 1 end
+          items[i] = item
+          -- TPC-C 2.4.1.5.2: 1% of the lines are supplied by another warehouse.
+          local s_w_id = w_id
+          if max_id > min_id and rand_int(1, 100) == 1 then
+              repeat s_w_id = rand_int(min_id, max_id) until s_w_id ~= w_id
+          end
+          supply[i] = s_w_id
+          quantities[i] = rand_int(1, 10)
+      end
+      query_one("SELECT pgmc_new_order($1, $2, $3, $4::int[], $5::int[], $6::int[])",
+          w_id, d_id, c_id,
+          "{" .. table.concat(items, ",") .. "}",
+          "{" .. table.concat(supply, ",") .. "}",
+          "{" .. table.concat(quantities, ",") .. "}")
 
   - id: 3
     name: Payment
     weight: 43
-    description: The Payment transaction
+    description: The Payment transaction (60% by last name, 15% for a customer of another warehouse)
     mode: script
-    script_file: scripts/pgmc_payment.lua
+    script: |
+      local w_id = rand_int(min_id, max_id)
+      local d_id = rand_int(1, const.districts_per_warehouse)
+      local c_w_id, c_d_id = w_id, d_id
+      if rand_int(1, 100) > 85 then
+          c_d_id = rand_int(1, const.districts_per_warehouse)
+          if max_id > min_id then
+              repeat c_w_id = rand_int(min_id, max_id) until c_w_id ~= w_id
+          end
+      end
+      local by_name = rand_int(1, 100) <= 60
+      local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
+      local c_last = gen_last(nurand(255, C_LAST_RUN, 0, 999))
+      local h_amount = string.format("%.2f", rand_float(1.00, 5000.00))
+      query_one("SELECT pgmc_payment($1, $2, $3, $4, $5, $6, $7, $8::numeric)",
+          w_id, d_id, c_w_id, c_d_id, c_id, by_name, c_last, h_amount)
 
   - id: 4
     name: Order-Status
     weight: 4
-    description: The Order-Status transaction
+    description: The Order-Status transaction (60% by last name)
     mode: script
-    script_file: scripts/pgmc_order_status.lua
+    script: |
+      local w_id = rand_int(min_id, max_id)
+      local d_id = rand_int(1, const.districts_per_warehouse)
+      local by_name = rand_int(1, 100) <= 60
+      local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
+      local c_last = gen_last(nurand(255, C_LAST_RUN, 0, 999))
+      query_one("SELECT pgmc_order_status($1, $2, $3, $4, $5)", w_id, d_id, c_id, by_name, c_last)
 
   - id: 5
     name: Stock-Level
     weight: 4
-    description: The Stock-Level transaction
+    description: The Stock-Level transaction (items of the last 20 orders below a threshold of 10 to 20)
     mode: script
-    script_file: scripts/pgmc_stock_level.lua
+    script: |
+      query_one("SELECT pgmc_stock_level($1, $2, $3)",
+          rand_int(min_id, max_id), rand_int(1, const.districts_per_warehouse), rand_int(10, 20))

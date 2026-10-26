@@ -4,7 +4,7 @@
 local warehouse_id = rand_int(min_id, max_id)
 local district_id = rand_int(1, 10)
 local y = rand_int(1, 100)
-local c_id = rand_int(1, const.customers_per_district)
+local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
 
 -- gen_last() comes from scripts/pgmc_common.lua (scripts.modules)
 
@@ -12,7 +12,7 @@ begin()
 
 -- Customer lookup: 60% by last name, 40% by ID
 if y <= 60 then
-    local c_last = gen_last(rand_int(1, 999))
+    local c_last = gen_last(nurand(255, C_LAST_RUN, 0, 999))
     local c_rows = query(
         "SELECT c_id FROM customer WHERE c_w_id = $1 AND c_d_id = $2 AND c_last = $3 ORDER BY c_first ASC",
         warehouse_id, district_id, c_last
