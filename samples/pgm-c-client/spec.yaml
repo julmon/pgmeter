@@ -170,14 +170,25 @@ schema:
         - { name: s_data, type: "VARCHAR(50)" }
       primary_key: [s_w_id, s_i_id]
 
-  # No foreign keys and no index beyond the TPC-C ones below, on purpose:
-  # HammerDB's TPROC-C schema declares neither, and TPC-C does not require
-  # declared constraints. With them, every New-Order paid about 12 extra
-  # index probes (order lines -> stock, orders -> customer, ...) and the
-  # (s_w_id, s_i_id, s_quantity) index turned Stock-Level into a hash join
-  # over every low-stock item of the warehouse: 1.8 ms and 3.9 ms per call
-  # instead of 0.8 ms and 0.7 ms at 10 warehouses. Add them back if you want
-  # to measure their cost.
+  # TPC-C's referential integrity, declared as foreign keys. HammerDB's TPROC-C
+  # schema declares none, and they cost every New-Order about 12 extra index
+  # probes (order lines -> stock, orders -> customer, ...); `pgmeter init
+  # --no-fkey` loads the schema without them when that is the comparison you
+  # want. The (s_w_id, s_i_id, s_quantity) index of earlier versions is gone
+  # on purpose: it turned Stock-Level into a hash join over every low-stock
+  # item of the warehouse (3.9 ms instead of 0.7 ms per call at 10 warehouses).
+  foreign_keys:
+    - { name: fk_district_warehouse,  table: district,   columns: [d_w_id],                    references: { table: warehouse, columns: [w_id] } }
+    - { name: fk_customer_district,   table: customer,   columns: [c_w_id, c_d_id],             references: { table: district,  columns: [d_w_id, d_id] } }
+    - { name: fk_history_customer,    table: history,    columns: [h_c_w_id, h_c_d_id, h_c_id], references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
+    - { name: fk_history_district,    table: history,    columns: [h_w_id, h_d_id],              references: { table: district,  columns: [d_w_id, d_id] } }
+    - { name: fk_new_order_orders,    table: new_order,  columns: [no_w_id, no_d_id, no_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
+    - { name: fk_orders_customer,     table: orders,     columns: [o_w_id, o_d_id, o_c_id],      references: { table: customer,  columns: [c_w_id, c_d_id, c_id] } }
+    - { name: fk_order_line_orders,   table: order_line, columns: [ol_w_id, ol_d_id, ol_o_id],   references: { table: orders,    columns: [o_w_id, o_d_id, o_id] } }
+    - { name: fk_order_line_stock,    table: order_line, columns: [ol_supply_w_id, ol_i_id],     references: { table: stock,     columns: [s_w_id, s_i_id] } }
+    - { name: fk_stock_warehouse,     table: stock,      columns: [s_w_id],                     references: { table: warehouse, columns: [w_id] } }
+    - { name: fk_stock_item,          table: stock,      columns: [s_i_id],                     references: { table: item,      columns: [i_id] } }
+
   indexes:
     - { name: i_customer_last_first, table: customer, columns: [c_w_id, c_d_id, c_last, c_first, c_id], unique: true }
     - { name: i_orders,              table: orders,    columns: [o_w_id, o_d_id, o_c_id, o_id],          unique: true }
