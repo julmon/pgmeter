@@ -32,7 +32,8 @@ First public release.
   HammerDB's TPROC-C; PGM-C-client drives the same workload from the client
   statement by statement. Both pick customers, items and last names with TPC-C's
   NURand distribution. `pgmeter spec list` shows them and `pgmeter spec new`
-  scaffolds a copy to edit.
+  scaffolds a copy to edit. PGM-B, PGM-C and PGM-H were measured against
+  pgbench and HammerDB on the same server (`docs/parity.md`).
 - Each run writes a result directory (`pgmeter-<UTC timestamp>/`) with
   `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
   ramp-up boundary), `transaction.log` and `error.log` (one record per line,

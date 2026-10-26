@@ -20,8 +20,9 @@ below — they are not audited, full-specification TPC benchmarks.
   (Luau), with a built-in PostgreSQL bridge (`exec`, `query`, `copy_*`,
   transaction control) and fast random-data helpers.
 - **Bundled reference specs**: PGM-B, PGM-C, PGM-H, PGM-DS, and PGM-IoT (derived
-  from TPC-B/C/H/DS and TPCx-IoT), validated to match hand-written native
-  implementations.
+  from TPC-B/C/H/DS and TPCx-IoT). PGM-B, PGM-C and PGM-H were measured
+  against pgbench and HammerDB on the same server; see
+  [`docs/parity.md`](docs/parity.md).
 - **Concurrent clients** with a configurable **ramp-up period**.
 - **Data aggregation & statistics**: Response-time percentiles (95th, 99th),
   throughput (TPM/TPS), and error rates.
@@ -116,7 +117,9 @@ closest to yours. The full authoring guide — every spec field, the row-templat
 language, both data-loading styles, the simple/script transaction modes, and
 the complete Lua API reference — lives in
 [`docs/yaml-benchmarks.md`](docs/yaml-benchmarks.md). It includes a worked
-from-scratch example.
+from-scratch example. [`docs/parity.md`](docs/parity.md) records how the
+bundled PGM-B, PGM-C and PGM-H compare with pgbench and HammerDB on the same
+server, and what to watch for when measuring.
 
 ## Command Options
 
@@ -282,6 +285,7 @@ src/
     └── assets/                # Vendored assets (inlined Chart.js)
 samples/                       # Reference and example benchmark specs
 docs/yaml-benchmarks.md        # Benchmark authoring guide
+docs/parity.md                 # PGM-B/C/H measured against pgbench and HammerDB
 tests/                         # End-to-end tests (need `PGMETER_TEST_DSN`)
 ```
 
