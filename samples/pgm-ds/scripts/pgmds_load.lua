@@ -105,11 +105,38 @@ local COUNTRIES = {"United States", "Canada", "Mexico", "Germany", "France",
     "Japan", "Brazil", "India", "China", "Australia"}
 local CATEGORIES = {"Women", "Men", "Children", "Shoes", "Music", "Jewelry",
     "Home", "Sports", "Books", "Electronics"}
-local CLASSES = {"dresses", "fragrances", "shirts", "pants", "rock", "classical",
-    "rings", "earings", "bedding", "lighting", "football", "baseball", "fiction",
-    "history", "stereo", "tv"}
-local MANUFACT = {"amalgamily", "edu packscholar", "exportischolar", "importoamalg",
-    "scholaramalgamalg", "brandbrand", "univamalg", "edu packamalg", "namelessbrand"}
+-- Item classes per category, the lists the TPC-DS query templates filter on
+-- (q53, q54, q63, q89 name classes such as "personal" or "reference").
+local CLASSES_BY_CATEGORY = {
+    {"dresses", "fragrances", "swimwear", "maternity"},
+    {"accessories", "pants", "shirts", "sportswear"},
+    {"infants", "newborn", "toddlers", "school-uniforms"},
+    {"athletic", "kids", "mens", "womens"},
+    {"classical", "country", "pop", "rock"},
+    {"birdal", "costume", "diamonds", "estate", "gold", "loose stones",
+     "mens watch", "pendants", "rings", "semi-precious", "womens watch",
+     "consignment"},
+    {"accent", "bathroom", "bedding", "blinds/shades", "curtains/drapes",
+     "decor", "flatware", "furniture", "glassware", "kids", "lighting",
+     "mattresses", "paint", "rugs", "tables", "wallpaper"},
+    {"archery", "athletic shoes", "baseball", "basketball", "camping",
+     "fishing", "fitness", "football", "golf", "guns", "hockey", "optics",
+     "outdoor", "pools", "sailing", "tennis"},
+    {"arts", "business", "computers", "cooking", "entertainments", "fiction",
+     "history", "home repair", "mystery", "parenting", "reference", "romance",
+     "science", "self-help", "sports", "travel"},
+    {"audio", "automotive", "cameras", "camcorders", "disk drives",
+     "dvd/vcr players", "karoke", "memory", "monitors", "musical", "personal",
+     "portable", "scanners", "stereo", "televisions", "wireless"},
+}
+-- The TPC-DS syllables; names are made of two of them (1,000 manufacturers,
+-- so that q3, q32, q37, q41, q82 and q92's i_manufact_id ranges select rows).
+local SYLLABLES = {"ought", "able", "pri", "ese", "anti", "cally", "ation",
+    "eing", "bar", "n st"}
+local N_MANUFACT = 1000
+local function syllable_name(n)
+    return SYLLABLES[(math.floor((n - 1) / 10) % 10) + 1] .. SYLLABLES[((n - 1) % 10) + 1]
+end
 local SIZES = {"small", "medium", "large", "extra large", "petite", "economy", "N/A"}
 local UNITS = {"Each", "Dozen", "Case", "Box", "Pallet", "Carton", "Ounce",
     "Bunch", "Gross", "Cup", "Dram", "Lb", "Ton", "Tsp", "Gram", "Oz", "Unknown"}
@@ -123,6 +150,9 @@ local DIVISIONS = {"able", "ation", "anti", "bar", "cally", "eing", "ese",
     "ought", "pri", "anti"}
 
 local function zip() return string.format("%05d", rand_int(10000, 99999)) end
+-- A few percent of some dimension keys are NULL in TPC-DS data (q76 counts the
+-- sales with a missing store, ship customer or ship address). COPY text NULL.
+local function maybe_null(sk) if rand_int(1, 100) <= 3 then return "\\N" end return tostring(sk) end
 local function gmt() return string.format("%.2f", -1 * rand_int(5, 8)) end
 
 -- Fixed dimension cardinalities the facts reference.
@@ -221,20 +251,21 @@ do
             n = n + 1
             local gk = item_off + sk
             local cat_id = rand_int(1, #CATEGORIES)
-            local class_id = rand_int(1, #CLASSES)
+            local classes = CLASSES_BY_CATEGORY[cat_id]
+            local class_id = rand_int(1, #classes)
             local brand_id = rand_int(1, 50)
-            local manu_id = rand_int(1, #MANUFACT)
+            local manu_id = rand_int(1, N_MANUFACT)
             buf[n] = string.format(
                 "%d\tAAAAAAAA%08d\t1997-10-27\t2000-10-26\t%s\t%.2f\t%.2f\t%d\t%s #%d\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\tUnknown\t%d\t%s\n",
                 gk, gk, descs[n],
                 rand_float(0.99, 99.99), rand_float(0.50, 80.00),
                 brand_id, CATEGORIES[cat_id], brand_id,
-                class_id, CLASSES[class_id],
+                class_id, classes[class_id],
                 cat_id, CATEGORIES[cat_id],
-                manu_id, MANUFACT[manu_id],
+                manu_id, syllable_name(manu_id),
                 pick(SIZES), forms[n], pick(COLORS), pick(UNITS),
                 rand_int(1, 100),
-                pick(CATEGORIES) .. " " .. pick(CLASSES))
+                syllable_name(rand_int(1, 100)) .. syllable_name(rand_int(1, 100)))
         end
         flush_copy("COPY item FROM stdin", buf, n)
     end
@@ -271,8 +302,8 @@ do
     for sk = 1, 12 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1997-03-13\t2099-12-31\t%d\tese\t%d\t%d\t8AM-4PM\t%s %s\t%d\t%s\tgeo desc\t%s %s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
-            sk, sk, rand_date_sk(2000, 2003),
+            "%d\tAAAAAAAA%08d\t1997-03-13\t2099-12-31\t%d\t%s\t%d\t%d\t8AM-4PM\t%s %s\t%d\t%s\tgeo desc\t%s %s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
+            sk, sk, rand_date_sk(2000, 2003), SYLLABLES[((sk - 1) % #SYLLABLES) + 1],
             rand_int(200, 300), rand_int(5000000, 9000000),
             pick(FIRST_NAMES), pick(LAST_NAMES),
             rand_int(1, 10), pick(DIVISIONS),
@@ -316,10 +347,10 @@ do
     for sk = 1, 30 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1997-08-16\t2099-12-31\tsite_%d\t%d\t%d\t%s\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\tCompany %d\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
+            "%d\tAAAAAAAA%08d\t1997-08-16\t2099-12-31\tsite_%d\t%d\t%d\t%s\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
             sk, sk, sk, rand_date_sk(1997, 1998), rand_date_sk(2002, 2003),
             pick(DIVISIONS), pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6),
-            pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6), rand_int(1, 6),
+            pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6), SYLLABLES[((sk - 1) % #SYLLABLES) + 1],
             rand_int(1, 9999), pick(CITIES), pick(STREET_TYPES), rand_int(1, 600),
             pick(CITIES), pick(COUNTIES), pick(STATES), zip(), gmt(),
             rand_float(0.0, 0.12))
@@ -339,7 +370,7 @@ do
             "%d\tAAAAAAAA%08d\t1997-09-03\t2099-12-31\t%d\t%d\t%s\t%d\thttp://www.example.com/page%d\t%s\t%d\t%d\t%d\t%d\n",
             sk, sk, rand_date_sk(1997, 1998), rand_date_sk(2001, 2003),
             rand_int(0, 1) == 1 and "Y" or "N", rand_int(1, N_CUST), sk,
-            pick(TYPES), rand_int(100, 5000), rand_int(2, 25),
+            pick(TYPES), rand_int(100, 8000), rand_int(2, 25),
             rand_int(1, 7), rand_int(1, 4))
     end
     flush_copy("COPY web_page FROM stdin", buf, n)
@@ -436,8 +467,8 @@ do
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
-                sold_date, sold_time, item, cust, cdemo, hdemo, addr, store,
+                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                sold_date, sold_time, item, cust, cdemo, hdemo, addr, maybe_null(store),
                 rand_int(1, N_PROMO), ticket, q, wc, lp, sp, ext_disc, ext_sales,
                 ext_wholesale, ext_list, ext_tax, coupon, net_paid, net_paid_tax, net_profit)
             rows = rows + 1
@@ -482,7 +513,7 @@ do
         order = order + 1
         local sold_date = rand_date_sk(SALE_Y1, SALE_Y2)
         local sold_time = rand_int(0, 86399)
-        local ship_date = sold_date + rand_int(1, 60)
+        local ship_date = sold_date + rand_int(1, 120)
         local bill_cust, bill_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
         local bill_hdemo, bill_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
         local ship_cust, ship_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
@@ -517,9 +548,9 @@ do
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                 sold_date, sold_time, ship_date, bill_cust, bill_cdemo, bill_hdemo,
-                bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, call_center,
+                bill_addr, ship_cust, ship_cdemo, ship_hdemo, maybe_null(ship_addr), call_center,
                 catalog_page, ship_mode, warehouse, item, rand_int(1, N_PROMO), order, q,
                 wc, lp, sp, ext_disc, ext_sales, ext_wholesale, ext_list, ext_tax, coupon,
                 ext_ship, net_paid, net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)
@@ -567,7 +598,7 @@ do
         order = order + 1
         local sold_date = rand_date_sk(SALE_Y1, SALE_Y2)
         local sold_time = rand_int(0, 86399)
-        local ship_date = sold_date + rand_int(1, 60)
+        local ship_date = sold_date + rand_int(1, 120)
         local bill_cust, bill_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
         local bill_hdemo, bill_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
         local ship_cust, ship_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
@@ -602,9 +633,9 @@ do
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                 sold_date, sold_time, ship_date, item, bill_cust, bill_cdemo, bill_hdemo,
-                bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, web_page, web_site,
+                bill_addr, maybe_null(ship_cust), ship_cdemo, ship_hdemo, ship_addr, web_page, web_site,
                 ship_mode, warehouse, rand_int(1, N_PROMO), order, q, wc, lp, sp, ext_disc,
                 ext_sales, ext_wholesale, ext_list, ext_tax, coupon, ext_ship, net_paid,
                 net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)

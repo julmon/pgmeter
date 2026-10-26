@@ -91,18 +91,11 @@ end
 -- reason (35 rows)
 -- ============================================================
 do
-    local DESCS = {
-        "Did not like the color", "Did not like the material", "Did not fit",
-        "Wrong size ordered", "Found a better price", "No longer needed",
-        "Defective", "Did not match description", "Arrived too late",
-        "Duplicate order", "Changed my mind", "Gift recipient did not want it",
-        "Quality not as expected", "Damaged in shipping", "Ordered by mistake",
-    }
+    -- "reason N", the TPC-DS wording (q93 filters on r_reason_desc = 'reason 28').
     local n = 0
     for i = 1, 35 do
         n = n + 1
-        local desc = DESCS[i] or string.format("Reason %d", i)
-        buf[n] = string.format("%d\tAAAAAAAA%08d\t%s\n", i, i, desc)
+        buf[n] = string.format("%d\tAAAAAAAA%08d\treason %d\n", i, i, i)
     end
     flush_copy("COPY reason FROM stdin", buf, n)
 end
