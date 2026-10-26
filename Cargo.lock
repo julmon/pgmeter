@@ -859,6 +859,8 @@ dependencies = [
  "signal-hook",
  "tabled",
  "tempfile",
+ "tokio",
+ "tokio-postgres",
  "tokio-postgres-rustls",
  "urlencoding",
  "whoami",

@@ -13,7 +13,7 @@ None of this is a TPC result (see the trademark notice in the README).
 
 | Workload | Reference tool | Reference result | pgmeter result | pgmeter / reference |
 |---|---|---|---|---|
-| TPC-B-like, 8 clients | pgbench 18 (simple protocol) | 2,886 and 2,993 TPS | PGM-B: 2,530 and 2,613 TPS | 0.85 to 0.90 |
+| TPC-B-like, 8 clients | pgbench 18 (simple protocol) | 2,997 and 3,022 TPS | PGM-B: 2,804 and 2,838 TPS | 0.93 to 0.94 |
 | TPC-C-like, 10 warehouses, 8 clients | HammerDB 6.1 TPROC-C | 81,706 and 91,503 NOPM | PGM-C: 98,379 and 108,024 New-Orders/min | 1.18 to 1.20 |
 | TPC-C-like, same, HammerDB's own schema and functions driven by pgmeter | HammerDB 6.1 TPROC-C | same | 98,163 and 99,693 NOPM | 1.09 to 1.22 |
 | TPC-H-like, scale factor 1, 1 client, HammerDB's own schema and queries driven by pgmeter | HammerDB 6.1 TPROC-H | 22 queries in 27.7 and 29.9 s, geometric mean 0.711 and 0.738 s | 22 queries in 29.3 s, geometric mean 0.702 s | 0.95 to 1.06 |
@@ -50,26 +50,45 @@ pgmeter), reported as the pair.
 
 Both tools: scale 10, 8 clients, 60 s, no think time; pgbench in its default
 simple-query mode (`pgbench -c 8 -j 4 -T 60`), PGM-B with
-`pgmeter run --spec samples/pgm-b -c 8 -T 60 -r 0`.
+`pgmeter run --spec samples/pgm-b -c 8 -T 60 -r 0` (async engine, two worker
+threads by default on this 4-core box).
 
 | Run | pgbench | PGM-B |
 |---|---|---|
-| A | 2,993 TPS, 2.67 ms | 2,530 TPS, 3.11 ms |
-| B | 2,886 TPS, 2.77 ms | 2,613 TPS, 3.01 ms |
+| A | 3,022 TPS, 2.65 ms | 2,804 TPS, 2.81 ms |
+| B | 2,997 TPS, 2.67 ms | 2,838 TPS, 2.77 ms |
 
-Client CPU over the 60 s, from `time`: pgbench 11 s user + 24 s system,
-pgmeter 20 s user + 23 s system. The two send the same seven statements per
-transaction over the same protocol, the server does the same work, and the
-remaining 10 to 15% is the load generator's own CPU on a box where it shares
-the four cores with the server. A `perf` profile of the pgmeter client shows
-where that CPU goes: 57% in the kernel (loopback TCP, plus about 5% of
-connection tracking and firewall rules on this host), 29% in pgmeter and 8%
-in libc, with no single hot spot. The largest user-space items are the
-statistics thread (2.7%), the string substitution of bindings into the
-statements (about 3%), allocation (about 4%) and the async runtime the
-synchronous client is built on (about 5%). Closing the gap would mean a
-leaner path for simple-mode statements, not a one-line fix; on a machine
-where the client does not share CPUs with the server it does not show.
+Client CPU over the 60 s, from `time`: pgbench 11 s user + 25 s system,
+pgmeter 19 s user + 21 s system. The two send the same seven statements per
+transaction over the same protocol and the server does the same work; the
+remaining 6 to 7% is the load generator's own CPU on a box where it shares
+the four cores with the server.
+
+How that gap was taken apart, with small purpose-built clients run in the
+same conditions (the figures are TPS and client user CPU per 60 s):
+
+| Client | TPS | user CPU |
+|---|---|---|
+| pgbench | 2,965 | 11.3 s |
+| a bare loop on the `postgres` crate, one thread per client (pgmeter's original model) | 2,735 | 13.4 s |
+| the same plus pgmeter's statement rendering (string map, `str::replace` per placeholder) | 2,710 | 16.5 s |
+| the same plus one channel message and log line per transaction | 2,714 | 14.3 s |
+| the same plus both | 2,681 | 17.2 s |
+| `tokio-postgres`, 8 clients on 2 worker threads | 2,972 | 12.0 s |
+| pgmeter before the async engine (one thread per client) | 2,588 | 20.2 s |
+| pgmeter with the async engine | 2,820 | 19.4 s |
+
+The thread-per-client model was the main cost: each of the eight threads was
+parked and woken seven times per transaction. pgmeter now drives
+simple-mode specs from a pool of worker threads, one task per client, like
+pgbench's `-j`, which brought it from 87% to 94% of pgbench. One worker is
+marginally better than two here (2,846 TPS) and four are worse (2,747), as
+the workers compete with the server for the four cores; `--threads` sets it.
+The rest of the gap is the user CPU the rendering, the per-transaction
+statistics message and the Lua binding call still cost: with the clients
+multiplexed on a few workers, that CPU now sits on every client's critical
+path, and a leaner simple-mode path would be worth the last few percent. A
+`perf` profile of the client shows the same things and no single hot spot.
 
 PGM-B as first shipped sent the whole transaction as one multi-statement
 string, which is one round trip instead of seven and reported twice pgbench's

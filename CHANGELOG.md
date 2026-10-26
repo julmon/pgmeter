@@ -19,7 +19,13 @@ First public release.
   after table creation.
 - `pgmeter run` drives the workload with one connection per client
   (`--client`, `--time`, `--rampup`), prints live progress (`--progress`) and
-  a results summary as a table, JSON or CSV (`--format`, `--quiet`).
+  a results summary as a table, JSON or CSV (`--format`, `--quiet`). Specs
+  made of `simple` transactions run on an async engine: a pool of worker
+  threads (`--threads`, default half the CPUs) drives one task per client,
+  which wakes the process up far less often than one thread per client did
+  (PGM-B went from 87% to 94% of pgbench's rate on the same box, see
+  `docs/parity.md`); specs with a `script` transaction run one thread per
+  client.
 - Benchmarks are YAML specifications plus Lua (Luau) scripts. Transactions run
   in `simple` mode (SQL templates with Lua bindings, sent as one batch or, with
   the list form of `sql`, one round trip per statement like pgbench) or

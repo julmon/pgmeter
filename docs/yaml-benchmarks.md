@@ -616,7 +616,12 @@ transaction on that thread.
 
 ### 9.1 Execution model
 
-- Each benchmark **worker thread** owns one Lua VM, created lazily on its first
+- A spec with at least one `script` transaction runs **one thread per
+  client**, because the database bridge below is synchronous. A spec made of
+  `simple` transactions only runs on the async engine instead: a pool of
+  worker threads (`--threads`) drives one task per client, which costs much
+  less CPU per transaction. The run header names the engine in use.
+- Each benchmark **client thread** owns one Lua VM, created lazily on its first
   `script`-mode transaction. The VM lives for the whole run.
 - On VM creation: context globals are injected, then `scripts.modules` are
   executed in order, then every transaction `script` is compiled into a named

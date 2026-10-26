@@ -147,6 +147,7 @@ server, and what to watch for when measuring.
 | `-T, --time` | 1 | Duration of benchmark in seconds |
 | `-r, --rampup` | 0 | Ramp-up period in seconds (clients start gradually) |
 | `-P, --progress` | 0 | Print live progress every N seconds (0 disables) |
+| `-j, --threads` | 0 | Worker threads driving the clients when every transaction is in `simple` mode (0 = half the CPUs, at most one per client); `script` specs use one thread per client |
 | `--format` | table | Results output format: `table`, `json`, or `csv` |
 | `-q, --quiet` | false | Suppress progress output; print only result data |
 
@@ -196,6 +197,15 @@ Each benchmark run creates a timestamped directory in the current directory
 Committed counts, throughput, response-time statistics and the report's histogram all
 describe the steady-state window (ramp-up excluded). The time-series charts show the
 whole run with the ramp-up window shaded.
+
+How the clients are driven depends on the spec. When every transaction is in
+`simple` mode, a small pool of worker threads (`--threads`, default half the
+CPUs) runs one task per client, like pgbench's `-j`; a worker that finds a
+client waiting on the server moves on to the next one, so the process wakes
+up far less often than one thread per client would. A spec with a `script`
+transaction runs one thread per
+client, because the Lua database bridge is synchronous. The run header names
+the engine in use.
 
 ### Console Output
 

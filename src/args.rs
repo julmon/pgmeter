@@ -71,6 +71,8 @@ pub struct RunArgs {
     pub rampup: u16,
     // Live progress reporting interval, in seconds (0 disables it)
     pub progress: u16,
+    // Worker threads of the async engine (simple-mode specs); 0 = automatic
+    pub threads: u16,
 }
 
 // init sub-command arguments
@@ -121,6 +123,7 @@ impl RunArgs {
             time: 0,
             rampup: 0,
             progress: 0,
+            threads: 0,
         }
     }
 }
@@ -258,6 +261,20 @@ impl CliArgs {
             .value_parser(clap::value_parser!(u16))
             .default_value("0");
 
+        // run: Define the --threads/-j command line option
+        let threads_option = Arg::new("threads")
+            .long("threads") // allow --threads
+            .action(ArgAction::Set)
+            .short('j') // allow -j
+            .help(
+                "Worker threads driving the clients when every transaction is in simple mode \
+                 (0 = half the CPUs, at most one per client); script-mode specs use one thread per client",
+            )
+            .required(false)
+            .value_name("NUM")
+            .value_parser(clap::value_parser!(u16))
+            .default_value("0");
+
         // run: Define the --format command line option
         let format_option = Arg::new("format")
             .long("format")
@@ -346,6 +363,7 @@ impl CliArgs {
             .arg(time_option)
             .arg(rampup_option)
             .arg(progress_option)
+            .arg(threads_option)
             .arg(format_option)
             .arg(quiet_option);
 
@@ -438,12 +456,14 @@ impl CliArgs {
             let time = *bm_m.get_one::<u16>("time").unwrap();
             let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
             let progress = *bm_m.get_one::<u16>("progress").unwrap();
+            let threads = *bm_m.get_one::<u16>("threads").unwrap();
 
             RunArgs {
                 client,
                 time,
                 rampup,
                 progress,
+                threads,
             }
         }
 
