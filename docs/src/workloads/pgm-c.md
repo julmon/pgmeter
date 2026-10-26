@@ -35,11 +35,13 @@ warehouses. At 10 warehouses the tables take about 1 GB and the indexes
 200 MB more. Primary keys
 on every table plus the two TPC-C secondary indexes, `customer
 (c_w_id, c_d_id, c_last, c_first, c_id)` for the by-name lookups and
-`orders (o_w_id, o_d_id, o_c_id, o_id)` for Order-Status. There are no
-foreign keys and no other indexes, on purpose: HammerDB's schema declares
-neither, TPC-C does not require them, and they slowed Stock-Level and
-New-Order considerably in testing. Add them to the spec if your scenario
-has them.
+`orders (o_w_id, o_d_id, o_c_id, o_id)` for Order-Status, and the ten
+foreign keys of TPC-C's referential integrity. The foreign keys cost every
+New-Order about a dozen extra index probes; HammerDB's TPROC-C schema
+declares none, so `pgmeter init --no-fkey` is the setting to compare with
+it. There are no other indexes: an extra one on stock quantities turned
+Stock-Level into a hash join over every low-stock item of the warehouse and
+was removed.
 
 ## The transactions
 
