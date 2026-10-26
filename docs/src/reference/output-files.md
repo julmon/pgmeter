@@ -17,7 +17,7 @@ The run parameters and timing, one JSON object:
 | `rampup_s` | `-r` |
 | `total_time_ms` | Wall-clock time of the whole run, ramp-up included |
 | `rampup_time_ms` | Wall-clock time of the ramp-up |
-| `workload_secs` | The measured window in seconds (`total_time_ms` minus `rampup_time_ms`), the divisor of every throughput figure |
+| `workload_secs` | The measured window in seconds (`total_time_ms` minus `rampup_time_ms`, at least 1), the divisor of every throughput figure |
 | `rampup_end_ts` | The `transaction.log` timestamp at which the measured window starts |
 | `throughput_unit` | The spec's unit, such as `TPM`, `TPS` or `queries/hr` |
 | `throughput_factor` | Seconds per unit of throughput: 60 for TPM, 1 for TPS, 3600 per hour |
@@ -60,7 +60,9 @@ time_s,throughput
 1,105120
 ```
 
-`time_s` counts from the first ramp-up second; `throughput` is the second's
+`time_s` counts from the first second of the run in the `all` file and from
+the first second in which that transaction committed in the per-transaction
+files; `throughput` is the second's
 committed count expressed in the spec's unit (the count times
 `throughput_factor`), so a TPM series reads as the rate the second would
 sustain over a minute.

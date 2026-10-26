@@ -22,11 +22,13 @@ The scale unit is a **substation**. Per substation:
 | `substation` | 1 | |
 | `sensor` | 100 | type, unit, min and max thresholds, status |
 | `measurement` | 100,000 initially, then grows | 1,000 readings per sensor: timestamp, value, quality; ids from a sequence |
-| `alert` | 10 | per substation, unacknowledged |
+| `alert` | 10 | about 70% of them unacknowledged |
 
-Primary keys, five foreign keys and five indexes, among them the ones the
-queries need on `measurement` (sensor and timestamp, substation and
-timestamp). The measurement table grows by 100 rows per ingestion
+Primary keys, five foreign keys and five indexes: `measurement` on
+timestamp, on (sensor, timestamp) and on (substation, timestamp) with the
+sensor and value included, a partial index on unacknowledged alerts, and
+`sensor` on its substation. The measurement table grows by 100 rows per
+ingestion
 transaction, so a long run with many clients adds tens of millions of rows;
 size the scale factor and the duration together.
 

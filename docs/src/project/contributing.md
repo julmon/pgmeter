@@ -19,9 +19,9 @@ The CI runs these on every pull request, on stable Rust and on the minimum
 supported version:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 The end-to-end tests need a PostgreSQL server and are skipped without one.

@@ -26,8 +26,10 @@ The scale unit is the TPC-H **scale factor**. Per unit:
 | `lineitem` | about 6,000,000 | 1 to 7 lines per order, prices, discounts, ship, commit and receipt dates |
 
 `region` (5 rows) and `nation` (25) are loaded once. Scale factor 1 is about
-2 GB with indexes and takes a couple of minutes to load with four jobs;
-scale factor 10 is ten times that. Keys are `integer` and dates are `date`,
+2 GB with indexes and loads in a minute or two on a fast server; scale
+factor 10 is ten times that. At scale factor 1 there is a single unit, so
+the load itself runs on one connection; `-j` still parallelizes the keys,
+the indexes and the vacuum. Keys are `integer` and dates are `date`,
 as the TPC-H data types prescribe. Besides the primary keys and eight
 foreign keys, the spec creates the indexes an analytical PostgreSQL setup
 usually has: `lineitem` on ship date, order key, part key, supplier key and

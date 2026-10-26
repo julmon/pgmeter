@@ -17,7 +17,7 @@ pgmeter -d benchmark run  --spec pgm-ds -c 1 -T 900
 The scale unit is a **scale factor**. The dimensions that do not scale are
 loaded once; the rest grows with the scale factor.
 
-Fixed dimensions: `date_dim` (73,049 days from 1900 to 2100), `time_dim`
+Fixed dimensions: `date_dim` (every day from 1900 to 2100, about 73,000 rows), `time_dim`
 (86,400 seconds of a day), `customer_demographics` (1,920,800),
 `household_demographics` (7,200), `catalog_page` (11,718), `promotion` (300),
 `reason` (35), `income_band` (20), `ship_mode` (20), `store` (12),
@@ -34,7 +34,9 @@ Fixed dimensions: `date_dim` (73,049 days from 1900 to 2100), `time_dim`
 | `store_returns`, `catalog_returns`, `web_returns` | 10%, 14% and 14% of the matching sales | each return points at a real sale line |
 | `inventory` | about 11,700,000 | item by warehouse by weekly snapshot |
 
-Scale factor 1 is several gigabytes and takes a while to load; start there.
+Scale factor 1 is a few gigabytes and takes a while to load; start there.
+At scale factor 1 there is a single unit, so the fact tables load on one
+connection; `-j` still parallelizes the keys, the indexes and the vacuum.
 Primary keys on every table, the 73 foreign keys of the snowflake (skipped
 with `--no-fkey`), and secondary indexes chosen for the 12 queries' access
 paths rather than one per foreign key.

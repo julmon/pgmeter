@@ -54,8 +54,9 @@ The server log tells you when a run was not measuring what you thought:
   measured window by chance.
 - **Lock waits and deadlocks**: a spec of your own with transactions that
   take their locks in different orders will show deadlocks in `error.log`
-  and long tails in the latency table. The bundled workloads take theirs in
-  a fixed order.
+  and long tails in the latency table. PGM-C takes its locks in a fixed
+  order; PGM-C-client updates stock rows in the order the lines were drawn
+  and can deadlock under contention, like the application it models.
 - **Memory pressure and swapping** on a shared machine show up as stalls of
   tens of seconds in the throughput chart, with nothing in the PostgreSQL
   log to explain them.

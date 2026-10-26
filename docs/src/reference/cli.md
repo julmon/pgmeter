@@ -37,7 +37,7 @@ keys and indexes, vacuums and checkpoints. See
 
 | Option | Default | Description |
 |---|---|---|
-| `--spec <PATH>` | required | A benchmark directory containing `spec.yaml`, or a single spec file |
+| `--spec <FILE>` | required | A benchmark directory containing `spec.yaml`, or a single spec file |
 | `-s, --scalefactor <NUM>` | 1 | Number of scale units to load |
 | `-j, --jobs <NUM>` | 1 | Parallel loader connections |
 | `--no-fkey` | off | Skip foreign-key creation |
@@ -54,11 +54,11 @@ Drives the spec's transaction mix. See [Running a benchmark](../guide/running.md
 
 | Option | Default | Description |
 |---|---|---|
-| `--spec <PATH>` | required | The spec `init` was given |
+| `--spec <FILE>` | required | The spec `init` was given |
 | `-c, --client <NUM>` | 1 | Concurrent clients |
 | `-T, --time <NUM>` | 1 | Measured duration in seconds |
 | `-r, --rampup <NUM>` | 0 | Ramp-up in seconds, excluded from the statistics |
-| `-P, --progress <NUM>` | 0 | Print live progress every NUM seconds; 0 disables |
+| `-P, --progress <NUM>` | 0 | Print a `progress:` line every NUM seconds when stderr is not a terminal; 0 disables |
 | `-j, --threads <NUM>` | 0 | Worker threads of the async engine (simple-mode specs); 0 is half the CPUs, at most one per client |
 | `--format <FMT>` | table | `table`, `json` or `csv` |
 | `-q, --quiet` | off | No progress output; only the result data on stdout |

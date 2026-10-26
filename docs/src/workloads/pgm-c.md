@@ -31,7 +31,8 @@ The scale unit is a **warehouse**. Per warehouse:
 | `stock` | 100,000 | one row per item |
 
 `item` has 100,000 rows shared by every warehouse, loaded once before the
-warehouses. At 10 warehouses the data is a little over 1 GB. Primary keys
+warehouses. At 10 warehouses the tables take about 1 GB and the indexes
+200 MB more. Primary keys
 on every table plus the two TPC-C secondary indexes, `customer
 (c_w_id, c_d_id, c_last, c_first, c_id)` for the by-name lookups and
 `orders (o_w_id, o_d_id, o_c_id, o_id)` for Order-Status. There are no

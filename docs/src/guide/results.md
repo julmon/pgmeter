@@ -9,8 +9,8 @@ the raw logs include the ramp-up.
 
 With `--format table` (the default), the run ends with:
 
-- **The headline**: overall throughput in the spec's unit (TPM for the OLTP
-  workloads, queries per hour for the analytical ones), the number of
+- **The headline**: overall throughput in the spec's unit (TPM for PGM-C,
+  TPS for PGM-B and PGM-IoT, queries per hour for PGM-H and PGM-DS), the number of
   committed transactions, the error rate and the average response time. For
   example `24 040 TPM · 24 103 committed · 0.43% errors · 19.82 ms avg`.
 - **Results**, one row per transaction: committed count, errors, error rate,
@@ -18,8 +18,11 @@ With `--format table` (the default), the run ends with:
 - **Response times**, one row per transaction: average, minimum, maximum,
   standard deviation, 95th and 99th percentiles, in milliseconds.
 
-During the run, `--progress N` prints the throughput and average latency of
-the last N seconds; on a terminal a progress bar shows the elapsed time.
+During the run, a progress bar on the terminal shows the elapsed time, the
+current throughput and the average latency; when stderr is not a terminal,
+`--progress N` prints the same figures as a `progress:` line every N
+seconds. The rate is the one of the last second, not an average since the
+start.
 
 `--format json` prints the same figures as one document (`duration_s`,
 `interrupted`, `throughput_unit` and a `transactions` array with `name`,
@@ -58,9 +61,10 @@ nothing is fetched. It shows:
 - The headline figures: throughput, peak throughput, committed transactions,
   errors and error rate, average latency.
 - The per-transaction results table.
-- Charts: throughput over time, latency over time, response-time percentiles,
-  the response-time distribution, the committed transaction mix and errors
-  over time. The ramp-up window is shaded.
+- Charts: throughput over time, latency over time, the response-time
+  distribution and errors over time; for specs with several transactions,
+  also the response-time percentiles per transaction and the committed
+  transaction mix. The ramp-up window is shaded.
 
 ![The charts of a report](../images/report-charts.png)
 

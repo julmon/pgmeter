@@ -33,7 +33,9 @@ pgmeter [connection options] init --spec <DIR|FILE> [-s N] [-j N] [--no-fkey] [-
 4. Primary keys, then foreign keys (unless `--no-fkey`), then indexes. They
    are created after the load, which is much faster than loading into indexed
    tables.
-5. `VACUUM FREEZE ANALYZE` on every table, then the spec's `post_ddls`.
+5. `VACUUM FREEZE ANALYZE` on every table and the spec's `post_ddls`, dealt
+   over the `-j` connections (with one job the `post_ddls` run after the
+   vacuums; with more they can overlap).
 6. A `CHECKPOINT`, so the run that follows does not pay for the load.
 
 Each step prints its duration. [The init lifecycle](../writing/init-lifecycle.md)

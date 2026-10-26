@@ -20,7 +20,7 @@ logic runs:
 |---|---|---|
 | Transaction logic | five PL/pgSQL functions created at `init` | five Lua scripts in `scripts/` |
 | Round trips per New-Order | 1 | about 45 (one per statement, 5 to 15 lines) |
-| Round trips per Payment | 1 | 6 to 8 |
+| Round trips per Payment | 1 | 7 to 8 |
 | Execution engine | one thread per client | one thread per client |
 | What dominates | server CPU | client-server latency |
 

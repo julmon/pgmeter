@@ -110,10 +110,11 @@ if #item == 0 then
 end
 ```
 
-This is how PGM-C mirrors the ~1% New-Order rollback rate mandated by the TPC-C
-specification. Because pgmeter counts every Lua error as a transaction error, a
-correct PGM-C run shows a New-Order error rate near 1% (about 0.45% of all
-transactions), each logged as `New-order rollback: item not found` in
+This is how PGM-C-client mirrors the ~1% New-Order rollback rate mandated by
+the TPC-C specification (PGM-C raises the same error from its PL/pgSQL
+function). Because pgmeter counts every Lua error as a transaction error, a
+correct run shows a New-Order error rate near 1% (about 0.45% of all
+transactions), each logged as `New-Order rollback: unknown item` in
 `error.log`; other messages there are real failures. Intentional rollbacks are
 not reported separately from errors yet.
 
