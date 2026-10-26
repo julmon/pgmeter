@@ -36,6 +36,7 @@ First public release.
   Lua load scripts, with shared modules and a pre-load script.
 - Bundled reference workloads derived from the public TPC specifications: PGM-B,
   PGM-C, PGM-H, PGM-DS and PGM-IoT, plus a minimal `custom-simple` template.
+  PGM-DS implements all 99 TPC-DS queries with per-execution random parameters.
   PGM-C runs its transactions as PL/pgSQL functions, one round trip each, like
   HammerDB's TPROC-C; PGM-C-client drives the same workload from the client
   statement by statement. Both pick customers, items and last names with TPC-C's

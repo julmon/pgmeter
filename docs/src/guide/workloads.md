@@ -21,7 +21,7 @@ indexes or the SQL, and the same `init` and `run` apply.
 | `pgm-c` | Order entry: New-Order, Payment, Order-Status, Delivery and Stock-Level, run as PL/pgSQL functions, one round trip per transaction, the model HammerDB's TPROC-C uses | OLTP | TPC-C | warehouse (10 districts, 30,000 customers, 100,000 stock rows) |
 | `pgm-c-client` | The same order entry driven from the client in Lua, one statement per round trip: an application without stored procedures | OLTP | TPC-C | warehouse |
 | `pgm-h` | Decision support: 22 analytical queries with random parameters over an 8-table schema | OLAP | TPC-H | scale factor (1.5 million orders, 6 million order lines) |
-| `pgm-ds` | Decision support over a 24-table snowflake schema | OLAP | TPC-DS | scale factor |
+| `pgm-ds` | Decision support: the 99 TPC-DS queries over the 24-table snowflake schema | OLAP | TPC-DS | scale factor (2.9 million store sales, 11.7 million inventory rows) |
 | `pgm-iot` | IoT gateway: data ingestion, scan, device and alert queries, threshold updates | Time series | TPCx-IoT | substation |
 | `custom-simple` | A minimal user-defined workload: tenants, products, orders, three transactions | OLTP | none | tenant |
 

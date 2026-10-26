@@ -1,9 +1,9 @@
-# PGM-DS Decision Support Benchmark Specification
+# PGM-DS Decision Support Benchmark Specification: the 99 TPC-DS queries.
 #
 # All 24 tables (7 fact + 17 dimension) with columns, primary keys, the full
 # snowflake foreign-key graph, and workload-driven secondary indexes; data
 # generation (pre_load_script / load_script) for the dimensions and fact tables;
-# and a representative query workload (scripts/pgmds_queries.lua + the
+# and the 99 TPC-DS queries (scripts/pgmds_queries.lua + the
 # transactions below).
 #
 # PGM-DS is an open workload DERIVED FROM the TPC-DS specification. It is not an
@@ -668,7 +668,7 @@ schema:
   # -------------------------------------------------------------------------
   # Secondary indexes
   # -------------------------------------------------------------------------
-  # Driven by the Q1..Q12 access paths rather than a blanket "index every FK".
+  # Driven by the queries' access paths rather than a blanket "index every FK".
   # Leading-column lookups already served by a primary key (ss_item_sk,
   # cs_item_sk, ws_item_sk, sr_item_sk, inv_date_sk) are deliberately omitted.
   indexes:
@@ -715,19 +715,108 @@ scripts:
 # ---------------------------------------------------------------------------
 # Transactions (workload)
 # ---------------------------------------------------------------------------
-# A representative subset of TPC-DS query shapes spanning all three sales
-# channels plus inventory and returns. Each transaction dispatches one query
-# function from the shared table.
+# Workload: the TPC-DS queries, numbered as in the specification, one
+# transaction each with equal weights. Run with `--once` for the TPC-DS
+# stream model (every query once per client); without it the run is a random
+# stream. scripts/pgmds_queries.lua holds the SQL and the parameter draws.
+# ---------------------------------------------------------------------------
 transactions:
-  - { id: 1,  weight: 10, name: "Q1-Store-Brand-Manufact", mode: script, script: "Q[1]()",  description: "Store sales by brand for a manufacturer/month (Q3 shape)" }
-  - { id: 2,  weight: 10, name: "Q2-Store-Category",       mode: script, script: "Q[2]()",  description: "Store sales by category for a manager/month/year (Q42 shape)" }
-  - { id: 3,  weight: 8,  name: "Q3-Store-Brand-Manager",  mode: script, script: "Q[3]()",  description: "Store sales by brand for a manager/month/year (Q52 shape)" }
-  - { id: 4,  weight: 6,  name: "Q4-Brand-Out-Of-Town",    mode: script, script: "Q[4]()",  description: "Brand revenue to out-of-town customers (Q19 shape)" }
-  - { id: 5,  weight: 6,  name: "Q5-States-Above-Avg",     mode: script, script: "Q[5]()",  description: "States buying above-average-priced items (Q6 shape)" }
-  - { id: 6,  weight: 6,  name: "Q6-Demographic-Promo",    mode: script, script: "Q[6]()",  description: "Average sale metrics by item for a demographic/promotion (Q7 shape)" }
-  - { id: 7,  weight: 8,  name: "Q7-Catalog-Call-Center",  mode: script, script: "Q[7]()",  description: "Catalog sales by call center and month" }
-  - { id: 8,  weight: 8,  name: "Q8-Web-Category-Profit",  mode: script, script: "Q[8]()",  description: "Web sales and profit by item category" }
-  - { id: 9,  weight: 6,  name: "Q9-Inventory-QOH",        mode: script, script: "Q[9]()",  description: "Inventory quantity on hand by warehouse and category" }
-  - { id: 10, weight: 8,  name: "Q10-Store-Returns",       mode: script, script: "Q[10]()", description: "Customers ranked by store-return amount" }
-  - { id: 11, weight: 8,  name: "Q11-Category-Sales",      mode: script, script: "Q[11]()", description: "Store sales for a single category" }
-  - { id: 12, weight: 4,  name: "Q12-Cross-Channel",       mode: script, script: "Q[12]()", description: "Total extended sales price per channel (cross-channel)" }
+  - { id: 1, weight: 1, name: "Q1-Store-Return-Customers", mode: script, script: "Q[1]()", description: "Customers whose store returns exceed 1.2x their store's average" }
+  - { id: 2, weight: 1, name: "Q2-Weekly-Web-Catalog", mode: script, script: "Q[2]()", description: "Web and catalog sales per weekday, one year against the next" }
+  - { id: 3, weight: 1, name: "Q3-Brand-Manufacturer", mode: script, script: "Q[3]()", description: "Store sales by brand for a manufacturer and month" }
+  - { id: 4, weight: 1, name: "Q4-Customer-Growth-3ch", mode: script, script: "Q[4]()", description: "Customers whose catalog growth beats store and web growth" }
+  - { id: 5, weight: 1, name: "Q5-Channel-Sales-Returns", mode: script, script: "Q[5]()", description: "Sales, returns and profit by channel over 14 days, rollup" }
+  - { id: 6, weight: 1, name: "Q6-States-Pricey-Items", mode: script, script: "Q[6]()", description: "States with 10+ customers buying 20% above the category average" }
+  - { id: 7, weight: 1, name: "Q7-Demographic-Promo", mode: script, script: "Q[7]()", description: "Average quantity and prices by item for a demographic and promotion" }
+  - { id: 8, weight: 1, name: "Q8-Preferred-Zip-Stores", mode: script, script: "Q[8]()", description: "Store net profit in zip areas with 10+ preferred customers" }
+  - { id: 9, weight: 1, name: "Q9-Quantity-Buckets", mode: script, script: "Q[9]()", description: "Bucketed statistics of store sales by quantity ranges" }
+  - { id: 10, weight: 1, name: "Q10-County-Demographics", mode: script, script: "Q[10]()", description: "Demographics of five counties' customers active across channels" }
+  - { id: 11, weight: 1, name: "Q11-Customer-Growth-2ch", mode: script, script: "Q[11]()", description: "Customers whose web growth beats their store growth" }
+  - { id: 12, weight: 1, name: "Q12-Web-Class-Share", mode: script, script: "Q[12]()", description: "Web sales by item over 30 days with the share of its class" }
+  - { id: 13, weight: 1, name: "Q13-Demographic-Averages", mode: script, script: "Q[13]()", description: "Average quantities and prices for demographic and address combinations" }
+  - { id: 14, weight: 1, name: "Q14-Cross-Channel-Items", mode: script, script: "Q[14]()", description: "Items sold through all three channels, by brand, class and category (two parts)" }
+  - { id: 15, weight: 1, name: "Q15-Catalog-By-Zip", mode: script, script: "Q[15]()", description: "Catalog sales by customer zip for a quarter" }
+  - { id: 16, weight: 1, name: "Q16-Multi-Warehouse-Orders", mode: script, script: "Q[16]()", description: "Catalog orders shipped from several warehouses and never returned" }
+  - { id: 17, weight: 1, name: "Q17-Sale-Return-Rebuy", mode: script, script: "Q[17]()", description: "Quantities of store sales, returns and catalog re-purchases by item and state" }
+  - { id: 18, weight: 1, name: "Q18-Catalog-Geo-Rollup", mode: script, script: "Q[18]()", description: "Catalog averages by item and customer geography, rollup" }
+  - { id: 19, weight: 1, name: "Q19-Out-Of-Town-Brands", mode: script, script: "Q[19]()", description: "Brand revenue from customers outside the store's zip area" }
+  - { id: 20, weight: 1, name: "Q20-Catalog-Class-Share", mode: script, script: "Q[20]()", description: "Catalog sales by item over 30 days with the share of its class" }
+  - { id: 21, weight: 1, name: "Q21-Inventory-Before-After", mode: script, script: "Q[21]()", description: "Inventory of mid-priced items before and after a date" }
+  - { id: 22, weight: 1, name: "Q22-Inventory-Rollup", mode: script, script: "Q[22]()", description: "Average inventory on hand over a year, rollup" }
+  - { id: 23, weight: 1, name: "Q23-Best-Customers-Items", mode: script, script: "Q[23]()", description: "Catalog and web sales of frequent items to the best store customers (two parts)" }
+  - { id: 24, weight: 1, name: "Q24-Color-Net-Paid", mode: script, script: "Q[24]()", description: "Store sales net of returns by customer for a color (two parts)" }
+  - { id: 25, weight: 1, name: "Q25-Profit-Return-Rebuy", mode: script, script: "Q[25]()", description: "Store profit, return losses and catalog profit by item and store" }
+  - { id: 26, weight: 1, name: "Q26-Catalog-Demographic-Promo", mode: script, script: "Q[26]()", description: "Catalog averages by item for a demographic and promotion" }
+  - { id: 27, weight: 1, name: "Q27-Store-State-Rollup", mode: script, script: "Q[27]()", description: "Store averages by item and state, rollup, for a demographic" }
+  - { id: 28, weight: 1, name: "Q28-List-Price-Buckets", mode: script, script: "Q[28]()", description: "List-price statistics in six quantity buckets" }
+  - { id: 29, weight: 1, name: "Q29-Quantity-Return-Rebuy", mode: script, script: "Q[29]()", description: "Quantities sold in store, returned, and bought again from the catalog" }
+  - { id: 30, weight: 1, name: "Q30-Web-Return-Customers", mode: script, script: "Q[30]()", description: "Customers whose web returns exceed 1.2x their state's average" }
+  - { id: 31, weight: 1, name: "Q31-County-Channel-Growth", mode: script, script: "Q[31]()", description: "Counties whose web sales grew faster than store sales over three quarters" }
+  - { id: 32, weight: 1, name: "Q32-Catalog-Excess-Discount", mode: script, script: "Q[32]()", description: "Catalog discounts above 1.3x the item average over 90 days" }
+  - { id: 33, weight: 1, name: "Q33-Manufacturer-3ch", mode: script, script: "Q[33]()", description: "Sales by manufacturer across the three channels for a category" }
+  - { id: 34, weight: 1, name: "Q34-Big-Tickets", mode: script, script: "Q[34]()", description: "Customers with store tickets of 15 to 20 items at month start and end" }
+  - { id: 35, weight: 1, name: "Q35-Active-Demographics", mode: script, script: "Q[35]()", description: "Demographics of customers active in store and web or catalog" }
+  - { id: 36, weight: 1, name: "Q36-Gross-Margin-Rank", mode: script, script: "Q[36]()", description: "Gross margin by category and class, rollup, ranked" }
+  - { id: 37, weight: 1, name: "Q37-Catalog-Inventory-Items", mode: script, script: "Q[37]()", description: "Catalog items in a price range with 100-500 units in inventory" }
+  - { id: 38, weight: 1, name: "Q38-Customers-All-Channels", mode: script, script: "Q[38]()", description: "Customers who bought in all three channels over a year" }
+  - { id: 39, weight: 1, name: "Q39-Inventory-Variation", mode: script, script: "Q[39]()", description: "Inventory with a high coefficient of variation in consecutive months (two parts)" }
+  - { id: 40, weight: 1, name: "Q40-Catalog-Before-After", mode: script, script: "Q[40]()", description: "Catalog sales net of returns before and after a date, by warehouse state" }
+  - { id: 41, weight: 1, name: "Q41-Manufacturer-Variants", mode: script, script: "Q[41]()", description: "Product names of a manufacturer range with many colour, unit and size variants" }
+  - { id: 42, weight: 1, name: "Q42-Category-Month", mode: script, script: "Q[42]()", description: "Store sales by category for a month and year" }
+  - { id: 43, weight: 1, name: "Q43-Store-Weekdays", mode: script, script: "Q[43]()", description: "Store sales per day of the week by store" }
+  - { id: 44, weight: 1, name: "Q44-Best-Worst-Items", mode: script, script: "Q[44]()", description: "The ten best and ten worst items of a store by net profit" }
+  - { id: 45, weight: 1, name: "Q45-Web-By-Zip-City", mode: script, script: "Q[45]()", description: "Web sales by customer zip and city for a quarter" }
+  - { id: 46, weight: 1, name: "Q46-Weekend-Out-Of-Town", mode: script, script: "Q[46]()", description: "Weekend store tickets bought in another city, for a household profile" }
+  - { id: 47, weight: 1, name: "Q47-Monthly-Deviation-Store", mode: script, script: "Q[47]()", description: "Store sales months deviating 10% from the yearly average, with neighbours" }
+  - { id: 48, weight: 1, name: "Q48-Demographic-Quantity", mode: script, script: "Q[48]()", description: "Store quantity sold for demographic and address combinations" }
+  - { id: 49, weight: 1, name: "Q49-Worst-Return-Ratios", mode: script, script: "Q[49]()", description: "The items with the worst return ratios in each channel" }
+  - { id: 50, weight: 1, name: "Q50-Return-Delay-Buckets", mode: script, script: "Q[50]()", description: "Store returns by delay since the sale, in 30-day buckets" }
+  - { id: 51, weight: 1, name: "Q51-Cumulative-Web-Vs-Store", mode: script, script: "Q[51]()", description: "Items whose cumulative web sales overtake their cumulative store sales" }
+  - { id: 52, weight: 1, name: "Q52-Brand-Month", mode: script, script: "Q[52]()", description: "Store sales by brand for a month and year" }
+  - { id: 53, weight: 1, name: "Q53-Quarterly-Combos", mode: script, script: "Q[53]()", description: "Quarterly store sales of selected category, class and brand combinations against their average" }
+  - { id: 54, weight: 1, name: "Q54-Segment-Customers", mode: script, script: "Q[54]()", description: "Store revenue segments of customers who bought a category by web or catalog" }
+  - { id: 55, weight: 1, name: "Q55-Brand-Manager-Month", mode: script, script: "Q[55]()", description: "Store sales by brand for a manager, month and year" }
+  - { id: 56, weight: 1, name: "Q56-Colour-Items-3ch", mode: script, script: "Q[56]()", description: "Sales of items of three colours across the three channels" }
+  - { id: 57, weight: 1, name: "Q57-Monthly-Deviation-Catalog", mode: script, script: "Q[57]()", description: "Catalog sales months deviating from the yearly average by call center" }
+  - { id: 58, weight: 1, name: "Q58-Equal-Channel-Items", mode: script, script: "Q[58]()", description: "Items that sold about equally through the three channels in a week" }
+  - { id: 59, weight: 1, name: "Q59-Weekly-Store-YoY", mode: script, script: "Q[59]()", description: "Weekly store sales per weekday, one year against the next" }
+  - { id: 60, weight: 1, name: "Q60-Category-Items-3ch", mode: script, script: "Q[60]()", description: "Sales of a category's items across the three channels" }
+  - { id: 61, weight: 1, name: "Q61-Promotion-Share", mode: script, script: "Q[61]()", description: "Share of a category's store sales that came with a promotion" }
+  - { id: 62, weight: 1, name: "Q62-Web-Ship-Delays", mode: script, script: "Q[62]()", description: "Web orders by shipping delay bucket, warehouse, ship mode and site" }
+  - { id: 63, weight: 1, name: "Q63-Monthly-Combos-Manager", mode: script, script: "Q[63]()", description: "Monthly store sales of selected combinations against their average, by manager" }
+  - { id: 64, weight: 1, name: "Q64-Cross-Channel-Repurchase", mode: script, script: "Q[64]()", description: "Store sales of items also sold and returned by catalog, with demographics, one year against the next" }
+  - { id: 65, weight: 1, name: "Q65-Low-Revenue-Items", mode: script, script: "Q[65]()", description: "Store and item pairs with revenue at most a tenth of the store average" }
+  - { id: 66, weight: 1, name: "Q66-Warehouse-Monthly-Carriers", mode: script, script: "Q[66]()", description: "Monthly web and catalog sales by warehouse for two carriers and a time window" }
+  - { id: 67, weight: 1, name: "Q67-Store-Sales-Rollup-Rank", mode: script, script: "Q[67]()", description: "Store sales rollup by category, class, brand, product, period and store, ranked" }
+  - { id: 68, weight: 1, name: "Q68-Month-Start-Out-Of-Town", mode: script, script: "Q[68]()", description: "Month-start store tickets bought in another city, for a household profile" }
+  - { id: 69, weight: 1, name: "Q69-Store-Only-Demographics", mode: script, script: "Q[69]()", description: "Demographics of customers who bought in store but not by web or catalog" }
+  - { id: 70, weight: 1, name: "Q70-State-County-Rank", mode: script, script: "Q[70]()", description: "Store net profit by state and county, rollup and ranked, for the five best states" }
+  - { id: 71, weight: 1, name: "Q71-Brand-Meal-Hours", mode: script, script: "Q[71]()", description: "Brand sales at breakfast and dinner hours across the three channels" }
+  - { id: 72, weight: 1, name: "Q72-Inventory-Shortfall", mode: script, script: "Q[72]()", description: "Catalog orders that could not be filled from inventory by the ship date" }
+  - { id: 73, weight: 1, name: "Q73-Small-Tickets", mode: script, script: "Q[73]()", description: "Customers with store tickets of one to five items at month start" }
+  - { id: 74, weight: 1, name: "Q74-Net-Paid-Growth", mode: script, script: "Q[74]()", description: "Customers whose web net paid grew faster than their store net paid" }
+  - { id: 75, weight: 1, name: "Q75-Category-YoY-Decline", mode: script, script: "Q[75]()", description: "Items of a category whose sales net of returns fell 10% year over year" }
+  - { id: 76, weight: 1, name: "Q76-Null-Key-Sales", mode: script, script: "Q[76]()", description: "Sales with a missing dimension key, by channel, year, quarter and category" }
+  - { id: 77, weight: 1, name: "Q77-Channel-Profit-Rollup", mode: script, script: "Q[77]()", description: "Profit and returns by channel and outlet over 30 days, rollup" }
+  - { id: 78, weight: 1, name: "Q78-Unreturned-Items-Ratio", mode: script, script: "Q[78]()", description: "Store purchases never returned, with the web and catalog equivalents" }
+  - { id: 79, weight: 1, name: "Q79-Monday-Tickets", mode: script, script: "Q[79]()", description: "Monday store tickets of mid-sized stores for a household profile" }
+  - { id: 80, weight: 1, name: "Q80-Unpromoted-Channel-Rollup", mode: script, script: "Q[80]()", description: "Sales, returns and profit by channel over 30 days for unpromoted items above 50, rollup" }
+  - { id: 81, weight: 1, name: "Q81-Catalog-Return-Customers", mode: script, script: "Q[81]()", description: "Customers whose catalog returns exceed 1.2x their state's average" }
+  - { id: 82, weight: 1, name: "Q82-Store-Inventory-Items", mode: script, script: "Q[82]()", description: "Store items in a price range with 100-500 units in inventory" }
+  - { id: 83, weight: 1, name: "Q83-Returned-Quantities-3ch", mode: script, script: "Q[83]()", description: "Returned quantities by item across the three channels in three weeks" }
+  - { id: 84, weight: 1, name: "Q84-City-Income-Band", mode: script, script: "Q[84]()", description: "Customers of a city within an income band, with a store return" }
+  - { id: 85, weight: 1, name: "Q85-Web-Return-Reasons", mode: script, script: "Q[85]()", description: "Web return statistics by reason for demographic, price and state combinations" }
+  - { id: 86, weight: 1, name: "Q86-Web-Net-Paid-Rank", mode: script, script: "Q[86]()", description: "Web net paid by category and class, rollup, ranked" }
+  - { id: 87, weight: 1, name: "Q87-Store-Only-Customers", mode: script, script: "Q[87]()", description: "Customers and dates with store sales but no catalog or web sales" }
+  - { id: 88, weight: 1, name: "Q88-Morning-Half-Hours", mode: script, script: "Q[88]()", description: "Store sales counts in eight morning half-hour slots for household profiles" }
+  - { id: 89, weight: 1, name: "Q89-Monthly-Combos-Store", mode: script, script: "Q[89]()", description: "Monthly store sales of selected combinations against their average, by store" }
+  - { id: 90, weight: 1, name: "Q90-AM-PM-Ratio", mode: script, script: "Q[90]()", description: "Ratio of morning to evening web sales on pages of a given size" }
+  - { id: 91, weight: 1, name: "Q91-Call-Center-Return-Loss", mode: script, script: "Q[91]()", description: "Catalog return losses by call center and manager for two demographic profiles" }
+  - { id: 92, weight: 1, name: "Q92-Web-Excess-Discount", mode: script, script: "Q[92]()", description: "Web discounts above 1.3x the item average over 90 days" }
+  - { id: 93, weight: 1, name: "Q93-Reason-Net-Sales", mode: script, script: "Q[93]()", description: "Store sales net of the returns made for one reason, by customer" }
+  - { id: 94, weight: 1, name: "Q94-Web-Multi-Warehouse", mode: script, script: "Q[94]()", description: "Web orders shipped from several warehouses and never returned, for a site company" }
+  - { id: 95, weight: 1, name: "Q95-Web-Repeat-Warehouse", mode: script, script: "Q[95]()", description: "Web orders with a second order of the customer from another warehouse, and returned" }
+  - { id: 96, weight: 1, name: "Q96-Evening-Hour-Sales", mode: script, script: "Q[96]()", description: "Store sales at one hour of the evening for a household profile" }
+  - { id: 97, weight: 1, name: "Q97-Store-Catalog-Overlap", mode: script, script: "Q[97]()", description: "Customers and items bought in store only, by catalog only, or both" }
+  - { id: 98, weight: 1, name: "Q98-Store-Class-Share", mode: script, script: "Q[98]()", description: "Store sales by item over 30 days with the share of its class" }
+  - { id: 99, weight: 1, name: "Q99-Catalog-Ship-Delays", mode: script, script: "Q[99]()", description: "Catalog orders by shipping delay bucket, warehouse, ship mode and call center" }
