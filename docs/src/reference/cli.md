@@ -22,7 +22,8 @@ PostgreSQL tools use; see [Connecting to PostgreSQL](../guide/connecting.md).
 | `-h, --help` | | | Print help |
 | `-V, --version` | | | Print the version |
 
-The password comes from `PGPASSWORD`.
+The password comes from `PGPASSWORD`, or from the password file
+(`PGPASSFILE`, default `~/.pgpass`) when it is not set.
 
 ## `init`
 

@@ -15,6 +15,8 @@ on:
       - "docs/**"
       - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
+  # Manual redeploy, for instance after changing the Pages settings.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,7 +52,7 @@ jobs:
 
   deploy:
     name: deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-latest
     environment:

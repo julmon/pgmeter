@@ -13,9 +13,10 @@ PostgreSQL tools use, so an exported `PGHOST`, `PGUSER`, `PGDATABASE` and
 | `-d, --dbname` | `PGDATABASE` | current OS user | Database |
 | `--sslmode` | `PGSSLMODE` | prefer | TLS requirement, see below |
 
-The password is read from `PGPASSWORD` only; there is no prompt and no
-`--password` option. The target shown in the run header has the password
-redacted.
+The password comes from `PGPASSWORD` when it is set, otherwise from the
+password file, `PGPASSFILE` or `~/.pgpass`, matched on host, port, database
+and user as libpq does. There is no prompt and no `--password` option. The
+target shown in the run header has the password redacted.
 
 ## TLS
 

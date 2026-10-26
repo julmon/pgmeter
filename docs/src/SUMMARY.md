@@ -13,7 +13,15 @@
 - [Initializing a benchmark](guide/initializing.md)
 - [Running a benchmark](guide/running.md)
 - [Reading the results](guide/results.md)
+- [Measuring well](guide/measuring.md)
+- [Troubleshooting](guide/troubleshooting.md)
 - [Bundled workloads](guide/workloads.md)
+  - [PGM-B](workloads/pgm-b.md)
+  - [PGM-C](workloads/pgm-c.md)
+  - [PGM-C-client](workloads/pgm-c-client.md)
+  - [PGM-H](workloads/pgm-h.md)
+  - [PGM-DS](workloads/pgm-ds.md)
+  - [PGM-IoT](workloads/pgm-iot.md)
 
 # Writing benchmarks
 

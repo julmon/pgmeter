@@ -48,5 +48,8 @@ Things to know before comparing numbers:
   non-uniform random distribution, so the hot spots are the ones the
   specification intends.
 
-A reference page per workload, with the schema, the transactions and the
-deviations from the TPC text, is planned.
+Each workload has a reference page with its data volumes, its transactions
+and the deviations from the TPC text: [PGM-B](../workloads/pgm-b.md),
+[PGM-C](../workloads/pgm-c.md), [PGM-C-client](../workloads/pgm-c-client.md),
+[PGM-H](../workloads/pgm-h.md), [PGM-DS](../workloads/pgm-ds.md) and
+[PGM-IoT](../workloads/pgm-iot.md).
