@@ -14,6 +14,7 @@ pgmeter [connection options] run --spec <DIR|FILE> [-c N] [-T N] [-r N] [-P N] [
 | `-r, --rampup` | 0 | Ramp-up in seconds: the clients start spread over this window, and nothing in it counts |
 | `-P, --progress` | 0 | Every N seconds, print a `progress:` line with the current throughput and average latency (over the last second) when stderr is not a terminal; on a terminal the progress bar shows them live |
 | `-j, --threads` | 0 | Worker threads of the async engine (see below); 0 is half the CPUs, at most one per client |
+| `--once` | off | Each client runs every transaction once, in its own random order, then stops (see below); not with `-T` |
 | `--format` | table | `table`, `json` or `csv` for the results on stdout |
 | `-q, --quiet` | off | No progress output; `--format json` and `csv` imply it |
 
@@ -53,6 +54,25 @@ engine is in use.
 - **Specs with a script transaction** (Lua, like PGM-C and PGM-H) run one
   thread per client on a blocking connection, because the Lua database bridge
   is synchronous. `--threads` is ignored.
+
+## Running every transaction once
+
+`--once` replaces the timed random stream with the query-stream model of the
+TPC-H and TPC-DS power and throughput tests: each client gets its own random
+permutation of the spec's transactions, runs each of them exactly once, and
+stops. The run ends when the last client is done, so `-T` is not used and
+cannot be given. Transactions with a weight of 0 are skipped; the other
+weights are ignored.
+
+- `-c 1 --once` is a power test: every query once, in one stream.
+- `-c 4 --once` is a throughput test with four streams, each in a different
+  order, concurrently.
+
+The results are the same as for a timed run, with `duration_s` and
+`workload_secs` in `run.json` set to the window the run took and `"once":
+true`. For an analytical spec the figures to read are the per-query response
+times; the elapsed time of the whole run is the stream's result. The ramp-up
+still staggers the clients' start, and Ctrl-C still ends the run early.
 
 ## Stopping early
 

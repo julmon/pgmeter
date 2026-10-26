@@ -1,5 +1,5 @@
 # PGM-H Decision Support Benchmark Specification
-# 22 read-only analytical queries with weighted random selection.
+# 22 read-only analytical queries; run with `--once` for the TPC-H stream model.
 # All queries are implemented in a single Lua script that dispatches by transaction ID.
 #
 # PGM-H is an open workload DERIVED FROM the TPC-H specification. It is not an
@@ -176,25 +176,25 @@ scripts:
 # ---------------------------------------------------------------------------
 # Each transaction calls its query function from the shared dispatch table.
 transactions:
-  - { id: 1,  weight: 8, name: "Q1-Pricing-Summary",   mode: script, script: "Q[1]()",  description: "Pricing summary report" }
-  - { id: 2,  weight: 4, name: "Q2-Min-Cost-Supplier",  mode: script, script: "Q[2]()",  description: "Minimum cost supplier" }
-  - { id: 3,  weight: 5, name: "Q3-Shipping-Priority",  mode: script, script: "Q[3]()",  description: "Shipping priority" }
-  - { id: 4,  weight: 5, name: "Q4-Order-Priority",     mode: script, script: "Q[4]()",  description: "Order priority checking" }
-  - { id: 5,  weight: 5, name: "Q5-Local-Supplier",     mode: script, script: "Q[5]()",  description: "Local supplier volume" }
-  - { id: 6,  weight: 8, name: "Q6-Revenue-Forecast",   mode: script, script: "Q[6]()",  description: "Forecasting revenue change" }
-  - { id: 7,  weight: 4, name: "Q7-Volume-Shipping",    mode: script, script: "Q[7]()",  description: "Volume shipping" }
-  - { id: 8,  weight: 4, name: "Q8-Market-Share",       mode: script, script: "Q[8]()",  description: "National market share" }
-  - { id: 9,  weight: 4, name: "Q9-Product-Profit",     mode: script, script: "Q[9]()",  description: "Product type profit measure" }
-  - { id: 10, weight: 5, name: "Q10-Returned-Items",    mode: script, script: "Q[10]()", description: "Returned item reporting" }
-  - { id: 11, weight: 5, name: "Q11-Important-Stock",   mode: script, script: "Q[11]()", description: "Important stock identification" }
-  - { id: 12, weight: 6, name: "Q12-Shipping-Modes",    mode: script, script: "Q[12]()", description: "Shipping modes and order priority" }
-  - { id: 13, weight: 5, name: "Q13-Customer-Dist",     mode: script, script: "Q[13]()", description: "Customer distribution" }
-  - { id: 14, weight: 6, name: "Q14-Promotion-Effect",  mode: script, script: "Q[14]()", description: "Promotion effect" }
-  - { id: 15, weight: 4, name: "Q15-Top-Supplier",      mode: script, script: "Q[15]()", description: "Top supplier" }
-  - { id: 16, weight: 4, name: "Q16-Parts-Supplier",    mode: script, script: "Q[16]()", description: "Parts/supplier relationship" }
-  - { id: 17, weight: 3, name: "Q17-Small-Quantity",    mode: script, script: "Q[17]()", description: "Small-quantity-order revenue" }
-  - { id: 18, weight: 3, name: "Q18-Large-Volume",      mode: script, script: "Q[18]()", description: "Large volume customer" }
-  - { id: 19, weight: 3, name: "Q19-Discounted-Rev",    mode: script, script: "Q[19]()", description: "Discounted revenue" }
-  - { id: 20, weight: 3, name: "Q20-Potential-Promo",   mode: script, script: "Q[20]()", description: "Potential part promotion" }
-  - { id: 21, weight: 3, name: "Q21-Waiting-Supplier",  mode: script, script: "Q[21]()", description: "Suppliers who kept orders waiting" }
-  - { id: 22, weight: 3, name: "Q22-Global-Sales",      mode: script, script: "Q[22]()", description: "Global sales opportunity" }
+  - { id: 1,  weight: 1, name: "Q1-Pricing-Summary",   mode: script, script: "Q[1]()",  description: "Pricing summary report" }
+  - { id: 2,  weight: 1, name: "Q2-Min-Cost-Supplier",  mode: script, script: "Q[2]()",  description: "Minimum cost supplier" }
+  - { id: 3,  weight: 1, name: "Q3-Shipping-Priority",  mode: script, script: "Q[3]()",  description: "Shipping priority" }
+  - { id: 4,  weight: 1, name: "Q4-Order-Priority",     mode: script, script: "Q[4]()",  description: "Order priority checking" }
+  - { id: 5,  weight: 1, name: "Q5-Local-Supplier",     mode: script, script: "Q[5]()",  description: "Local supplier volume" }
+  - { id: 6,  weight: 1, name: "Q6-Revenue-Forecast",   mode: script, script: "Q[6]()",  description: "Forecasting revenue change" }
+  - { id: 7,  weight: 1, name: "Q7-Volume-Shipping",    mode: script, script: "Q[7]()",  description: "Volume shipping" }
+  - { id: 8,  weight: 1, name: "Q8-Market-Share",       mode: script, script: "Q[8]()",  description: "National market share" }
+  - { id: 9,  weight: 1, name: "Q9-Product-Profit",     mode: script, script: "Q[9]()",  description: "Product type profit measure" }
+  - { id: 10, weight: 1, name: "Q10-Returned-Items",    mode: script, script: "Q[10]()", description: "Returned item reporting" }
+  - { id: 11, weight: 1, name: "Q11-Important-Stock",   mode: script, script: "Q[11]()", description: "Important stock identification" }
+  - { id: 12, weight: 1, name: "Q12-Shipping-Modes",    mode: script, script: "Q[12]()", description: "Shipping modes and order priority" }
+  - { id: 13, weight: 1, name: "Q13-Customer-Dist",     mode: script, script: "Q[13]()", description: "Customer distribution" }
+  - { id: 14, weight: 1, name: "Q14-Promotion-Effect",  mode: script, script: "Q[14]()", description: "Promotion effect" }
+  - { id: 15, weight: 1, name: "Q15-Top-Supplier",      mode: script, script: "Q[15]()", description: "Top supplier" }
+  - { id: 16, weight: 1, name: "Q16-Parts-Supplier",    mode: script, script: "Q[16]()", description: "Parts/supplier relationship" }
+  - { id: 17, weight: 1, name: "Q17-Small-Quantity",    mode: script, script: "Q[17]()", description: "Small-quantity-order revenue" }
+  - { id: 18, weight: 1, name: "Q18-Large-Volume",      mode: script, script: "Q[18]()", description: "Large volume customer" }
+  - { id: 19, weight: 1, name: "Q19-Discounted-Rev",    mode: script, script: "Q[19]()", description: "Discounted revenue" }
+  - { id: 20, weight: 1, name: "Q20-Potential-Promo",   mode: script, script: "Q[20]()", description: "Potential part promotion" }
+  - { id: 21, weight: 1, name: "Q21-Waiting-Supplier",  mode: script, script: "Q[21]()", description: "Suppliers who kept orders waiting" }
+  - { id: 22, weight: 1, name: "Q22-Global-Sales",      mode: script, script: "Q[22]()", description: "Global sales opportunity" }

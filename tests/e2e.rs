@@ -402,6 +402,93 @@ transactions:
     assert!(errors.is_empty(), "error.log: {errors}");
 }
 
+/// `--once`: every client runs each transaction with a weight above 0 exactly
+/// once, then the run ends on its own; `--time` is refused alongside it. Own
+/// tables, as the e2e tests run in parallel.
+#[test]
+fn once_runs_every_transaction_once_per_client() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let tmp = workdir("once");
+    let cwd = tmp.path().to_path_buf();
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-once
+scaling:
+  unit: thing
+  max_id_query: "SELECT MAX(id) FROM e2e_once"
+schema:
+  tables:
+    - name: e2e_once
+      columns: [{name: id, type: int}]
+      primary_key: [id]
+load:
+  - table: e2e_once
+    copy_columns: [id]
+    rows_per_id: 1
+    row: "{{id}}\n"
+transactions:
+  - id: 1
+    name: first
+    weight: 5
+    sql: "SELECT id FROM e2e_once WHERE id = 1"
+  - id: 2
+    name: skipped
+    weight: 0
+    sql: "SELECT 1 / 0"
+  - id: 3
+    name: third
+    weight: 1
+    mode: script
+    script: |
+      query_one("SELECT count(*) FROM e2e_once")
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+    assert_success(
+        &pgmeter(&env, &cwd, &["init", "--spec", spec, "-s", "3"]),
+        "init once",
+    );
+
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "run", "--spec", spec, "-c", "3", "--once", "--format", "json",
+        ],
+    );
+    assert_success(&run, "run --once");
+    let doc: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    for t in doc["transactions"].as_array().unwrap() {
+        let expected = if t["name"] == "skipped" { 0 } else { 3 };
+        assert_eq!(t["committed"], expected, "{t}");
+        assert_eq!(t["errors"], 0, "{t}");
+    }
+    let meta: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(result_dir(&cwd).join("run.json")).unwrap())
+            .unwrap();
+    assert_eq!(meta["once"], true, "{meta}");
+
+    // --once and --time are two ways of ending the run; clap refuses both.
+    let both = pgmeter(
+        &env,
+        &cwd,
+        &["run", "--spec", spec, "-c", "1", "--once", "-T", "5"],
+    );
+    assert!(!both.status.success(), "{both:?}");
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(
+        stderr.contains("--once") && stderr.contains("--time"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn pgm_b_init_then_run_with_csv_output() {
     let Some(env) = connection_env() else {

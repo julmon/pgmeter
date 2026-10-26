@@ -42,8 +42,10 @@ Things to know before comparing numbers:
   drives PostgreSQL; PGM-C-client sends every statement from the client,
   which is how most applications behave. Their throughput differs by the
   round trips, not by the work the server does.
-- PGM-H and PGM-DS are single-stream analytical workloads: run them with one
-  client and read the per-query response times, not the throughput.
+- PGM-H and PGM-DS are query streams: run them with `--once` (each query
+  once per client, a power test with one client and a throughput test with
+  several) and read the per-query response times and the elapsed time, not
+  the throughput headline.
 - Customers, items and last names in the two PGM-C variants follow TPC-C's
   non-uniform random distribution, so the hot spots are the ones the
   specification intends.
