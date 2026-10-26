@@ -785,6 +785,56 @@ impl YamlBenchmark {
         self.transactions_rw.clone()
     }
 
+    /// Whether any transaction runs a Lua script. The Lua database bridge is
+    /// synchronous, so such specs run on one thread per client; specs made of
+    /// `simple` transactions only run on the async engine.
+    pub fn has_script_transactions(&self) -> bool {
+        self.spec
+            .transactions
+            .iter()
+            .any(|t| t.mode == TransactionMode::Script)
+    }
+
+    /// Run one `simple` transaction on an async connection and return its
+    /// duration in microseconds (the hot path of the async client tasks).
+    /// Rendering happens on the worker thread that polls the task, with that
+    /// thread's binding VM; only the statements await.
+    pub async fn execute_simple_transaction_async(
+        &self,
+        client: &tokio_postgres::Client,
+        transaction: &BenchmarkTransaction,
+    ) -> Result<u128, Error> {
+        let tx_spec = self
+            .spec
+            .transactions
+            .iter()
+            .find(|t| t.id == transaction.id)
+            .ok_or_else(|| {
+                Error::spec(format!(
+                    "Transaction id {} not found in spec",
+                    transaction.id
+                ))
+            })?;
+        if tx_spec.mode != TransactionMode::Simple {
+            return Err(Error::spec(format!(
+                "transaction {} ({}) is in script mode and cannot run on the async engine",
+                transaction.id, transaction.name
+            )));
+        }
+
+        let statements = self.render_simple_sql(tx_spec)?;
+        let start = Instant::now();
+        for sql in &statements {
+            if let Err(error) = client.batch_execute(sql).await {
+                // Same recovery as the thread engine: leave no aborted
+                // transaction block behind on the connection.
+                let _ = client.batch_execute("ROLLBACK").await;
+                return Err(Error::from(error));
+            }
+        }
+        Ok(start.elapsed().as_micros())
+    }
+
     pub fn get_pkey_ddls(&self) -> Vec<String> {
         self.pkey_ddls.clone()
     }
