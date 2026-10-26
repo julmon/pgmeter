@@ -4,3 +4,5 @@
 # directory (`pgmtr-` is the prefix used by pre-rename builds).
 /pgmeter-*/
 /pgmtr-*/
+# mdBook output of the documentation site (docs/src is the source)
+/docs/book

@@ -38,6 +38,10 @@ First public release.
   statement by statement. Both pick customers, items and last names with TPC-C's
   NURand distribution. `pgmeter spec list` shows them and `pgmeter spec new`
   scaffolds a copy to edit.
+- A documentation site at <https://julmon.github.io/pgmeter/>: getting
+  started, the user guide, the benchmark authoring guide and the command-line,
+  Lua API and output-file reference, built with mdBook from `docs/`. The
+  README is a summary that points to it.
 - Each run writes a result directory (`pgmeter-<UTC timestamp>/`) with
   `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
   ramp-up boundary), `transaction.log` and `error.log` (one record per line,

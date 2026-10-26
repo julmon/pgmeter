@@ -1,0 +1,19 @@
+[book]
+title = "pgmeter"
+description = "PostgreSQL benchmarking tool driven by YAML + Lua workload specs"
+authors = ["Julien Tachoires"]
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+site-url = "/pgmeter/"
+git-repository-url = "https://github.com/julmon/pgmeter"
+edit-url-template = "https://github.com/julmon/pgmeter/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+limit-results = 20
