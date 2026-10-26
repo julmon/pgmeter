@@ -26,10 +26,13 @@ First public release.
   `script` mode (Lua with a database bridge: `exec`, `query`, `query_one`,
   `begin`, `commit`, `rollback`, `copy_*`, `rand_*`). Data loading uses either row templates or
   Lua load scripts, with shared modules and a pre-load script.
-- Bundled reference workloads derived from the public TPC specifications:
-  PGM-B, PGM-C, PGM-H, PGM-DS and PGM-IoT, plus a minimal `custom-simple`
-  template. `pgmeter spec list` shows them and `pgmeter spec new` scaffolds a
-  copy to edit.
+- Bundled reference workloads derived from the public TPC specifications: PGM-B,
+  PGM-C, PGM-H, PGM-DS and PGM-IoT, plus a minimal `custom-simple` template.
+  PGM-C runs its transactions as PL/pgSQL functions, one round trip each, like
+  HammerDB's TPROC-C; PGM-C-client drives the same workload from the client
+  statement by statement. Both pick customers, items and last names with TPC-C's
+  NURand distribution. `pgmeter spec list` shows them and `pgmeter spec new`
+  scaffolds a copy to edit.
 - Each run writes a result directory (`pgmeter-<UTC timestamp>/`) with
   `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
   ramp-up boundary), `transaction.log` and `error.log` (one record per line,

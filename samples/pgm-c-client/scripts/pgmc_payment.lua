@@ -22,14 +22,14 @@ else
     end
 end
 
-local c_id = rand_int(1, const.customers_per_district)
+local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
 local h_amount = rand_float(1.00, 5000.00)
 
 -- gen_last() comes from scripts/pgmc_common.lua (scripts.modules)
 
 local c_last = ""
 if y <= 60 then
-    c_last = gen_last(rand_int(1, 1000))
+    c_last = gen_last(nurand(255, C_LAST_RUN, 0, 999))
 end
 
 begin()

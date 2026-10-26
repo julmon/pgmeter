@@ -3,7 +3,7 @@
 
 local warehouse_id = rand_int(min_id, max_id)
 local district_id = rand_int(1, 10)
-local customer_id = rand_int(1, const.customers_per_district)
+local customer_id = nurand(1023, C_ID, 1, const.customers_per_district)
 local ol_cnt = rand_int(5, 15)
 local ol_all_local = 1
 local rbk = rand_int(1, 100)
@@ -19,7 +19,7 @@ for ol_number = 1, ol_cnt do
     -- Generate unique item id
     local ol_i_id
     repeat
-        ol_i_id = rand_int(1, const.items)
+        ol_i_id = nurand(8191, C_ITEM, 1, const.items)
     until not item_ids[ol_i_id]
     item_ids[ol_i_id] = true
 

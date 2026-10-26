@@ -154,6 +154,7 @@ mod tests {
                 "custom-simple",
                 "pgm-b",
                 "pgm-c",
+                "pgm-c-client",
                 "pgm-ds",
                 "pgm-h",
                 "pgm-iot"
@@ -175,7 +176,7 @@ mod tests {
         let dest = new("pgm-c", out_str, false).unwrap();
         assert_eq!(dest, out.join("pgm-c"));
         assert!(dest.join("spec.yaml").is_file());
-        assert!(dest.join("scripts").join("pgmc_new_order.lua").is_file());
+        assert!(dest.join("scripts").join("pgmc_load.lua").is_file());
         // The copy is byte-identical to the embedded sample.
         let embedded = SAMPLES.get_file("pgm-c/spec.yaml").unwrap().contents();
         assert_eq!(std::fs::read(dest.join("spec.yaml")).unwrap(), embedded);
@@ -207,7 +208,7 @@ mod tests {
         let err = new("pgm-x", out.to_str().unwrap(), false).unwrap_err();
         assert!(err.contains("unknown benchmark 'pgm-x'"), "{err}");
         assert!(
-            err.contains("custom-simple, pgm-b, pgm-c, pgm-ds, pgm-h, pgm-iot"),
+            err.contains("custom-simple, pgm-b, pgm-c, pgm-c-client, pgm-ds, pgm-h, pgm-iot"),
             "{err}"
         );
         assert!(!out.join("pgm-x").exists());

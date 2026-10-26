@@ -1428,7 +1428,14 @@ transactions:
 
     #[test]
     fn shipped_sample_specs_parse_and_generate_ddls() {
-        for name in ["pgm-b", "pgm-c", "pgm-h", "pgm-ds", "pgm-iot"] {
+        for name in [
+            "pgm-b",
+            "pgm-c",
+            "pgm-c-client",
+            "pgm-h",
+            "pgm-ds",
+            "pgm-iot",
+        ] {
             let path = format!("samples/{}/spec.yaml", name);
             let content =
                 std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path, e));
