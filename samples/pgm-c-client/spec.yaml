@@ -148,6 +148,13 @@ schema:
         - { name: s_i_id, type: INTEGER }
         - { name: s_w_id, type: INTEGER }
         - { name: s_quantity, type: INTEGER }
+        # The three counters New-Order maintains sit next to s_quantity on
+        # purpose: PostgreSQL logs the changed span of an updated row, so
+        # keeping them together keeps a stock update's WAL at a few dozen
+        # bytes instead of the 240 bytes of s_dist_* in between.
+        - { name: s_ytd, type: "NUMERIC(16, 8)" }
+        - { name: s_order_cnt, type: REAL }
+        - { name: s_remote_cnt, type: REAL }
         - { name: s_dist_01, type: "VARCHAR(24)" }
         - { name: s_dist_02, type: "VARCHAR(24)" }
         - { name: s_dist_03, type: "VARCHAR(24)" }
@@ -158,9 +165,6 @@ schema:
         - { name: s_dist_08, type: "VARCHAR(24)" }
         - { name: s_dist_09, type: "VARCHAR(24)" }
         - { name: s_dist_10, type: "VARCHAR(24)" }
-        - { name: s_ytd, type: "NUMERIC(16, 8)" }
-        - { name: s_order_cnt, type: REAL }
-        - { name: s_remote_cnt, type: REAL }
         - { name: s_data, type: "VARCHAR(50)" }
       primary_key: [s_w_id, s_i_id]
 

@@ -149,6 +149,13 @@ schema:
         - { name: s_i_id, type: INTEGER }
         - { name: s_w_id, type: INTEGER }
         - { name: s_quantity, type: INTEGER }
+        # The three counters New-Order maintains sit next to s_quantity on
+        # purpose: PostgreSQL logs the changed span of an updated row, so
+        # keeping them together keeps a stock update's WAL at a few dozen
+        # bytes instead of the 240 bytes of s_dist_* in between.
+        - { name: s_ytd, type: "NUMERIC(16, 8)" }
+        - { name: s_order_cnt, type: REAL }
+        - { name: s_remote_cnt, type: REAL }
         - { name: s_dist_01, type: "VARCHAR(24)" }
         - { name: s_dist_02, type: "VARCHAR(24)" }
         - { name: s_dist_03, type: "VARCHAR(24)" }
@@ -159,9 +166,6 @@ schema:
         - { name: s_dist_08, type: "VARCHAR(24)" }
         - { name: s_dist_09, type: "VARCHAR(24)" }
         - { name: s_dist_10, type: "VARCHAR(24)" }
-        - { name: s_ytd, type: "NUMERIC(16, 8)" }
-        - { name: s_order_cnt, type: REAL }
-        - { name: s_remote_cnt, type: REAL }
         - { name: s_data, type: "VARCHAR(50)" }
       primary_key: [s_w_id, s_i_id]
 
@@ -371,14 +375,23 @@ schema:
       CREATE OR REPLACE FUNCTION pgmc_stock_level(p_w_id int, p_d_id int, p_threshold int)
       RETURNS int LANGUAGE plpgsql AS $$
       DECLARE
-          v_count int;
+          v_next_o_id int;
+          v_count     int;
       BEGIN
+          -- Two steps, as TPC-C describes them. Joining district in would hide
+          -- the 20-order window from the planner (it compares order lines with
+          -- a column, not a value), and once the first autoanalyze of a fresh
+          -- database lands it picks a hash join over every order line of the
+          -- district and every low-stock item of the warehouse: 150 ms instead
+          -- of 2 ms, for about a minute.
+          SELECT d_next_o_id INTO STRICT v_next_o_id
+            FROM district WHERE d_w_id = p_w_id AND d_id = p_d_id;
           SELECT count(DISTINCT s_i_id) INTO v_count
-            FROM district
-            JOIN order_line ON ol_w_id = d_w_id AND ol_d_id = d_id
-                           AND ol_o_id >= d_next_o_id - 20 AND ol_o_id < d_next_o_id
+            FROM order_line
             JOIN stock ON s_w_id = ol_w_id AND s_i_id = ol_i_id
-           WHERE d_w_id = p_w_id AND d_id = p_d_id AND s_quantity < p_threshold;
+           WHERE ol_w_id = p_w_id AND ol_d_id = p_d_id
+             AND ol_o_id >= v_next_o_id - 20 AND ol_o_id < v_next_o_id
+             AND s_quantity < p_threshold;
           RETURN v_count;
       END $$;
 

@@ -127,7 +127,7 @@ for _, wh_id in ipairs(ids) do
         for i_id = batch_start, batch_end do
             local s_data = make_original(rand_string(26, 50))
             copy_write(string.format(
-                "%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t%s\n",
+                "%d\t%d\t%d\t0\t0\t0\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
                 i_id, wh_id, rand_int(10, 100),
                 rand_string(24, 24), rand_string(24, 24), rand_string(24, 24),
                 rand_string(24, 24), rand_string(24, 24), rand_string(24, 24),
