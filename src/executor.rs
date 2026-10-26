@@ -53,6 +53,9 @@ pub struct Executor {
     n_clients: u16,
     duration_s: u16,
     rampup_s: u16,
+    /// `--once`: every client ran each transaction once instead of a timed
+    /// random stream; `duration_s` is then the measured window that resulted.
+    once: bool,
     /// Headline throughput unit and per-second factor from the spec's
     /// `metrics` block, shared by the live progress line, the per-second
     /// CSVs, run.json and the results.
@@ -131,6 +134,7 @@ impl Executor {
             n_clients: 0,
             duration_s: 0,
             rampup_s: 0,
+            once: false,
             throughput_unit: "TPM".to_string(),
             throughput_factor: 60.0,
             target_dir: get_target_dir_path()?,

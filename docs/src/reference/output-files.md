@@ -15,6 +15,7 @@ The run parameters and timing, one JSON object:
 | `clients` | `-c` |
 | `duration_s` | `-T` |
 | `rampup_s` | `-r` |
+| `once` | `true` for a `--once` run; `duration_s` is then the window the run took |
 | `total_time_ms` | Wall-clock time of the whole run, ramp-up included |
 | `rampup_time_ms` | Wall-clock time of the ramp-up |
 | `workload_secs` | The measured window in seconds (`total_time_ms` minus `rampup_time_ms`, at least 1), the divisor of every throughput figure |

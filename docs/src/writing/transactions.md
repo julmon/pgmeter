@@ -22,7 +22,7 @@ transactions:
 |-------|----------|---------|
 | `id` | yes | unique integer id (used internally to dispatch) |
 | `name` | yes | shown in the results table |
-| `weight` | yes | relative selection weight (the mix is `weight / Σweight`) |
+| `weight` | yes | relative selection weight (the mix is `weight / Σweight`); with `run --once` every transaction with a weight above 0 runs once per client and the values are ignored |
 | `description` | no | free text |
 | `mode` | no | `simple` (default) or `script` |
 | `bindings` | simple | map of variable → Lua expression |

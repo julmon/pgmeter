@@ -58,34 +58,72 @@ fn default_threads(clients: u16, cpus: usize) -> usize {
     (cpus / 2).clamp(1, clients.max(1) as usize)
 }
 
-/// Weighted transaction selection shared by both engines: cumulative weights
-/// computed once per client, one draw per transaction.
+/// What a client runs next, shared by both engines.
+///
+/// A timed run draws every transaction at random by weight for as long as the
+/// run lasts. A `--once` run gives each client its own random permutation of
+/// the transactions with a weight above 0 and runs it once, which is the
+/// query-stream model of the TPC-H and TPC-DS power and throughput tests.
+enum Schedule {
+    Weighted {
+        cumulative_weights: Vec<u32>,
+        total_weight: u32,
+    },
+    Once {
+        order: Vec<usize>,
+        next: usize,
+    },
+}
+
 struct TransactionPicker {
     transactions: Vec<BenchmarkTransaction>,
-    cumulative_weights: Vec<u32>,
-    total_weight: u32,
+    schedule: Schedule,
 }
 
 impl TransactionPicker {
-    fn new(transactions: Vec<BenchmarkTransaction>) -> Self {
-        let total_weight = transactions.iter().map(|t| t.weight as u32).sum();
-        let cumulative_weights = transactions
-            .iter()
-            .scan(0u32, |acc, t| {
-                *acc += t.weight as u32;
-                Some(*acc)
-            })
-            .collect();
+    fn new(transactions: Vec<BenchmarkTransaction>, once: bool, rng: &mut impl Rng) -> Self {
+        let schedule = if once {
+            let mut order: Vec<usize> = (0..transactions.len())
+                .filter(|&i| transactions[i].weight > 0)
+                .collect();
+            order.shuffle(rng);
+            Schedule::Once { order, next: 0 }
+        } else {
+            let total_weight = transactions.iter().map(|t| t.weight as u32).sum();
+            let cumulative_weights = transactions
+                .iter()
+                .scan(0u32, |acc, t| {
+                    *acc += t.weight as u32;
+                    Some(*acc)
+                })
+                .collect();
+            Schedule::Weighted {
+                cumulative_weights,
+                total_weight,
+            }
+        };
         Self {
             transactions,
-            cumulative_weights,
-            total_weight,
+            schedule,
         }
     }
 
-    fn pick(&self, rng: &mut impl Rng) -> &BenchmarkTransaction {
-        let rand_val: u32 = rng.random_range(1..=self.total_weight);
-        &self.transactions[pick_transaction(&self.cumulative_weights, rand_val)]
+    /// The next transaction to run, or `None` when a `--once` client is done.
+    fn next(&mut self, rng: &mut impl Rng) -> Option<&BenchmarkTransaction> {
+        match &mut self.schedule {
+            Schedule::Weighted {
+                cumulative_weights,
+                total_weight,
+            } => {
+                let rand_val: u32 = rng.random_range(1..=*total_weight);
+                Some(&self.transactions[pick_transaction(cumulative_weights, rand_val)])
+            }
+            Schedule::Once { order, next } => {
+                let index = *order.get(*next)?;
+                *next += 1;
+                Some(&self.transactions[index])
+            }
+        }
     }
 }
 
@@ -107,6 +145,7 @@ struct ClientTask {
     abort: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     duration_ms: u64,
+    once: bool,
 }
 
 /// One client of the async engine: connect, then run transactions until the
@@ -121,6 +160,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         abort,
         interrupted,
         duration_ms,
+        once,
     } = task;
 
     let (client, connection) = match tokio_postgres::connect(&dsn, tls).await {
@@ -141,13 +181,13 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         let _ = connection.await;
     });
 
-    let picker = TransactionPicker::new(benchmark.get_transactions_rw());
     let mut rng = SmallRng::from_os_rng();
+    let mut picker = TransactionPicker::new(benchmark.get_transactions_rw(), once, &mut rng);
     let loop_start = Instant::now();
-    let duration_limit = duration_ms as u128;
+    // No time limit in a `--once` run: the client stops when its list ends.
+    let duration_limit = (!once).then_some(duration_ms as u128);
 
-    loop {
-        let transaction = picker.pick(&mut rng);
+    while let Some(transaction) = picker.next(&mut rng) {
         match benchmark
             .execute_simple_transaction_async(&client, transaction)
             .await
@@ -168,7 +208,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
             }
         }
 
-        if loop_start.elapsed().as_millis() >= duration_limit
+        if duration_limit.is_some_and(|limit| loop_start.elapsed().as_millis() >= limit)
             || abort.load(Ordering::Relaxed)
             || interrupted.load(Ordering::Relaxed)
         {
@@ -223,6 +263,7 @@ impl Executor {
         self.n_clients = args.client;
         self.duration_s = args.time;
         self.rampup_s = args.rampup;
+        self.once = args.once;
         let rampup_ms = args.rampup as u64 * 1000;
         let time_ms = args.time as u64 * 1000;
         // Nap time before starting a new client
@@ -312,6 +353,7 @@ impl Executor {
         // flushed the logs below.
         let workload = match engine {
             Engine::ThreadPerClient => self.run_benchmark_sync(
+                args.once,
                 args.client,
                 min_id,
                 max_id,
@@ -327,6 +369,7 @@ impl Executor {
             ),
             Engine::Async { threads } => self.run_benchmark_async(
                 threads,
+                args.once,
                 args.client,
                 min_id,
                 max_id,
@@ -344,6 +387,13 @@ impl Executor {
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
+        if args.once {
+            // The window a `--once` run took, so the results and the report
+            // carry the real duration rather than the unused --time default.
+            self.duration_s = summary::workload_secs(self.total_time_ms, self.rampup_time_ms)
+                .round()
+                .clamp(1.0, u16::MAX as f64) as u16;
+        }
         self.interrupted = interrupted.load(Ordering::Relaxed);
         if self.interrupted {
             terminal::interrupted_msg();
@@ -375,6 +425,7 @@ impl Executor {
             "clients": self.n_clients,
             "duration_s": self.duration_s,
             "rampup_s": self.rampup_s,
+            "once": self.once,
             "total_time_ms": self.total_time_ms,
             "rampup_time_ms": self.rampup_time_ms,
             "workload_secs": summary::workload_secs(self.total_time_ms, self.rampup_time_ms),
@@ -420,7 +471,11 @@ impl Executor {
         eprintln!("  target:   {}", redact_dsn(&self.dsn));
         eprintln!("  clients:  {}", args.client);
         eprintln!("  engine:   {}", engine.describe());
-        eprintln!("  duration: {} s", args.time);
+        if args.once {
+            eprintln!("  mode:     every transaction once per client (--once)");
+        } else {
+            eprintln!("  duration: {} s", args.time);
+        }
         eprintln!("  rampup:   {} s", args.rampup);
         if args.progress > 0 {
             eprintln!("  progress: every {} s", args.progress);
@@ -437,6 +492,7 @@ impl Executor {
     #[allow(clippy::too_many_arguments)]
     fn run_benchmark_sync(
         &mut self,
+        once: bool,
         n_clients: u16,
         min_id: u32,
         max_id: u32,
@@ -493,14 +549,14 @@ impl Executor {
                     }
                 };
 
-                let picker = TransactionPicker::new(benchmark.get_transactions_rw());
                 let mut rng = SmallRng::from_os_rng();
+                let mut picker =
+                    TransactionPicker::new(benchmark.get_transactions_rw(), once, &mut rng);
                 let loop_start = Instant::now();
-                let duration_limit = duration_ms as u128;
+                // No time limit in a `--once` run: the client stops when its list ends.
+                let duration_limit = (!once).then_some(duration_ms as u128);
 
-                loop {
-                    let transaction = picker.pick(&mut rng);
-
+                while let Some(transaction) = picker.next(&mut rng) {
                     // Execute the transaction
                     match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
                         Ok(duration) => {
@@ -518,7 +574,7 @@ impl Executor {
                         }
                     }
 
-                    if loop_start.elapsed().as_millis() >= duration_limit
+                    if duration_limit.is_some_and(|limit| loop_start.elapsed().as_millis() >= limit)
                         || abort.load(Ordering::Relaxed)
                         || interrupted.load(Ordering::Relaxed)
                     {
@@ -534,7 +590,13 @@ impl Executor {
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
         let start2 = Instant::now();
-        let monitor = self.spawn_monitor(time_ms, start2, live_commits, live_latency_us, progress);
+        let monitor = self.spawn_monitor(
+            (!once).then_some(time_ms / 1000),
+            start2,
+            live_commits,
+            live_latency_us,
+            progress,
+        );
 
         // Send end-of-rampup message
         tx.send(TXMessage::end_of_rampup()).unwrap();
@@ -567,6 +629,7 @@ impl Executor {
     fn run_benchmark_async(
         &mut self,
         threads: usize,
+        once: bool,
         n_clients: u16,
         min_id: u32,
         max_id: u32,
@@ -612,6 +675,7 @@ impl Executor {
                     abort: Arc::clone(&abort),
                     interrupted: Arc::clone(&interrupted),
                     duration_ms,
+                    once,
                 })));
             }
             tasks
@@ -620,7 +684,13 @@ impl Executor {
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
         let start2 = Instant::now();
-        let monitor = self.spawn_monitor(time_ms, start2, live_commits, live_latency_us, progress);
+        let monitor = self.spawn_monitor(
+            (!once).then_some(time_ms / 1000),
+            start2,
+            live_commits,
+            live_latency_us,
+            progress,
+        );
 
         // Send end-of-rampup message
         tx.send(TXMessage::end_of_rampup()).unwrap();
@@ -657,7 +727,7 @@ impl Executor {
     /// over the post-rampup workload window, fed by the live counters.
     fn spawn_monitor(
         &self,
-        time_ms: u64,
+        total_s: Option<u64>,
         start2: Instant,
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
@@ -665,7 +735,7 @@ impl Executor {
     ) -> WorkloadMonitor {
         let stop = Arc::new(AtomicBool::new(false));
         let (bar, handle) = terminal::spawn_workload_monitor(
-            time_ms / 1000,
+            total_s,
             start2,
             live_commits,
             live_latency_us,
@@ -849,24 +919,59 @@ mod tests {
         assert_eq!(default_threads(0, 4), 1);
     }
 
-    // The picker shared by both engines draws each transaction in proportion
-    // to its weight and never a zero-weight one.
-    #[test]
-    fn transaction_picker_follows_the_weights() {
-        let tx = |id: u16, weight: u16| BenchmarkTransaction {
+    fn tx(id: u16, weight: u16) -> BenchmarkTransaction {
+        BenchmarkTransaction {
             id,
             name: format!("tx{id}"),
             weight,
-        };
-        let picker = TransactionPicker::new(vec![tx(1, 90), tx(2, 0), tx(3, 10)]);
+        }
+    }
+
+    // The picker shared by both engines draws each transaction in proportion
+    // to its weight and never a zero-weight one, for as long as it is asked.
+    #[test]
+    fn transaction_picker_follows_the_weights() {
         let mut rng = SmallRng::seed_from_u64(7);
+        let mut picker =
+            TransactionPicker::new(vec![tx(1, 90), tx(2, 0), tx(3, 10)], false, &mut rng);
         let mut counts = [0u32; 4];
         for _ in 0..10_000 {
-            counts[picker.pick(&mut rng).id as usize] += 1;
+            counts[picker.next(&mut rng).unwrap().id as usize] += 1;
         }
         assert_eq!(counts[2], 0, "{counts:?}");
         assert!((8_700..=9_300).contains(&counts[1]), "{counts:?}");
         assert!((700..=1_300).contains(&counts[3]), "{counts:?}");
+    }
+
+    // A `--once` schedule hands out every transaction with a weight above 0
+    // exactly once, in an order that differs between clients, then ends.
+    #[test]
+    fn once_schedule_runs_each_transaction_once_then_ends() {
+        let transactions: Vec<BenchmarkTransaction> = (1..=20)
+            .map(|id| tx(id, if id == 7 { 0 } else { 1 }))
+            .collect();
+        let mut orders = Vec::new();
+        for seed in 0..4 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let mut picker = TransactionPicker::new(transactions.clone(), true, &mut rng);
+            let mut order = Vec::new();
+            while let Some(t) = picker.next(&mut rng) {
+                order.push(t.id);
+            }
+            assert!(
+                picker.next(&mut rng).is_none(),
+                "a finished client stays finished"
+            );
+            let mut sorted = order.clone();
+            sorted.sort_unstable();
+            let expected: Vec<u16> = (1..=20).filter(|&id| id != 7).collect();
+            assert_eq!(sorted, expected, "seed {seed}: {order:?}");
+            orders.push(order);
+        }
+        assert!(
+            orders.windows(2).any(|w| w[0] != w[1]),
+            "clients must not all run the same order: {orders:?}"
+        );
     }
 
     // RELEASE_REVIEW F2: the weighted selection the client loop runs on every

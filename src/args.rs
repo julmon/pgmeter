@@ -73,6 +73,9 @@ pub struct RunArgs {
     pub progress: u16,
     // Worker threads of the async engine (simple-mode specs); 0 = automatic
     pub threads: u16,
+    // Each client runs every transaction once, in its own random order, then
+    // stops (the TPC-H/DS stream model); `time` is not used
+    pub once: bool,
 }
 
 // init sub-command arguments
@@ -124,6 +127,7 @@ impl RunArgs {
             rampup: 0,
             progress: 0,
             threads: 0,
+            once: false,
         }
     }
 }
@@ -275,6 +279,15 @@ impl CliArgs {
             .value_parser(clap::value_parser!(u16))
             .default_value("0");
 
+        // run: Define the --once command line option
+        let once_option = Arg::new("once")
+            .long("once")
+            .action(ArgAction::SetTrue)
+            .help(
+                "Each client runs every transaction of the spec once, in its own random order,                  then stops (a TPC-H/DS-style query stream); --time is not used",
+            )
+            .conflicts_with("time");
+
         // run: Define the --format command line option
         let format_option = Arg::new("format")
             .long("format")
@@ -364,6 +377,7 @@ impl CliArgs {
             .arg(rampup_option)
             .arg(progress_option)
             .arg(threads_option)
+            .arg(once_option)
             .arg(format_option)
             .arg(quiet_option);
 
@@ -457,6 +471,7 @@ impl CliArgs {
             let rampup = *bm_m.get_one::<u16>("rampup").unwrap();
             let progress = *bm_m.get_one::<u16>("progress").unwrap();
             let threads = *bm_m.get_one::<u16>("threads").unwrap();
+            let once = bm_m.get_flag("once");
 
             RunArgs {
                 client,
@@ -464,6 +479,7 @@ impl CliArgs {
                 rampup,
                 progress,
                 threads,
+                once,
             }
         }
 

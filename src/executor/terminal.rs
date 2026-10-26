@@ -132,10 +132,22 @@ pub fn err_msg(error: &str) {
 // Determinate bar tracking the workload's elapsed/total seconds. The message
 // suffix (live throughput/latency) is set by the caller. Hidden on a non-TTY so
 // callers can fall back to periodic log lines.
-pub fn run_bar(total_s: u64) -> ProgressBar {
+/// `total_s` is the workload window of a timed run; `None` (a `--once` run,
+/// whose length is not known in advance) gives a spinner with the elapsed time.
+pub fn run_bar(total_s: Option<u64>) -> ProgressBar {
     if !is_tty() || is_quiet() {
         return ProgressBar::hidden();
     }
+    let Some(total_s) = total_s else {
+        let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
+        let template = format!(
+            "  {{prefix:.dim}} {} {{spinner:.cyan}} {{elapsed_precise}}  {{msg}}",
+            style("Running workload").white(),
+        );
+        bar.set_style(ProgressStyle::with_template(&template).expect("valid template"));
+        bar.set_prefix("RUN");
+        return bar;
+    };
     let bar = ProgressBar::with_draw_target(Some(total_s), ProgressDrawTarget::stderr());
     // Two leading spaces shift the line right so "RUN" aligns with the icon-
     // prefixed status lines (✔/spinner + space). "Running workload" is rendered
@@ -168,7 +180,7 @@ pub struct RateUnit {
 }
 
 pub fn spawn_workload_monitor(
-    total_s: u64,
+    total_s: Option<u64>,
     start: Instant,
     live_commits: Arc<AtomicU64>,
     live_latency_us: Arc<AtomicU64>,
@@ -211,7 +223,10 @@ pub fn spawn_workload_monitor(
             };
 
             if tty {
-                pb.set_position(elapsed.min(total_s as f64) as u64);
+                match total_s {
+                    Some(total_s) => pb.set_position(elapsed.min(total_s as f64) as u64),
+                    None => pb.tick(),
+                }
                 pb.set_message(format!(
                     "{} {} · lat {:.2} ms",
                     fmt_int(rate_now.round() as u64),
