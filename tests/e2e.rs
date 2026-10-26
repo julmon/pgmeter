@@ -312,6 +312,77 @@ fn custom_simple_init_then_run_with_json_output() {
     assert!(report.contains("my-app-benchmark"));
 }
 
+/// A spec made of `simple` transactions runs on the async engine with the
+/// requested worker threads, and says so in the run header (which `--format
+/// json` would suppress, so this run uses the default table output).
+#[test]
+fn simple_mode_specs_run_on_the_async_engine() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let tmp = workdir("async-engine");
+    let cwd = tmp.path().to_path_buf();
+    let spec = sample("custom-simple");
+
+    let init = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "init",
+            "--spec",
+            spec.to_str().unwrap(),
+            "-s",
+            "2",
+            "-j",
+            "2",
+        ],
+    );
+    assert_success(&init, "init custom-simple");
+
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "run",
+            "--spec",
+            spec.to_str().unwrap(),
+            "-c",
+            "4",
+            "-T",
+            "2",
+            "-j",
+            "2",
+        ],
+    );
+    assert_success(&run, "run custom-simple with --threads 2");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("engine:   2 worker thread(s), one task per client"),
+        "{stderr}"
+    );
+
+    // Transactions committed on every client and none failed: the
+    // active-clients column of the transaction log reaches 4 (it counts the
+    // distinct client ids seen so far) and error.log stays empty.
+    let dir = result_dir(&cwd);
+    let log = std::fs::read_to_string(dir.join("transaction.log")).unwrap();
+    assert!(log.lines().count() > 0, "no transaction logged in 2 s");
+    let last_active = log
+        .lines()
+        .last()
+        .and_then(|l| l.split(' ').nth(1))
+        .unwrap_or("");
+    assert_eq!(
+        last_active,
+        "4",
+        "last transaction.log line: {:?}",
+        log.lines().last()
+    );
+    let errors = std::fs::read_to_string(dir.join("error.log")).unwrap();
+    assert!(errors.is_empty(), "error.log: {errors}");
+}
+
 #[test]
 fn pgm_b_init_then_run_with_csv_output() {
     let Some(env) = connection_env() else {

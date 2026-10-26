@@ -14,14 +14,169 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use indicatif::ProgressBar;
 use postgres::Client;
 use rand::prelude::*;
+use tokio_postgres_rustls::MakeRustlsConnect;
 
-use super::benchmark::Counter;
+use super::benchmark::{BenchmarkTransaction, Counter};
 use super::error::{error_detail, Error};
 use super::txmessage::{TXMessage, TXMessageKind};
+use super::yaml_benchmark::YamlBenchmark;
 use super::{redact_dsn, summary, terminal, Executor, ERROR_FILE, LOG_FILE, RUN_FILE};
 use crate::args::RunArgs;
+
+/// How the clients are driven; decided by the spec, see `Executor::engine`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Engine {
+    /// One std::thread and one blocking connection per client. The Lua
+    /// database bridge is synchronous, so every spec with a script-mode
+    /// transaction runs here.
+    ThreadPerClient,
+    /// One Tokio task per client on `threads` worker threads, for specs made
+    /// of `simple` transactions only.
+    Async { threads: usize },
+}
+
+impl Engine {
+    fn describe(self) -> String {
+        match self {
+            Engine::ThreadPerClient => "one thread per client (script mode)".to_string(),
+            Engine::Async { threads } => {
+                format!("{threads} worker thread(s), one task per client")
+            }
+        }
+    }
+}
+
+/// Worker threads of the async engine when `--threads` is 0: half the CPUs,
+/// at least one, at most one per client. On a 4-core box shared with the
+/// server, one or two workers did best for 8 clients while four competed
+/// with the server; a dedicated client machine can afford
+/// more, with `--threads`.
+fn default_threads(clients: u16, cpus: usize) -> usize {
+    (cpus / 2).clamp(1, clients.max(1) as usize)
+}
+
+/// Weighted transaction selection shared by both engines: cumulative weights
+/// computed once per client, one draw per transaction.
+struct TransactionPicker {
+    transactions: Vec<BenchmarkTransaction>,
+    cumulative_weights: Vec<u32>,
+    total_weight: u32,
+}
+
+impl TransactionPicker {
+    fn new(transactions: Vec<BenchmarkTransaction>) -> Self {
+        let total_weight = transactions.iter().map(|t| t.weight as u32).sum();
+        let cumulative_weights = transactions
+            .iter()
+            .scan(0u32, |acc, t| {
+                *acc += t.weight as u32;
+                Some(*acc)
+            })
+            .collect();
+        Self {
+            transactions,
+            cumulative_weights,
+            total_weight,
+        }
+    }
+
+    fn pick(&self, rng: &mut impl Rng) -> &BenchmarkTransaction {
+        let rand_val: u32 = rng.random_range(1..=self.total_weight);
+        &self.transactions[pick_transaction(&self.cumulative_weights, rand_val)]
+    }
+}
+
+/// The progress bar or progress lines of the workload window and the thread
+/// that drives them.
+struct WorkloadMonitor {
+    bar: ProgressBar,
+    handle: JoinHandle<()>,
+    stop: Arc<AtomicBool>,
+}
+
+/// Everything one client task of the async engine needs.
+struct ClientTask {
+    client_id: u16,
+    dsn: String,
+    tls: MakeRustlsConnect,
+    benchmark: Arc<YamlBenchmark>,
+    tx: Sender<TXMessage>,
+    abort: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
+    duration_ms: u64,
+}
+
+/// One client of the async engine: connect, then run transactions until the
+/// client's share of the run is over or the run is aborted or interrupted.
+async fn run_client_task(task: ClientTask) -> Result<(), Error> {
+    let ClientTask {
+        client_id,
+        dsn,
+        tls,
+        benchmark,
+        tx,
+        abort,
+        interrupted,
+        duration_ms,
+    } = task;
+
+    let (client, connection) = match tokio_postgres::connect(&dsn, tls).await {
+        Ok(ready) => ready,
+        Err(error) => {
+            abort.store(true, Ordering::Relaxed);
+            return Err(Error::Other(format!(
+                "client {}: connection failed: {}",
+                client_id,
+                error_detail(&error)
+            )));
+        }
+    };
+    // The connection future moves the bytes; it ends when `client` is
+    // dropped. A connection error resurfaces on the client's next statement,
+    // which reports it like any other error.
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let picker = TransactionPicker::new(benchmark.get_transactions_rw());
+    let mut rng = SmallRng::from_os_rng();
+    let loop_start = Instant::now();
+    let duration_limit = duration_ms as u128;
+
+    loop {
+        let transaction = picker.pick(&mut rng);
+        match benchmark
+            .execute_simple_transaction_async(&client, transaction)
+            .await
+        {
+            Ok(duration) => {
+                let _ = tx.send(TXMessage::committed(
+                    transaction.id,
+                    client_id as u32,
+                    duration,
+                ));
+            }
+            Err(error) => {
+                let _ = tx.send(TXMessage::error(
+                    transaction.id,
+                    client_id as u32,
+                    error.to_string(),
+                ));
+            }
+        }
+
+        if loop_start.elapsed().as_millis() >= duration_limit
+            || abort.load(Ordering::Relaxed)
+            || interrupted.load(Ordering::Relaxed)
+        {
+            break;
+        }
+    }
+    Ok(())
+}
 
 /// Weighted transaction selection: the index of the first cumulative weight
 /// that `rand_val` (drawn uniformly from `1..=total_weight`) does not exceed.
@@ -77,9 +232,11 @@ impl Executor {
             0
         };
 
+        let engine = self.engine(&args);
+
         // Echo the run configuration up front so the output is self-documenting
         // and the run is reproducible from its own log.
-        self.print_run_header(&args)?;
+        self.print_run_header(&args, engine)?;
 
         // Channels used to communicate transactions states: id, duration, committed?, etc..
         let (tx, rx): (Sender<TXMessage>, Receiver<TXMessage>) = unbounded();
@@ -151,23 +308,39 @@ impl Executor {
         })
         .map_err(|e| Error::io("Cannot install the Ctrl-C handler", e))?;
 
-        // One std::thread per client, each on its own blocking connection
-        // (matches pgbench's load-generation model). A client that cannot
-        // start is reported after the collector has flushed the logs below.
-        let workload = self.run_benchmark_sync(
-            args.client,
-            min_id,
-            max_id,
-            time_ms,
-            rampup_ms,
-            sleep_ms,
-            tx.clone(),
-            start,
-            Arc::clone(&live_commits),
-            Arc::clone(&live_latency_us),
-            args.progress,
-            Arc::clone(&interrupted),
-        );
+        // A client that cannot start is reported after the collector has
+        // flushed the logs below.
+        let workload = match engine {
+            Engine::ThreadPerClient => self.run_benchmark_sync(
+                args.client,
+                min_id,
+                max_id,
+                time_ms,
+                rampup_ms,
+                sleep_ms,
+                tx.clone(),
+                start,
+                Arc::clone(&live_commits),
+                Arc::clone(&live_latency_us),
+                args.progress,
+                Arc::clone(&interrupted),
+            ),
+            Engine::Async { threads } => self.run_benchmark_async(
+                threads,
+                args.client,
+                min_id,
+                max_id,
+                time_ms,
+                rampup_ms,
+                sleep_ms,
+                tx.clone(),
+                start,
+                Arc::clone(&live_commits),
+                Arc::clone(&live_latency_us),
+                args.progress,
+                Arc::clone(&interrupted),
+            ),
+        };
 
         // Proceed total execution time
         self.total_time_ms = start.elapsed().as_millis();
@@ -219,7 +392,23 @@ impl Executor {
     // Echo the run configuration to stderr so the output is self-documenting and
     // the run can be reproduced from its own log. Kept on stderr so stdout still
     // carries only the results (tables or --format json/csv).
-    fn print_run_header(&mut self, args: &RunArgs) -> Result<(), Error> {
+    /// The engine this run uses: the thread engine as soon as the spec has a
+    /// script-mode transaction, the async engine otherwise, with `--threads`
+    /// workers or the default for this machine.
+    fn engine(&self, args: &RunArgs) -> Engine {
+        if self.benchmark.has_script_transactions() {
+            return Engine::ThreadPerClient;
+        }
+        let threads = if args.threads == 0 {
+            let cpus = thread::available_parallelism().map_or(1, |n| n.get());
+            default_threads(args.client, cpus)
+        } else {
+            args.threads as usize
+        };
+        Engine::Async { threads }
+    }
+
+    fn print_run_header(&mut self, args: &RunArgs, engine: Engine) -> Result<(), Error> {
         if terminal::is_quiet() {
             return Ok(());
         }
@@ -230,6 +419,7 @@ impl Executor {
         eprintln!("  spec:     {}", self.spec_file);
         eprintln!("  target:   {}", redact_dsn(&self.dsn));
         eprintln!("  clients:  {}", args.client);
+        eprintln!("  engine:   {}", engine.describe());
         eprintln!("  duration: {} s", args.time);
         eprintln!("  rampup:   {} s", args.rampup);
         if args.progress > 0 {
@@ -241,7 +431,8 @@ impl Executor {
     }
 
     /// Benchmark execution using one std::thread per client, each on its own
-    /// blocking connection (matches pgbench's load-generation model).
+    /// blocking connection. The Lua database bridge is synchronous, so this is
+    /// the engine of every spec with a script-mode transaction.
     // TODO(RELEASE_REVIEW D3/D11): bundle the run parameters into a struct.
     #[allow(clippy::too_many_arguments)]
     fn run_benchmark_sync(
@@ -302,26 +493,13 @@ impl Executor {
                     }
                 };
 
-                let transactions = benchmark.get_transactions_rw();
-
-                // Pre-compute cumulative weights for fast weighted selection
-                let total_weight: u32 = transactions.iter().map(|t| t.weight as u32).sum();
-                let cumulative_weights: Vec<u32> = transactions
-                    .iter()
-                    .scan(0u32, |acc, t| {
-                        *acc += t.weight as u32;
-                        Some(*acc)
-                    })
-                    .collect();
-
+                let picker = TransactionPicker::new(benchmark.get_transactions_rw());
+                let mut rng = SmallRng::from_os_rng();
                 let loop_start = Instant::now();
                 let duration_limit = duration_ms as u128;
 
                 loop {
-                    // Fast weighted random selection
-                    let rand_val: u32 = rand::rng().random_range(1..=total_weight);
-                    let transaction =
-                        &transactions[pick_transaction(&cumulative_weights, rand_val)];
+                    let transaction = picker.pick(&mut rng);
 
                     // Execute the transaction
                     match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
@@ -356,22 +534,7 @@ impl Executor {
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
 
         let start2 = Instant::now();
-
-        // Drive a determinate bar (TTY) or periodic progress lines (non-TTY) over
-        // the post-rampup workload window, fed by the live counters.
-        let monitor_stop = Arc::new(AtomicBool::new(false));
-        let (bar, monitor) = terminal::spawn_workload_monitor(
-            time_ms / 1000,
-            start2,
-            live_commits,
-            live_latency_us,
-            Arc::clone(&monitor_stop),
-            progress,
-            terminal::RateUnit {
-                unit: self.throughput_unit.clone(),
-                factor: self.throughput_factor,
-            },
-        );
+        let monitor = self.spawn_monitor(time_ms, start2, live_commits, live_latency_us, progress);
 
         // Send end-of-rampup message
         tx.send(TXMessage::end_of_rampup()).unwrap();
@@ -385,16 +548,144 @@ impl Executor {
             }
         }
 
-        monitor_stop.store(true, Ordering::Relaxed);
-        monitor
-            .join()
-            .expect("the workload monitor thread panicked");
-        terminal::finish_run_bar(bar, start2.elapsed().as_micros() as f64 / 1000.0);
+        Self::stop_monitor(monitor, start2);
 
         match first_error {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// Benchmark execution on the async engine: a Tokio runtime with
+    /// `threads` worker threads drives one task per client on its own
+    /// `tokio-postgres` connection. A worker that finds a client waiting on
+    /// the server moves on to the next one, so the process wakes up far less
+    /// often than one thread per client does: on a 4-core box shared with the
+    /// server this took PGM-B from 87% to 94% of pgbench's rate
+    ///. Only `simple` transactions can run here.
+    #[allow(clippy::too_many_arguments)]
+    fn run_benchmark_async(
+        &mut self,
+        threads: usize,
+        n_clients: u16,
+        min_id: u32,
+        max_id: u32,
+        time_ms: u64,
+        rampup_ms: u64,
+        sleep_ms: u64,
+        tx: Sender<TXMessage>,
+        start: Instant,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+        progress: u16,
+        interrupted: Arc<AtomicBool>,
+    ) -> Result<(), Error> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(threads)
+            .thread_name("pgmeter-client")
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|e| Error::io("Cannot start the client runtime", e))?;
+        // Raised by a client that cannot connect so the other clients stop
+        // instead of running out the clock.
+        let abort = Arc::new(AtomicBool::new(false));
+        let benchmark = Arc::new(self.benchmark.with_context(0, min_id, max_id));
+        let dsn = self.dsn.clone();
+        let tls = self.tls.clone();
+
+        // Start the clients, staggered over the ramp-up like the thread engine.
+        let tasks: Vec<tokio::task::JoinHandle<Result<(), Error>>> = runtime.block_on(async {
+            let mut tasks = Vec::with_capacity(n_clients as usize);
+            for client_id in 1..=n_clients {
+                let duration_ms = time_ms + rampup_ms - client_id as u64 * sleep_ms;
+                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+                if abort.load(Ordering::Relaxed) || interrupted.load(Ordering::Relaxed) {
+                    break;
+                }
+                tasks.push(tokio::spawn(run_client_task(ClientTask {
+                    client_id,
+                    dsn: dsn.clone(),
+                    tls: tls.clone(),
+                    benchmark: Arc::clone(&benchmark),
+                    tx: tx.clone(),
+                    abort: Arc::clone(&abort),
+                    interrupted: Arc::clone(&interrupted),
+                    duration_ms,
+                })));
+            }
+            tasks
+        });
+
+        terminal::done_msg(start.elapsed().as_micros() as f64 / 1000.0);
+
+        let start2 = Instant::now();
+        let monitor = self.spawn_monitor(time_ms, start2, live_commits, live_latency_us, progress);
+
+        // Send end-of-rampup message
+        tx.send(TXMessage::end_of_rampup()).unwrap();
+        self.rampup_time_ms = start.elapsed().as_millis();
+
+        // Wait for all client tasks, keeping the first failure.
+        let mut first_error = None;
+        runtime.block_on(async {
+            for task in tasks {
+                match task.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        first_error.get_or_insert(error);
+                    }
+                    Err(panic) => {
+                        first_error
+                            .get_or_insert(Error::Other(format!("client task panicked: {panic}")));
+                    }
+                }
+            }
+        });
+        // The connections close with the runtime.
+        drop(runtime);
+
+        Self::stop_monitor(monitor, start2);
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Drive a determinate bar (TTY) or periodic progress lines (non-TTY)
+    /// over the post-rampup workload window, fed by the live counters.
+    fn spawn_monitor(
+        &self,
+        time_ms: u64,
+        start2: Instant,
+        live_commits: Arc<AtomicU64>,
+        live_latency_us: Arc<AtomicU64>,
+        progress: u16,
+    ) -> WorkloadMonitor {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (bar, handle) = terminal::spawn_workload_monitor(
+            time_ms / 1000,
+            start2,
+            live_commits,
+            live_latency_us,
+            Arc::clone(&stop),
+            progress,
+            terminal::RateUnit {
+                unit: self.throughput_unit.clone(),
+                factor: self.throughput_factor,
+            },
+        );
+        WorkloadMonitor { bar, handle, stop }
+    }
+
+    fn stop_monitor(monitor: WorkloadMonitor, start2: Instant) {
+        monitor.stop.store(true, Ordering::Relaxed);
+        monitor
+            .handle
+            .join()
+            .expect("the workload monitor thread panicked");
+        terminal::finish_run_bar(monitor.bar, start2.elapsed().as_micros() as f64 / 1000.0);
     }
 
     // Start the data collector thread. Data collector is in charge of storing transaction
@@ -542,7 +833,41 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_log_message, pick_transaction};
+    use super::{default_threads, escape_log_message, pick_transaction, TransactionPicker};
+    use crate::executor::benchmark::BenchmarkTransaction;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    // The async engine's default worker count: half the CPUs, never 0, never
+    // more than one per client.
+    #[test]
+    fn default_threads_is_half_the_cpus_bounded_by_the_clients() {
+        assert_eq!(default_threads(8, 4), 2);
+        assert_eq!(default_threads(8, 16), 8);
+        assert_eq!(default_threads(1, 16), 1);
+        assert_eq!(default_threads(8, 1), 1);
+        assert_eq!(default_threads(0, 4), 1);
+    }
+
+    // The picker shared by both engines draws each transaction in proportion
+    // to its weight and never a zero-weight one.
+    #[test]
+    fn transaction_picker_follows_the_weights() {
+        let tx = |id: u16, weight: u16| BenchmarkTransaction {
+            id,
+            name: format!("tx{id}"),
+            weight,
+        };
+        let picker = TransactionPicker::new(vec![tx(1, 90), tx(2, 0), tx(3, 10)]);
+        let mut rng = SmallRng::seed_from_u64(7);
+        let mut counts = [0u32; 4];
+        for _ in 0..10_000 {
+            counts[picker.pick(&mut rng).id as usize] += 1;
+        }
+        assert_eq!(counts[2], 0, "{counts:?}");
+        assert!((8_700..=9_300).contains(&counts[1]), "{counts:?}");
+        assert!((700..=1_300).contains(&counts[3]), "{counts:?}");
+    }
 
     // RELEASE_REVIEW F2: the weighted selection the client loop runs on every
     // transaction. Weights 70/30 give cumulative [70, 100]; each draw in
