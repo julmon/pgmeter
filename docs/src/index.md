@@ -63,5 +63,6 @@ pgmeter prints the throughput, the committed and failed transactions and the
 response-time statistics of the steady-state window, and writes a results
 directory with the raw logs, per-second CSVs and `report.html`.
 
-[View a sample report](sample-report.html): a PGM-C run with 10 warehouses and
-8 clients.
+View a sample report: [throughput](sample-report.html), a PGM-C run with 10
+warehouses and 8 clients, or [stream](sample-stream-report.html), PGM-DS at
+scale factor 1 as two query streams.

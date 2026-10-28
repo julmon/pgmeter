@@ -29,8 +29,10 @@ command-line, Lua API and output file reference.
   specs made of plain SQL transactions are driven from a pool of worker
   threads, like pgbench's `-j`.
 - Throughput in the unit the spec defines, response-time percentiles, error
-  rates, live progress, JSON and CSV output, and a self-contained HTML report
-  with charts ([sample](https://julmon.github.io/pgmeter/sample-report.html)).
+  rates, a steady-state check, live progress, JSON and CSV output, and a
+  self-contained HTML report with charts: throughput runs
+  ([sample](https://julmon.github.io/pgmeter/sample-report.html)) and query
+  streams ([sample](https://julmon.github.io/pgmeter/sample-stream-report.html)).
 - Parallel `COPY`-based data loading.
 
 ## Requirements

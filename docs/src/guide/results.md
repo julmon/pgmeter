@@ -131,11 +131,18 @@ A stream run's report shows instead:
   and cumulative share, and the average, minimum and maximum response times.
   Any column sorts, and a filter matches names.
 
-![The charts of a report](../images/report-charts.png)
+![The charts of a throughput report](../images/report-charts.png)
 
-[View a sample report](../sample-report.html): a PGM-C run with 10 warehouses
-and 8 clients for 60 s after a 10 s ramp-up. Hover the charts; the page has a
-light and a dark theme.
+[View a sample throughput report](../sample-report.html): a PGM-C run with 10
+warehouses and 8 clients for 60 s after a 10 s ramp-up, the first after the
+load, which the steady-state check flags as drifted.
+
+![The charts of a stream report](../images/report-stream.png)
+
+[View a sample stream report](../sample-stream-report.html): PGM-DS at scale
+factor 1, two streams with `--once`.
+
+Hover the charts; the pages have a light and a dark theme.
 
 ## Comparing runs
 
