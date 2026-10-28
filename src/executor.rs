@@ -41,6 +41,10 @@ pub struct Executor {
     /// Response-time statistics per transaction, computed by `aggregate_data`
     /// and shared by the results and the report (RELEASE_REVIEW D5).
     stats: HashMap<u16, ResponseTimeStatistics>,
+    /// The same statistics over all transactions together.
+    overall_stats: ResponseTimeStatistics,
+    /// Commits per second of the measured window, for the steady-state check.
+    window: Vec<(i64, u64)>,
     /// Log timestamp at which ramp-up ended; samples before it are excluded
     /// from the statistics and the histogram (RELEASE_REVIEW B2).
     rampup_end_ts: Option<i64>,
@@ -127,6 +131,8 @@ impl Executor {
             benchmark,
             counters: HashMap::new(),
             stats: HashMap::new(),
+            overall_stats: ResponseTimeStatistics::zero("all"),
+            window: Vec::new(),
             rampup_end_ts: None,
             interrupted: false,
             total_time_ms: 0,
@@ -159,13 +165,16 @@ impl Executor {
 
         let transactions = self.get_benchmark(0, 0, 0).get_transactions_rw();
 
-        self.stats = data_agg::aggregate_transaction_data(
+        let aggregate = data_agg::aggregate_transaction_data(
             LOG_FILE,
             &self.target_dir,
             &transactions,
             self.rampup_end_ts,
             self.throughput_factor,
         )?;
+        self.stats = aggregate.stats;
+        self.overall_stats = aggregate.overall;
+        self.window = aggregate.window;
 
         terminal::done_msg(start.elapsed().as_micros() as f64 / 1000_f64);
 
@@ -195,17 +204,10 @@ impl Executor {
                 stats_map
                     .get(&transaction.id)
                     .cloned()
-                    .unwrap_or_else(|| ResponseTimeStatistics {
-                        name: transaction.name.clone(),
-                        mean: 0.0,
-                        min: 0.0,
-                        max: 0.0,
-                        std: 0.0,
-                        percentile_95: 0.0,
-                        percentile_99: 0.0,
-                    })
+                    .unwrap_or_else(|| ResponseTimeStatistics::zero(&transaction.name))
             })
             .collect();
+        let steady = self.steady_state();
 
         match format {
             OutputFormat::Table => {
@@ -215,7 +217,11 @@ impl Executor {
                     summary.total_commits,
                     summary.error_rate,
                     summary.avg_latency_ms,
+                    self.overall_stats.percentile_99,
                 );
+                if !self.once {
+                    terminal::steady_state_line(steady.as_ref());
+                }
 
                 data_agg::print_transactions_tables(
                     &summary.transactions,
@@ -232,6 +238,7 @@ impl Executor {
                         &throughput_unit,
                         summary.workload_secs,
                         self.interrupted,
+                        steady.as_ref(),
                     )
                 );
             }
@@ -246,7 +253,15 @@ impl Executor {
         Ok(self)
     }
 
-    // Generate a self-contained HTML report into the run's target directory.
+    /// The steady-state check of a timed run; `None` for a `--once` run,
+    /// whose clients stop one by one, and for a window too short to judge.
+    fn steady_state(&self) -> Option<summary::SteadyState> {
+        if self.once {
+            return None;
+        }
+        summary::steady_state(&self.window, self.throughput_factor)
+    }
+
     // Generate a self-contained HTML report into the run's target directory.
     // A report failure is reported but does not fail the run: the results and
     // the raw logs are already on disk and get printed next.
@@ -259,6 +274,7 @@ impl Executor {
         let spec = benchmark.spec.clone();
 
         let stats = &self.stats;
+        let steady = self.steady_state();
 
         let mut client = match self.connect() {
             Ok(client) => client,
@@ -276,6 +292,8 @@ impl Executor {
             transactions: &transactions,
             counters: &self.counters,
             stats,
+            overall: &self.overall_stats,
+            steady: steady.as_ref(),
             total_time_ms: self.total_time_ms,
             rampup_time_ms: self.rampup_time_ms,
             rampup_end_ts: self.rampup_end_ts,

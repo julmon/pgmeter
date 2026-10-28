@@ -38,6 +38,21 @@ pub struct ResponseTimeStatistics {
     pub percentile_99: f64,
 }
 
+impl ResponseTimeStatistics {
+    /// The statistics of an empty sample: every figure 0.
+    pub fn zero(name: &str) -> ResponseTimeStatistics {
+        ResponseTimeStatistics {
+            name: name.to_string(),
+            mean: 0.0,
+            min: 0.0,
+            max: 0.0,
+            std: 0.0,
+            percentile_95: 0.0,
+            percentile_99: 0.0,
+        }
+    }
+}
+
 // Per-transaction headline results. The throughput is expressed in the unit
 // configured by the spec's `metrics` block (e.g. TPS, txns/min, queries/hr); the column
 // is rendered with a dynamic header rather than the tabled derive.

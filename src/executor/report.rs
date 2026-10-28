@@ -35,6 +35,10 @@ pub struct ReportInput<'a> {
     pub transactions: &'a [BenchmarkTransaction],
     pub counters: &'a HashMap<u16, Counter>,
     pub stats: &'a HashMap<u16, ResponseTimeStatistics>,
+    /// Steady-state statistics over all transactions together.
+    pub overall: &'a ResponseTimeStatistics,
+    /// The steady-state check of a timed run (see `summary::steady_state`).
+    pub steady: Option<&'a summary::SteadyState>,
     pub total_time_ms: u128,
     pub rampup_time_ms: u128,
     /// Log timestamp at which ramp-up ended; earlier samples are excluded from
@@ -69,6 +73,8 @@ struct Series {
     name: String,
     tpm: Vec<u64>,
     latency: Vec<f64>,
+    /// 95th percentile of each bucket's response times, 0 for an empty bucket.
+    p95: Vec<f64>,
 }
 
 // Generate the self-contained HTML report into the run's target directory.
@@ -95,15 +101,7 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
         .iter()
         .zip(summary.transactions.iter())
         .map(|(tx, s)| {
-            let default_stats = ResponseTimeStatistics {
-                name: tx.name.clone(),
-                mean: 0.0,
-                min: 0.0,
-                max: 0.0,
-                std: 0.0,
-                percentile_95: 0.0,
-                percentile_99: 0.0,
-            };
+            let default_stats = ResponseTimeStatistics::zero(&tx.name);
             let stats = input.stats.get(&tx.id).unwrap_or(&default_stats);
             TxRow {
                 name: tx.name.clone(),
@@ -131,7 +129,6 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
     // Time series and histogram parsed directly from the raw logs so that every
     // chart shares a single time origin.
     let ts = build_time_series(input, throughput_factor)?;
-    let peak_throughput = ts.total_tpm.iter().copied().fold(0u64, u64::max);
 
     let palette = [
         "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
@@ -159,6 +156,7 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
                 "name": s.name,
                 "color": palette[i % palette.len()],
                 "data": s.latency,
+                "p95": s.p95,
             })
         })
         .collect();
@@ -172,6 +170,26 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
         .iter()
         .map(|r| json!({"name": r.name, "mean": r.mean, "p95": r.p95, "p99": r.p99, "max": r.max}))
         .collect();
+
+    // The steady-state check, with its window in elapsed seconds on the
+    // charts' time axis; `endS` is the end of the last judged second.
+    let steady = match (input.steady, ts.origin_ts) {
+        (Some(s), Some(origin)) => json!({
+            "verdict": s.verdict,
+            "seconds": s.seconds,
+            "mean": s.mean,
+            "cvPct": s.cv_pct,
+            "firstHalf": s.first_half,
+            "secondHalf": s.second_half,
+            "driftPct": s.drift_pct,
+            "startS": s.start_ts - origin,
+            "midS": s.mid_ts - origin,
+            "endS": s.end_ts - origin + 1,
+            "maxCvPct": summary::STEADY_MAX_CV_PCT,
+            "maxDriftPct": summary::STEADY_MAX_DRIFT_PCT,
+        }),
+        _ => serde_json::Value::Null,
+    };
 
     let generated_at: DateTime<Utc> = Utc::now();
 
@@ -193,12 +211,14 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
         "dataInfo": data_info,
         "kpis": {
             "throughput": summary.throughput.round() as u64,
-            "peakThroughput": peak_throughput,
             "committed": summary.total_commits,
             "errors": summary.total_errors,
             "errorRate": summary.error_rate,
             "avgLatency": summary.avg_latency_ms,
+            "p95Latency": input.overall.percentile_95,
+            "p99Latency": input.overall.percentile_99,
         },
+        "steady": steady,
         "transactions": tx_rows,
         "timeAxis": ts.time_axis,
         "throughput": {
@@ -206,6 +226,7 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
             "perTx": per_tx_throughput,
         },
         "latency": {
+            "all": {"data": ts.all_latency, "p95": ts.all_p95},
             "perTx": per_tx_latency,
         },
         "percentiles": percentiles,
@@ -232,11 +253,16 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
 
 #[derive(Default)]
 struct TimeSeries {
+    /// The log timestamp of elapsed second 0, `None` for an empty log.
+    origin_ts: Option<i64>,
     time_axis: Vec<u64>,
     /// Elapsed seconds (on `time_axis`) at which ramp-up ended, if any sample
     /// precedes it.
     rampup_end_s: Option<u64>,
     total_tpm: Vec<u64>,
+    /// Mean and 95th percentile of every transaction's response times per bucket.
+    all_latency: Vec<f64>,
+    all_p95: Vec<f64>,
     series: Vec<Series>,
     hist_labels: Vec<String>,
     hist_counts: Vec<u64>,
@@ -286,8 +312,13 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
     let bw = bucket_secs as f64;
 
     let mut total_count = vec![0u64; n_buckets];
+    let mut total_lat_sum = vec![0.0f64; n_buckets];
     let mut counts: HashMap<(u16, u64), u64> = HashMap::new();
     let mut lat_sum: HashMap<(u16, u64), f64> = HashMap::new();
+    // Per-bucket percentiles from sparse histograms on the latency bins:
+    // memory follows the number of distinct bins hit, not the sample size.
+    let mut bins: HashMap<(u16, u64), SparseBins> = HashMap::new();
+    let mut total_bins: Vec<SparseBins> = vec![SparseBins::new(); n_buckets];
     let mut tx_ids: BTreeSet<u16> = BTreeSet::new();
     let mut hist = LatencyHistogram::new();
 
@@ -302,8 +333,12 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
             if let (Some(ts), Some(tx_id), Some(dur)) = (ts, tx_id, dur) {
                 let bucket = ((ts - min_ts) as u64) / bucket_secs;
                 total_count[bucket as usize] += 1;
+                total_lat_sum[bucket as usize] += dur;
                 *counts.entry((tx_id, bucket)).or_insert(0) += 1;
                 *lat_sum.entry((tx_id, bucket)).or_insert(0.0) += dur;
+                let bin = LatencyHistogram::bin(dur);
+                bins.entry((tx_id, bucket)).or_default().add(bin);
+                total_bins[bucket as usize].add(bin);
                 tx_ids.insert(tx_id);
                 // The histogram, like the statistics, only covers steady state.
                 if input.rampup_end_ts.is_none_or(|end| ts >= end) {
@@ -320,6 +355,12 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
         .iter()
         .map(|c| (*c as f64 / bw * factor) as u64)
         .collect();
+    let all_latency: Vec<f64> = total_count
+        .iter()
+        .zip(&total_lat_sum)
+        .map(|(c, sum)| if *c > 0 { sum / *c as f64 } else { 0.0 })
+        .collect();
+    let all_p95: Vec<f64> = total_bins.iter().map(|b| b.percentile(0.95)).collect();
 
     // Build one aligned series per transaction, preserving spec order.
     let mut series: Vec<Series> = Vec::new();
@@ -329,18 +370,25 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
         }
         let mut tpm = vec![0u64; n_buckets];
         let mut latency = vec![0.0f64; n_buckets];
+        let mut p95 = vec![0.0f64; n_buckets];
         for b in 0..n_buckets as u64 {
             let c = counts.get(&(tx.id, b)).copied().unwrap_or(0);
             tpm[b as usize] = (c as f64 / bw * factor) as u64;
             if c > 0 {
                 latency[b as usize] = lat_sum.get(&(tx.id, b)).copied().unwrap_or(0.0) / c as f64;
+                p95[b as usize] = bins.get(&(tx.id, b)).map_or(0.0, |h| h.percentile(0.95));
             }
         }
         let name = name_by_id
             .get(&tx.id)
             .cloned()
             .unwrap_or_else(|| format!("tx-{}", tx.id));
-        series.push(Series { name, tpm, latency });
+        series.push(Series {
+            name,
+            tpm,
+            latency,
+            p95,
+        });
     }
 
     let (hist_labels, hist_counts) = hist.finish();
@@ -351,9 +399,12 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
         .map(|end| (end - min_ts) as u64);
 
     Ok(TimeSeries {
+        origin_ts: Some(min_ts),
         time_axis,
         rampup_end_s,
         total_tpm,
+        all_latency,
+        all_p95,
         series,
         hist_labels,
         hist_counts,
@@ -397,16 +448,19 @@ impl LatencyHistogram {
             (Self::upper_edge(i - 1) * Self::upper_edge(i)).sqrt()
         }
     }
-    fn add(&mut self, d: f64) {
-        let last = self.counts.len() - 1;
-        let bin = if d <= HIST_MIN_MS {
+    /// The bin a response time falls in.
+    fn bin(d: f64) -> usize {
+        let last = Self::n_bins() - 1;
+        if d <= HIST_MIN_MS {
             0
         } else if d >= HIST_MAX_MS {
             last
         } else {
             (1 + ((d / HIST_MIN_MS).ln() / HIST_GROWTH.ln()).floor() as usize).min(last)
-        };
-        self.counts[bin] += 1;
+        }
+    }
+    fn add(&mut self, d: f64) {
+        self.counts[Self::bin(d)] += 1;
         self.total += 1;
     }
     fn finish(self) -> (Vec<String>, Vec<u64>) {
@@ -443,6 +497,41 @@ impl LatencyHistogram {
             .collect();
         labels.push(format!(">{:.1}", cap));
         (labels, out)
+    }
+}
+
+/// The latency bins one time bucket's samples fell in, for its percentiles.
+/// Bins are 1.6% wide, which bounds the error of a percentile read from them.
+#[derive(Clone, Default)]
+struct SparseBins {
+    counts: HashMap<u16, u32>,
+    total: u64,
+}
+
+impl SparseBins {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn add(&mut self, bin: usize) {
+        *self.counts.entry(bin as u16).or_insert(0) += 1;
+        self.total += 1;
+    }
+    /// The centre of the bin holding the `q` quantile, 0 when empty.
+    fn percentile(&self, q: f64) -> f64 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        let mut bins: Vec<(u16, u32)> = self.counts.iter().map(|(b, c)| (*b, *c)).collect();
+        bins.sort_unstable();
+        let target = (self.total as f64 * q).ceil().max(1.0) as u64;
+        let mut cum = 0u64;
+        for (bin, count) in &bins {
+            cum += *count as u64;
+            if cum >= target {
+                return LatencyHistogram::center(*bin as usize);
+            }
+        }
+        LatencyHistogram::center(bins[bins.len() - 1].0 as usize)
     }
 }
 
@@ -604,10 +693,12 @@ fn render_html(json_blob: &str) -> String {
   :root {{
     --bg: #0f172a; --panel: #1e293b; --panel2: #273449; --text: #e2e8f0;
     --muted: #94a3b8; --accent: #38bdf8; --border: #334155; --good: #4ade80; --bad: #f87171;
+    --warn: #f5a35c;
   }}
   :root[data-theme="light"] {{
     --bg: #f8fafc; --panel: #ffffff; --panel2: #eef2f7; --text: #1e293b;
     --muted: #64748b; --accent: #0284c7; --border: #d8dee9; --good: #16a34a; --bad: #dc2626;
+    --warn: #b4470b;
   }}
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; background: var(--bg); color: var(--text);
@@ -662,6 +753,21 @@ fn render_html(json_blob: &str) -> String {
   .charts-head button:hover {{ border-color: var(--accent); }}
   .settings {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
   .settings td:last-child {{ color: var(--accent); }}
+  .steady {{ display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }}
+  .steady .verdict {{ flex: 1 1 280px; }}
+  .steady .figures {{ flex: 2 1 480px; display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }}
+  .steady .figures > div {{ border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }}
+  .steady .figures .k {{ color: var(--muted); font-size: 12px; }}
+  .steady .figures .v {{ font-size: 18px; font-weight: 700; margin-top: 2px; }}
+  .badge {{ display: inline-block; font-weight: 700; font-size: 13px; padding: 4px 12px;
+    border-radius: 999px; margin-right: 8px; }}
+  .badge.steady-ok {{ background: rgba(74, 222, 128, .18); color: var(--good); }}
+  .badge.steady-warn {{ background: rgba(242, 142, 43, .2); color: var(--warn); }}
+  .note {{ color: var(--muted); font-size: 13px; margin-top: 8px; }}
+  .chart-tools {{ position: absolute; top: 10px; left: 16px; z-index: 4; font-size: 12px; color: var(--muted); }}
+  .chart-tools select {{ background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 6px; font-size: 12px; margin-left: 4px; }}
   footer {{ margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }}
 </style>
 </head>
@@ -703,6 +809,9 @@ fn render_html(json_blob: &str) -> String {
   <h2>Summary</h2>
   <div class="grid kpi-grid" id="kpis"></div>
 
+  <h2>Steady state</h2>
+  <div class="card steady" id="steady"></div>
+
   <h2>Per-transaction results</h2>
   <div class="card" style="overflow-x:auto">
     <table>
@@ -717,7 +826,7 @@ fn render_html(json_blob: &str) -> String {
   <div class="charts-head"><h2>Charts</h2><button id="dl-all">Download all charts (PNG)</button></div>
   <div class="grid chart-grid">
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="throughput"></canvas></div><div class="legend" id="throughput-legend"></div></div>
-    <div class="card chart-card line-card"><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
+    <div class="card chart-card line-card"><label class="chart-tools">Transaction<select id="latency-select"></select></label><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
     <div class="card chart-card" id="card-percentiles"><canvas id="percentiles"></canvas></div>
     <div class="card chart-card"><canvas id="histogram"></canvas></div>
     <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
@@ -872,17 +981,41 @@ const kpis = document.getElementById('kpis');
 const tpUnit = DATA.meta.throughputUnit || 'TPM';
 const kpiItems = [
   [tpUnit, fmt(DATA.kpis.throughput)],
-  ['Peak ' + tpUnit, fmt(DATA.kpis.peakThroughput)],
   ['Committed', fmt(DATA.kpis.committed)],
   ['Errors', fmt(DATA.kpis.errors)],
   ['Error rate', fmt(DATA.kpis.errorRate, 2) + ' %'],
   ['Avg latency', fmt(DATA.kpis.avgLatency, 2) + ' ms'],
+  ['p95 latency', fmt(DATA.kpis.p95Latency, 2) + ' ms'],
+  ['p99 latency', fmt(DATA.kpis.p99Latency, 2) + ' ms'],
 ];
 for (const [k, v] of kpiItems) {
   const el = document.createElement('div');
   el.className = 'card kpi';
   el.innerHTML = `<div class="label">${esc(k)}</div><div class="value">${esc(v)}</div>`;
   kpis.appendChild(el);
+}
+
+// Steady state: did the rate hold over the measured window?
+const steadyBox = document.getElementById('steady');
+const st = DATA.steady;
+if (st) {
+  const ok = st.verdict === 'steady';
+  const what = {
+    steady: 'The rate held over the measured window.',
+    unstable: 'The rate swung from second to second without drifting.',
+    drifted: 'The two halves of the window ran at different rates.',
+  }[st.verdict] || '';
+  const badge = ok ? 'steady-ok' : 'steady-warn';
+  steadyBox.innerHTML = `<div class="verdict"><span class="badge ${esc(badge)}">${esc(st.verdict)}</span>${esc(what)}`
+    + `<div class="note">Steady means under ${fmt(st.maxCvPct)}% variation per second and under ${fmt(st.maxDriftPct)}% drift between the halves, over ${fmt(st.seconds)} full seconds.</div></div>`
+    + `<div class="figures">`
+    + `<div><div class="k">Window mean</div><div class="v">${fmt(st.mean)} ${esc(tpUnit)}</div></div>`
+    + `<div><div class="k">Variation per second</div><div class="v">${fmt(st.cvPct, 1)}%</div></div>`
+    + `<div><div class="k">First half</div><div class="v">${fmt(st.firstHalf)} ${esc(tpUnit)}</div></div>`
+    + `<div><div class="k">Second half</div><div class="v">${fmt(st.secondHalf)} ${esc(tpUnit)} (${esc((st.driftPct >= 0 ? '+' : '') + fmt(st.driftPct, 1))}%)</div></div>`
+    + `</div>`;
+} else {
+  steadyBox.innerHTML = `<div class="note">Not judged: the measured window has fewer than 10 full seconds, or nothing committed.</div>`;
 }
 
 document.getElementById('tx-throughput-head').textContent = tpUnit;
@@ -932,6 +1065,32 @@ const rampupPlugin = {
   }
 };
 
+// Draws the steady-state check on the throughput chart: the mean of each
+// half of the judged window as a dashed segment, so a drift is visible.
+const halvesPlugin = {
+  id: 'halves',
+  afterDatasetsDraw(chart) {
+    if (!st) return;
+    const {ctx, chartArea: {top, bottom}, scales: {x, y}} = chart;
+    const step = DATA.timeAxis.length > 1 ? DATA.timeAxis[1] - DATA.timeAxis[0] : 1;
+    const px = (sec) => x.getPixelForValue(Math.min(sec / step, DATA.timeAxis.length - 1));
+    const color = getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() || '#f28e2b';
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    for (const [from, to, v] of [[st.startS, st.midS, st.firstHalf], [st.midS, st.endS, st.secondHalf]]) {
+      const yv = y.getPixelForValue(v);
+      ctx.beginPath(); ctx.moveTo(px(from), yv); ctx.lineTo(px(to), yv); ctx.stroke();
+    }
+    ctx.setLineDash([2, 3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px(st.midS), top); ctx.lineTo(px(st.midS), bottom); ctx.stroke();
+    ctx.restore();
+  }
+};
+
 // Registry of live Chart.js instances, keyed by canvas id, so we can export each as PNG.
 const charts = {};
 
@@ -948,24 +1107,34 @@ charts.throughput = new Chart(document.getElementById('throughput'), {
   options: {...lineOpts(tpUnit), plugins: {
     legend: {display: false},
     htmlLegend: {containerID: 'throughput-legend'},
-    title: {display: true, text: 'Throughput over time'}
+    title: {display: true, text: 'Throughput over time (dashed: mean of each half)'}
   }},
-  plugins: [htmlLegendPlugin, rampupPlugin]
+  plugins: [htmlLegendPlugin, rampupPlugin, halvesPlugin]
 });
 
-// Mean latency over time per transaction
+// Latency over time: the mean and the 95th percentile of one series, all
+// transactions together or the one picked in the selector.
+const latencySeries = [{name: 'All transactions', data: DATA.latency.all.data, p95: DATA.latency.all.p95},
+  ...DATA.latency.perTx];
+const latencyDatasets = (s) => [
+  {label: 'mean', data: s.data, borderColor: '#4e79a7'},
+  {label: 'p95', data: s.p95, borderColor: '#f28e2b'},
+];
+const latencySelect = document.getElementById('latency-select');
+latencySeries.forEach((s, i) => latencySelect.add(new Option(s.name, String(i))));
 charts.latency = new Chart(document.getElementById('latency'), {
   type: 'line',
-  data: {
-    labels: DATA.timeAxis,
-    datasets: DATA.latency.perTx.map(s => ({label: s.name, data: s.data, borderColor: s.color}))
-  },
-  options: {...lineOpts('Mean response time (ms)'), plugins: {
+  data: {labels: DATA.timeAxis, datasets: latencyDatasets(latencySeries[0])},
+  options: {...lineOpts('Response time (ms)'), plugins: {
     legend: {display: false},
     htmlLegend: {containerID: 'latency-legend'},
     title: {display: true, text: 'Latency over time'}
   }},
   plugins: [htmlLegendPlugin, rampupPlugin]
+});
+latencySelect.addEventListener('change', () => {
+  charts.latency.data.datasets = latencyDatasets(latencySeries[Number(latencySelect.value)]);
+  charts.latency.update();
 });
 
 // Per-transaction panels (percentiles, mix) are only meaningful with more than
@@ -1243,6 +1412,19 @@ transactions:
     }
 
     #[test]
+    fn sparse_bins_read_percentiles_within_a_bin_width() {
+        let mut bins = SparseBins::new();
+        assert_eq!(bins.percentile(0.95), 0.0);
+        for i in 1..=100 {
+            bins.add(LatencyHistogram::bin(i as f64));
+        }
+        let p95 = bins.percentile(0.95);
+        assert!((p95 - 95.0).abs() < 95.0 * 0.016, "{p95}");
+        let p50 = bins.percentile(0.5);
+        assert!((p50 - 50.0).abs() < 50.0 * 0.016, "{p50}");
+    }
+
+    #[test]
     fn time_series_align_on_shared_origin() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
@@ -1269,6 +1451,7 @@ transactions:
         ];
         let counters: HashMap<u16, Counter> = HashMap::new();
         let stats: HashMap<u16, ResponseTimeStatistics> = HashMap::new();
+        let overall = ResponseTimeStatistics::zero("all");
         let input = ReportInput {
             target_dir: &dir,
             log_file: "transaction.log",
@@ -1277,6 +1460,8 @@ transactions:
             transactions: &transactions,
             counters: &counters,
             stats: &stats,
+            overall: &overall,
+            steady: None,
             total_time_ms: 3000,
             rampup_time_ms: 0,
             rampup_end_ts: None,
@@ -1296,6 +1481,17 @@ transactions:
         let alpha = ts.series.iter().find(|s| s.name == "alpha").unwrap();
         assert_eq!(alpha.tpm, vec![120, 0, 60]);
         assert_eq!(alpha.latency[0], 6.0); // mean of 5.0 and 7.0
+                                           // The p95 is read from 1.6%-wide bins: 7.0 within a bin's width.
+        assert!((alpha.p95[0] - 7.0).abs() < 7.0 * 0.016, "{}", alpha.p95[0]);
+        assert_eq!(alpha.p95[1], 0.0, "no alpha commit in second 1");
+        // All transactions together: second 2 holds 9.0 and 4.0.
+        assert_eq!(ts.all_latency, vec![6.0, 3.0, 6.5]);
+        assert!(
+            (ts.all_p95[2] - 9.0).abs() < 9.0 * 0.016,
+            "{}",
+            ts.all_p95[2]
+        );
+        assert_eq!(ts.origin_ts, Some(100));
 
         // One error at second 1 relative to origin.
         assert_eq!(ts.error_time_axis, vec![0, 1]);

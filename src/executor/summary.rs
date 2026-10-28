@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 use super::benchmark::{BenchmarkTransaction, Counter, TransactionSummary};
 
 /// Seconds of steady-state workload: total elapsed time minus ramp-up, with
@@ -86,6 +88,103 @@ pub fn summarize(
     }
 }
 
+/// Below this many full seconds the window is too short to judge.
+const STEADY_MIN_SECONDS: usize = 10;
+/// Steady when the per-second throughput varies less than this (coefficient
+/// of variation, %) ...
+pub const STEADY_MAX_CV_PCT: f64 = 10.0;
+/// ... and the second half of the window is within this many % of the first.
+pub const STEADY_MAX_DRIFT_PCT: f64 = 5.0;
+
+/// How the throughput behaved over the measured window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    /// Little variation and no drift: the headline rate describes the window.
+    Steady,
+    /// No drift, but the rate swings from second to second.
+    Unstable,
+    /// The second half ran at a different rate from the first: the headline
+    /// is an average of two regimes, and a longer run may settle elsewhere.
+    Drifted,
+}
+
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Steady => "steady",
+            Verdict::Unstable => "unstable",
+            Verdict::Drifted => "drifted",
+        }
+    }
+}
+
+/// Per-second throughput statistics of the measured window, in the spec's unit.
+#[derive(Clone, Debug, Serialize)]
+pub struct SteadyState {
+    /// Full seconds judged: the window minus its first and last, partial, seconds.
+    pub seconds: usize,
+    pub mean: f64,
+    /// Coefficient of variation of the per-second rate, in %.
+    pub cv_pct: f64,
+    pub first_half: f64,
+    pub second_half: f64,
+    /// Second half against the first, in %; negative when throughput fell.
+    pub drift_pct: f64,
+    pub verdict: Verdict,
+    /// Log timestamps of the first judged second, of the first second of
+    /// the second half, and of the last judged second.
+    pub start_ts: i64,
+    pub mid_ts: i64,
+    pub end_ts: i64,
+}
+
+/// Judge the measured window from its per-second commit counts (see
+/// `data_agg::Aggregate::window`). The first and last seconds are dropped
+/// because clients start and stop inside them. `None` when fewer than
+/// [`STEADY_MIN_SECONDS`] full seconds remain or nothing committed.
+pub fn steady_state(window: &[(i64, u64)], factor: f64) -> Option<SteadyState> {
+    if window.len() < STEADY_MIN_SECONDS + 2 {
+        return None;
+    }
+    let full = &window[1..window.len() - 1];
+    let rates: Vec<f64> = full.iter().map(|(_, c)| *c as f64 * factor).collect();
+    let mean_of = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+    let mean = mean_of(&rates);
+    if mean <= 0.0 {
+        return None;
+    }
+    let variance = rates.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rates.len() as f64;
+    let cv_pct = variance.sqrt() / mean * 100.0;
+    let half = rates.len() / 2;
+    let first_half = mean_of(&rates[..half]);
+    let second_half = mean_of(&rates[half..]);
+    let drift_pct = if first_half > 0.0 {
+        (second_half - first_half) / first_half * 100.0
+    } else {
+        100.0
+    };
+    let verdict = if drift_pct.abs() >= STEADY_MAX_DRIFT_PCT {
+        Verdict::Drifted
+    } else if cv_pct >= STEADY_MAX_CV_PCT {
+        Verdict::Unstable
+    } else {
+        Verdict::Steady
+    };
+    Some(SteadyState {
+        seconds: rates.len(),
+        mean,
+        cv_pct,
+        first_half,
+        second_half,
+        drift_pct,
+        verdict,
+        start_ts: full[0].0,
+        mid_ts: full[half].0,
+        end_ts: full[full.len() - 1].0,
+    })
+}
+
 fn percentage(part: u64, whole: u64) -> f64 {
     if whole > 0 {
         part as f64 / whole as f64 * 100.0
@@ -112,6 +211,56 @@ mod tests {
             n_total,
             total_duration_ms,
         }
+    }
+
+    fn window(counts: &[u64]) -> Vec<(i64, u64)> {
+        counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (100 + i as i64, *c))
+            .collect()
+    }
+
+    #[test]
+    fn steady_state_needs_ten_full_seconds() {
+        // 11 seconds = 9 full ones once both ends are dropped.
+        assert!(steady_state(&window(&[10; 11]), 1.0).is_none());
+        assert!(steady_state(&window(&[0; 20]), 1.0).is_none());
+        let s = steady_state(&window(&[10; 12]), 60.0).unwrap();
+        assert_eq!(s.seconds, 10);
+        assert_eq!(s.mean, 600.0);
+        assert_eq!((s.cv_pct, s.drift_pct), (0.0, 0.0));
+        assert_eq!(s.verdict, Verdict::Steady);
+        assert_eq!((s.start_ts, s.mid_ts, s.end_ts), (101, 106, 110));
+    }
+
+    #[test]
+    fn steady_state_drops_the_partial_end_seconds() {
+        // The ends (1 and 3) would wreck the variation if they counted.
+        let s = steady_state(
+            &window(&[1, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 3]),
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(s.verdict, Verdict::Steady);
+        assert_eq!(s.mean, 100.0);
+    }
+
+    #[test]
+    fn steady_state_tells_drift_from_noise() {
+        // Alternating 80/120 over 12 full seconds: no drift, 20% variation.
+        let noisy = [0, 80, 120, 80, 120, 80, 120, 80, 120, 80, 120, 80, 120, 0];
+        let s = steady_state(&window(&noisy), 1.0).unwrap();
+        assert_eq!(s.verdict, Verdict::Unstable);
+        assert!((s.cv_pct - 20.0).abs() < 1e-9, "{}", s.cv_pct);
+        assert_eq!(s.drift_pct, 0.0);
+
+        // 100 then 90: the second half fell 10%, under 10% variation.
+        let falling = [0, 100, 100, 100, 100, 100, 90, 90, 90, 90, 90, 0];
+        let s = steady_state(&window(&falling), 1.0).unwrap();
+        assert_eq!(s.verdict, Verdict::Drifted);
+        assert!((s.drift_pct + 10.0).abs() < 1e-9, "{}", s.drift_pct);
+        assert_eq!((s.first_half, s.second_half), (100.0, 90.0));
     }
 
     #[test]

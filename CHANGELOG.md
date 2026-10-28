@@ -55,7 +55,12 @@ First public release.
   statistics) and a self-contained HTML report with charts, percentiles,
   server and data-set information. Committed counts, throughput, statistics
   and the report's histogram describe the steady-state window after ramp-up;
-  the time-series charts show the whole run with ramp-up shaded.
+  the time-series charts show the whole run with ramp-up shaded. A timed
+  run's throughput is judged steady, unstable or drifted from its
+  per-second variation and the drift between the halves of the window, in
+  the console, the JSON output and the report; the headline adds the 99th
+  percentile response time, and the report's latency chart shows the 95th
+  percentile next to the mean.
 - Specs are validated when loaded: unknown keys, unknown modes or load
   methods, missing `sql` or `script`, duplicate or colliding transaction ids
   and names, a zero total weight, a zero `batch_size`, undeclared tables and
