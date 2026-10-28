@@ -27,6 +27,7 @@ use benchmark::{Counter, ResponseTimeStatistics};
 use error::Error;
 
 use yaml_benchmark::YamlBenchmark;
+use yaml_types::ReportKind;
 
 pub struct Executor {
     dsn: String,
@@ -208,8 +209,14 @@ impl Executor {
             })
             .collect();
         let steady = self.steady_state();
+        let stream = self.stream_summary(&transactions);
 
         match format {
+            OutputFormat::Table if stream.is_some() => {
+                let stream = stream.as_ref().unwrap();
+                terminal::stream_banner(stream);
+                data_agg::print_stream_table(stream);
+            }
             OutputFormat::Table => {
                 terminal::kpi_banner(
                     summary.throughput.round() as u64,
@@ -219,9 +226,7 @@ impl Executor {
                     summary.avg_latency_ms,
                     self.overall_stats.percentile_99,
                 );
-                if !self.once {
-                    terminal::steady_state_line(steady.as_ref());
-                }
+                terminal::steady_state_line(steady.as_ref());
 
                 data_agg::print_transactions_tables(
                     &summary.transactions,
@@ -239,6 +244,7 @@ impl Executor {
                         summary.workload_secs,
                         self.interrupted,
                         steady.as_ref(),
+                        stream.as_ref(),
                     )
                 );
             }
@@ -253,10 +259,36 @@ impl Executor {
         Ok(self)
     }
 
+    /// The report layout: the spec's `metrics.report`, or a stream for a
+    /// `--once` run, which is one by construction.
+    fn report_kind(&self) -> ReportKind {
+        if self.once {
+            ReportKind::Stream
+        } else {
+            self.benchmark.spec.metrics.report
+        }
+    }
+
+    /// The stream view of the run when it is reported as a stream.
+    fn stream_summary(
+        &self,
+        transactions: &[benchmark::BenchmarkTransaction],
+    ) -> Option<summary::StreamSummary> {
+        (self.report_kind() == ReportKind::Stream).then(|| {
+            summary::stream_summary(
+                transactions,
+                &self.counters,
+                &self.stats,
+                self.total_time_ms,
+                self.rampup_time_ms,
+            )
+        })
+    }
+
     /// The steady-state check of a timed run; `None` for a `--once` run,
     /// whose clients stop one by one, and for a window too short to judge.
     fn steady_state(&self) -> Option<summary::SteadyState> {
-        if self.once {
+        if self.report_kind() == ReportKind::Stream {
             return None;
         }
         summary::steady_state(&self.window, self.throughput_factor)
@@ -275,6 +307,8 @@ impl Executor {
 
         let stats = &self.stats;
         let steady = self.steady_state();
+        let kind = self.report_kind();
+        let stream = self.stream_summary(&transactions);
 
         let mut client = match self.connect() {
             Ok(client) => client,
@@ -294,6 +328,8 @@ impl Executor {
             stats,
             overall: &self.overall_stats,
             steady: steady.as_ref(),
+            kind,
+            stream: stream.as_ref(),
             total_time_ms: self.total_time_ms,
             rampup_time_ms: self.rampup_time_ms,
             rampup_end_ts: self.rampup_end_ts,

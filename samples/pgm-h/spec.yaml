@@ -35,6 +35,8 @@ scaling:
 metrics:
   throughput_unit: "queries/hr"
   per: hour
+  # Report where the time went, query by query, rather than a rate.
+  report: stream
 
 # ---------------------------------------------------------------------------
 # Schema

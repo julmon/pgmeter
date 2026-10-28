@@ -480,7 +480,13 @@ transactions:
         let expected = if t["name"] == "skipped" { 0 } else { 3 };
         assert_eq!(t["committed"], expected, "{t}");
         assert_eq!(t["errors"], 0, "{t}");
+        assert!(t["share_pct"].is_number(), "{t}");
     }
+    // A --once run is a stream whatever the spec says: reported as one,
+    // and never judged for a steady rate.
+    assert_eq!(doc["report"], "stream", "{doc}");
+    assert_eq!(doc["stream"]["executed"], 6, "{doc}");
+    assert!(doc["steady_state"].is_null(), "{doc}");
     let meta: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(result_dir(&cwd).join("run.json")).unwrap())
             .unwrap();

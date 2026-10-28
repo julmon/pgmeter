@@ -38,6 +38,10 @@ pub struct MetricsSpec {
     /// Time base for the rate: "second", "minute" or "hour".
     #[serde(default = "default_throughput_per")]
     pub per: ThroughputPer,
+    /// How the run is reported: "throughput" or "stream". `run --once`
+    /// always reports a stream.
+    #[serde(default)]
+    pub report: ReportKind,
 }
 
 impl Default for MetricsSpec {
@@ -45,6 +49,26 @@ impl Default for MetricsSpec {
         MetricsSpec {
             throughput_unit: default_throughput_unit(),
             per: default_throughput_per(),
+            report: ReportKind::default(),
+        }
+    }
+}
+
+/// The two report layouts. A throughput run is judged by its rate over the
+/// measured window; a stream, such as TPC-H's queries, by where its time went.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReportKind {
+    #[default]
+    Throughput,
+    Stream,
+}
+
+impl ReportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReportKind::Throughput => "throughput",
+            ReportKind::Stream => "stream",
         }
     }
 }
@@ -334,6 +358,14 @@ mod tests {
             serde_yaml::from_str("throughput_unit: queries/hr\nper: hour\n").unwrap();
         assert_eq!(m.throughput_unit, "queries/hr");
         assert_eq!(m.per, ThroughputPer::Hour);
+    }
+
+    #[test]
+    fn metrics_report_defaults_to_throughput_and_accepts_stream() {
+        assert_eq!(MetricsSpec::default().report, ReportKind::Throughput);
+        let m: MetricsSpec = serde_yaml::from_str("report: stream\n").unwrap();
+        assert_eq!(m.report, ReportKind::Stream);
+        assert!(serde_yaml::from_str::<MetricsSpec>("report: timeline\n").is_err());
     }
 
     #[test]

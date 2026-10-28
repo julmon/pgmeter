@@ -78,6 +78,11 @@ equal weights, for as long as `-T` says. A few queries (q4, q11, q14, q23,
 q64, q67, q74, q75, q78, q95) take far longer than the rest on PostgreSQL;
 they count once per stream like the others.
 
+The spec reports a stream: the elapsed time, the geometric mean of the
+query times and where the time went, query by query, with a timeline per
+client in the HTML report. In one single-stream run at scale factor 1 on a
+test machine, Q14 alone took about a quarter of the time.
+
 ## Deviations from TPC-DS
 
 - Each client's query order is a random permutation rather than the fixed

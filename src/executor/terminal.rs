@@ -281,6 +281,49 @@ pub fn kpi_banner(
     println!();
 }
 
+/// A response time for a reader: seconds from one second up, else ms, with
+/// two decimals below 10 ms where they still mean something.
+fn fmt_response_ms(ms: f64) -> String {
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else if ms >= 10.0 {
+        format!("{:.0} ms", ms)
+    } else {
+        format!("{:.2} ms", ms)
+    }
+}
+
+// The headline of a stream run: how long it took, how many transactions
+// ran, their geometric mean, and the one that took the most time.
+pub fn stream_banner(s: &super::summary::StreamSummary) {
+    if is_quiet() {
+        return;
+    }
+    let dot = || style("  ·  ").dim();
+    let slowest = s.slowest().map_or(String::new(), |r| {
+        format!(
+            "{}slowest {} {} ({:.1}%)",
+            dot(),
+            style(&r.name).bold(),
+            style(fmt_response_ms(r.total_ms)).bold(),
+            r.share_pct
+        )
+    });
+    println!();
+    println!(
+        "  {} elapsed{}{} executed{}{} geomean{}{}{} errors",
+        style(format!("{:.1} s", s.elapsed_secs)).cyan().bold(),
+        dot(),
+        style(fmt_int(s.executed)).bold(),
+        dot(),
+        style(fmt_response_ms(s.geomean_ms)).bold(),
+        slowest,
+        dot(),
+        style(fmt_int(s.errors)).bold(),
+    );
+    println!();
+}
+
 // One line under the banner on how the throughput behaved over the window:
 // the verdict, the drift between its halves and the per-second variation.
 pub fn steady_state_line(steady: Option<&super::summary::SteadyState>) {
@@ -363,5 +406,8 @@ mod tests {
         assert_eq!(fmt_duration_ms(0.3), "0 ms");
         assert_eq!(fmt_duration_ms(999.0), "999 ms");
         assert_eq!(fmt_duration_ms(1500.0), "1.5 s");
+        assert_eq!(fmt_response_ms(0.476), "0.48 ms");
+        assert_eq!(fmt_response_ms(476.2), "476 ms");
+        assert_eq!(fmt_response_ms(48_522.0), "48.52 s");
     }
 }
