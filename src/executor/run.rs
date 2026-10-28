@@ -836,10 +836,15 @@ impl Executor {
                                 });
                         }
 
-                        // Generate timestamp locally (more efficient than passing through channel)
-                        let tx_timestamp = start_time + start_instant.elapsed().as_secs() as i64;
+                        // Timestamps are taken here rather than passed through
+                        // the channel. The commit was just received, so its start
+                        // is now minus its duration, in ms since the collector
+                        // started: the stream report's timeline needs it.
+                        let elapsed_us = start_instant.elapsed().as_micros();
+                        let tx_timestamp = start_time + (elapsed_us / 1_000_000) as i64;
+                        let start_ms = elapsed_us.saturating_sub(msg.tx_duration_us) / 1000;
 
-                        // Format and write the line to the log file
+                        // `<ts> <active clients> <tx id> <ms> <client id> <start ms>`
                         let _ = log_file.write(buffer_i.format(tx_timestamp).as_bytes());
                         let _ = log_file.write(b" ");
                         let _ = log_file.write(buffer_i.format(client_ids.len()).as_bytes());
@@ -847,6 +852,10 @@ impl Executor {
                         let _ = log_file.write(buffer_i.format(msg.tx_id).as_bytes());
                         let _ = log_file.write(b" ");
                         let _ = log_file.write(buffer_f.format(duration_ms).as_bytes());
+                        let _ = log_file.write(b" ");
+                        let _ = log_file.write(buffer_i.format(msg.client_id).as_bytes());
+                        let _ = log_file.write(b" ");
+                        let _ = log_file.write(buffer_i.format(start_ms).as_bytes());
                         let _ = log_file.write(b"\n");
                     }
                     TXMessageKind::Error => {
