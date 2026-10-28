@@ -24,6 +24,7 @@ name:               # string  (required) - benchmark name shown in output
 description:        # string  (optional)
 
 scaling:            # required - scale factor unit, max-id query, constants
+metrics:            # optional - throughput unit and report layout
 schema:             # required - tables, foreign_keys, indexes, pre/post DDL
 
 # --- choose ONE data-loading style ---
@@ -36,7 +37,31 @@ transactions:       # required - the workload (one or more transactions)
 scripts:            # optional - shared Lua modules preloaded into every VM
 ```
 
-The pages that follow describe each of them.
+The pages that follow describe each of them, except `metrics`, described
+below.
+
+## `metrics`: how a run is reported
+
+```yaml
+metrics:
+  throughput_unit: "queries/hr"   # label of the throughput figures (default TPM)
+  per: hour                       # second, minute (default) or hour
+  report: stream                  # throughput (default) or stream
+```
+
+`throughput_unit` is only a label; `per` sets the time base the committed
+count is turned into a rate with. `report` picks the layout of the results:
+
+- `throughput` judges the run by its rate over the measured window: the
+  headline throughput and percentiles, and whether the rate held steady.
+  This suits OLTP workloads such as PGM-B and PGM-C.
+- `stream` judges the run by where its time went, transaction by
+  transaction: the elapsed time, the geometric mean of the response times,
+  each transaction's share of the time and a timeline per client. This
+  suits analytical workloads such as PGM-H and PGM-DS.
+
+`run --once` always reports a stream. [Reading the
+results](../guide/results.md) shows both layouts.
 
 ## A minimal spec
 

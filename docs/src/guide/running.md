@@ -68,10 +68,10 @@ weights are ignored.
 - `-c 4 --once` is a throughput test with four streams, each in a different
   order, concurrently.
 
-The results are the same as for a timed run, with `duration_s` and
-`workload_secs` in `run.json` set to the window the run took and `"once":
-true`. For an analytical spec the figures to read are the per-query response
-times; the elapsed time of the whole run is the stream's result. The ramp-up
+The run is reported as a stream: where its time went, transaction by
+transaction, with a timeline per client (see [Reading the
+results](results.md)). `duration_s` and `workload_secs` in `run.json` are
+set to the window the run took, and `"once": true`. The ramp-up
 still staggers the clients' start, and Ctrl-C still ends the run early.
 
 ## Stopping early

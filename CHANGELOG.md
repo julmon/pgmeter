@@ -60,7 +60,12 @@ First public release.
   per-second variation and the drift between the halves of the window, in
   the console, the JSON output and the report; the headline adds the 99th
   percentile response time, and the report's latency chart shows the 95th
-  percentile next to the mean.
+  percentile next to the mean. A spec with `metrics.report: stream` (PGM-H,
+  PGM-DS) and any `run --once` is reported as a stream instead: elapsed
+  time, geometric mean of the response times and each transaction's share
+  of the time, in the console and the JSON output, and in the report a
+  sorted time chart, a timeline per client and a sortable per-transaction
+  table.
 - Specs are validated when loaded: unknown keys, unknown modes or load
   methods, missing `sql` or `script`, duplicate or colliding transaction ids
   and names, a zero total weight, a zero `batch_size`, undeclared tables and

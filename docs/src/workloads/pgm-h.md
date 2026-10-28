@@ -67,9 +67,10 @@ parameter ranges is a Lua edit.
 
 ## Reading a run
 
-The figures that matter are in the response-time table: the time of each
-query, which the HTML report also shows per query, and the elapsed time of a
-`--once` run, which is the stream's result. The queries per hour headline is
+The spec reports a stream: the elapsed time, the geometric mean of the
+query times and where the time went, query by query, in the console and the
+HTML report, which adds a timeline per client. The elapsed time of a
+`--once` run is the stream's result. The queries per hour headline is
 a plain rate over the queries executed; it is not the TPC-H QphH composite,
 which only an audited run may report.
 

@@ -11,7 +11,7 @@ use serde_json::json;
 use super::benchmark::{BenchmarkTransaction, Counter, ResponseTimeStatistics};
 use super::error::Error;
 use super::summary;
-use super::yaml_types::BenchmarkSpec;
+use super::yaml_types::{BenchmarkSpec, ReportKind};
 
 const CHART_JS: &str = include_str!("assets/chart.umd.min.js");
 const REPORT_FILE: &str = "report.html";
@@ -39,6 +39,9 @@ pub struct ReportInput<'a> {
     pub overall: &'a ResponseTimeStatistics,
     /// The steady-state check of a timed run (see `summary::steady_state`).
     pub steady: Option<&'a summary::SteadyState>,
+    /// The report layout, and for a stream its figures.
+    pub kind: ReportKind,
+    pub stream: Option<&'a summary::StreamSummary>,
     pub total_time_ms: u128,
     pub rampup_time_ms: u128,
     /// Log timestamp at which ramp-up ended; earlier samples are excluded from
@@ -191,6 +194,11 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
         _ => serde_json::Value::Null,
     };
 
+    let stream = match input.stream {
+        Some(st) => stream_json(input, st),
+        None => serde_json::Value::Null,
+    };
+
     let generated_at: DateTime<Utc> = Utc::now();
 
     let data = json!({
@@ -206,7 +214,9 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
             "elapsedMs": input.total_time_ms,
             "scalingUnit": input.spec.scaling.unit,
             "throughputUnit": throughput_unit,
+            "report": input.kind.as_str(),
         },
+        "stream": stream,
         "server": server,
         "dataInfo": data_info,
         "kpis": {
@@ -249,6 +259,110 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
     file.write_all(html.as_bytes())?;
 
     Ok(report_path)
+}
+
+/// A stream timeline is drawn up to this many executions; past it the
+/// page would grow by megabytes for bars too thin to read.
+const TIMELINE_MAX: usize = 20_000;
+
+// The stream view for the page: one row per transaction in spec order, and
+// the timeline of every execution, `[client index, start ms, duration ms,
+// row index]` with starts relative to the first one.
+fn stream_json(input: &ReportInput, st: &summary::StreamSummary) -> serde_json::Value {
+    let rows: Vec<_> = input
+        .transactions
+        .iter()
+        .zip(&st.rows)
+        .map(|(tx, r)| {
+            json!({
+                "name": r.name,
+                "description": input
+                    .spec
+                    .transactions
+                    .iter()
+                    .find(|t| t.id == tx.id)
+                    .map(|t| t.description.clone())
+                    .unwrap_or_default(),
+                "executed": r.executed,
+                "errors": r.errors,
+                "totalMs": r.total_ms,
+                "sharePct": r.share_pct,
+                "mean": r.mean_ms,
+                "min": r.min_ms,
+                "max": r.max_ms,
+            })
+        })
+        .collect();
+    let (clients, items, truncated) = read_timeline(input);
+    json!({
+        "elapsedS": st.elapsed_secs,
+        "executed": st.executed,
+        "errors": st.errors,
+        "geomeanMs": st.geomean_ms,
+        "rows": rows,
+        "timeline": {
+            "clients": clients,
+            "items": items,
+            "truncated": truncated,
+            "max": TIMELINE_MAX,
+        },
+    })
+}
+
+// Every execution in the log with its client and start, the columns a log
+// from before they existed lacks (then nothing is returned). Returns the
+// sorted client ids, the items, and whether TIMELINE_MAX was exceeded, in
+// which case no item is returned.
+fn read_timeline(input: &ReportInput) -> (Vec<u32>, Vec<[f64; 4]>, bool) {
+    let row_of: HashMap<u16, usize> = input
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, i))
+        .collect();
+    let mut raw: Vec<(u32, u64, f64, usize)> = Vec::new();
+    let Ok(f) = File::open(input.target_dir.join(input.log_file)) else {
+        return (Vec::new(), Vec::new(), false);
+    };
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let parsed = (
+            fields.get(2).and_then(|v| v.parse::<u16>().ok()),
+            fields.get(3).and_then(|v| v.parse::<f64>().ok()),
+            fields.get(4).and_then(|v| v.parse::<u32>().ok()),
+            fields.get(5).and_then(|v| v.parse::<u64>().ok()),
+        );
+        let (Some(tx_id), Some(dur), Some(client), Some(start)) = parsed else {
+            continue;
+        };
+        let Some(row) = row_of.get(&tx_id) else {
+            continue;
+        };
+        if raw.len() == TIMELINE_MAX {
+            return (Vec::new(), Vec::new(), true);
+        }
+        raw.push((client, start, dur, *row));
+    }
+    let origin = raw.iter().map(|r| r.1).min().unwrap_or(0);
+    let clients: Vec<u32> = raw
+        .iter()
+        .map(|r| r.0)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let lane: HashMap<u32, usize> = clients.iter().enumerate().map(|(i, c)| (*c, i)).collect();
+    let items = raw
+        .iter()
+        .map(|(client, start, dur, row)| {
+            [
+                lane[client] as f64,
+                (start - origin) as f64,
+                *dur,
+                *row as f64,
+            ]
+        })
+        .collect();
+    (clients, items, false)
 }
 
 #[derive(Default)]
@@ -768,6 +882,18 @@ fn render_html(json_blob: &str) -> String {
   .chart-tools {{ position: absolute; top: 10px; left: 16px; z-index: 4; font-size: 12px; color: var(--muted); }}
   .chart-tools select {{ background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 6px; font-size: 12px; margin-left: 4px; }}
+  .toolbar {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+    margin-bottom: 10px; }}
+  .toolbar .hint {{ color: var(--muted); font-size: 13px; }}
+  .toolbar button, .toolbar input {{ background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; padding: 6px 12px; }}
+  .toolbar button {{ cursor: pointer; }}
+  .toolbar button[aria-pressed="true"] {{ border-color: var(--accent); color: var(--accent); }}
+  .stream-chart {{ position: relative; }}
+  .stream-chart canvas {{ max-height: none; }}
+  th button.sort {{ all: unset; cursor: pointer; }}
+  th button.sort:focus-visible {{ outline: 2px solid var(--accent); }}
+  [hidden] {{ display: none !important; }}
   footer {{ margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }}
 </style>
 </head>
@@ -809,6 +935,7 @@ fn render_html(json_blob: &str) -> String {
   <h2>Summary</h2>
   <div class="grid kpi-grid" id="kpis"></div>
 
+  <div id="throughput-view">
   <h2>Steady state</h2>
   <div class="card steady" id="steady"></div>
 
@@ -831,6 +958,39 @@ fn render_html(json_blob: &str) -> String {
     <div class="card chart-card"><canvas id="histogram"></canvas></div>
     <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
     <div class="card chart-card"><canvas id="errors"></canvas></div>
+  </div>
+  </div>
+
+  <div id="stream-view" hidden>
+  <h2>Where the time went</h2>
+  <div class="card">
+    <div class="toolbar">
+      <span class="hint" id="time-bars-hint"></span>
+      <span>
+        <button type="button" id="time-bars-log" aria-pressed="false">Log scale</button>
+        <button type="button" id="time-bars-all" aria-pressed="false">Show all</button>
+      </span>
+    </div>
+    <div class="chart-card stream-chart" id="time-bars-wrap"><canvas id="time-bars"></canvas></div>
+  </div>
+
+  <h2>Stream timeline</h2>
+  <div class="card">
+    <div class="toolbar"><span class="hint" id="timeline-hint">One lane per client; each bar is one execution, where it ran. Hover a bar for its name and time.</span></div>
+    <div class="chart-card stream-chart" id="timeline-wrap"><canvas id="timeline"></canvas></div>
+  </div>
+
+  <h2>Per-transaction results</h2>
+  <div class="card" style="overflow-x:auto">
+    <div class="toolbar">
+      <span class="hint">Click a column to sort. Times are the transaction's own, summed over its executions.</span>
+      <label class="hint">Filter <input type="search" id="stream-filter" placeholder="name"></label>
+    </div>
+    <table>
+      <thead><tr id="stream-head"></tr></thead>
+      <tbody id="stream-body"></tbody>
+    </table>
+  </div>
   </div>
 
   <footer>Generated by pgmeter</footer>
@@ -979,7 +1139,21 @@ for (const x of diIndexes) {
 
 const kpis = document.getElementById('kpis');
 const tpUnit = DATA.meta.throughputUnit || 'TPM';
-const kpiItems = [
+const isStream = DATA.meta.report === 'stream';
+// A response time for a reader: seconds from one second up, else ms.
+const fmtMs = (ms) => ms >= 1000 ? fmt(ms / 1000, 2) + ' s' : (ms >= 10 ? fmt(ms) + ' ms' : fmt(ms, 2) + ' ms');
+const S = DATA.stream;
+const streamRanked = isStream
+  ? S.rows.map((r, idx) => ({...r, idx})).filter(r => r.executed > 0).sort((a, b) => b.totalMs - a.totalMs)
+  : [];
+const streamSlowest = streamRanked.length ? streamRanked[0] : null;
+const kpiItems = isStream ? [
+  ['Elapsed', fmt(S.elapsedS, 1) + ' s'],
+  ['Executed', fmt(S.executed)],
+  ['Geometric mean', fmtMs(S.geomeanMs)],
+  [streamSlowest ? `Slowest: ${streamSlowest.name} (${fmt(streamSlowest.sharePct, 1)}%)` : 'Slowest', streamSlowest ? fmtMs(streamSlowest.totalMs) : '-'],
+  ['Errors', fmt(S.errors)],
+] : [
   [tpUnit, fmt(DATA.kpis.throughput)],
   ['Committed', fmt(DATA.kpis.committed)],
   ['Errors', fmt(DATA.kpis.errors)],
@@ -1094,6 +1268,10 @@ const halvesPlugin = {
 // Registry of live Chart.js instances, keyed by canvas id, so we can export each as PNG.
 const charts = {};
 
+if (isStream) {
+  document.getElementById('throughput-view').hidden = true;
+  document.getElementById('stream-view').hidden = false;
+} else {
 // Throughput over time
 charts.throughput = new Chart(document.getElementById('throughput'), {
   type: 'line',
@@ -1218,6 +1396,176 @@ if (DATA.errors.counts.length) {
   errEl.parentElement.innerHTML = '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:var(--good)">No errors recorded</div>';
 }
 
+}
+
+// --- Stream view ------------------------------------------------------------
+// Colours shared by the stream charts: the slowest transaction stands out.
+function streamColors() {
+  const css = getComputedStyle(document.documentElement);
+  return {
+    accent: '#4e79a7',
+    slow: css.getPropertyValue('--warn').trim() || '#f28e2b',
+    rest: '#94a3b8',
+    panel: css.getPropertyValue('--panel').trim() || '#1e293b',
+  };
+}
+
+function renderStream() {
+  renderTimeBars();
+  renderTimeline();
+  renderStreamTable();
+}
+
+// Where the time went: total time per transaction, slowest first. The 16
+// slowest are drawn and the rest grouped, unless "Show all" is pressed.
+const TOP_BARS = 16;
+const timeBarsState = {log: false, all: false};
+function renderTimeBars() {
+  const c = streamColors();
+  const grouped = !timeBarsState.all && streamRanked.length > TOP_BARS + 1;
+  const shown = grouped ? streamRanked.slice(0, TOP_BARS) : streamRanked;
+  const labels = shown.map(r => r.name);
+  const values = shown.map(r => r.totalMs / 1000);
+  const shares = shown.map(r => r.sharePct);
+  const colors = shown.map(r => streamSlowest && r.idx === streamSlowest.idx ? c.slow : c.accent);
+  if (grouped) {
+    const rest = streamRanked.slice(TOP_BARS);
+    labels.push(`${rest.length} others`);
+    values.push(rest.reduce((a, r) => a + r.totalMs, 0) / 1000);
+    shares.push(rest.reduce((a, r) => a + r.sharePct, 0));
+    colors.push(c.rest);
+  }
+  const top = streamRanked.slice(0, Math.min(TOP_BARS, streamRanked.length));
+  const topShare = top.reduce((a, r) => a + r.sharePct, 0);
+  document.getElementById('time-bars-hint').textContent = streamRanked.length > TOP_BARS
+    ? `Total time per transaction, slowest first. The ${top.length} slowest take ${fmt(topShare, 1)}% of the time.`
+    : 'Total time per transaction, slowest first.';
+  const wrap = document.getElementById('time-bars-wrap');
+  wrap.style.height = (labels.length * 24 + 70) + 'px';
+  if (charts.timeBars) charts.timeBars.destroy();
+  charts.timeBars = new Chart(document.getElementById('time-bars'), {
+    type: 'bar',
+    data: {labels, datasets: [{label: 'Total time (s)', data: values, backgroundColor: colors}]},
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: {display: false},
+        title: {display: true, text: 'Where the time went'},
+        tooltip: {callbacks: {label: (ctx) => `${fmtMs(values[ctx.dataIndex] * 1000)} · ${fmt(shares[ctx.dataIndex], 1)}% of the time`}},
+      },
+      scales: {
+        x: {type: timeBarsState.log ? 'logarithmic' : 'linear', title: {display: true, text: 'Total time (s)'}},
+        y: {ticks: {autoSkip: false}, grid: {display: false}},
+      },
+    },
+  });
+}
+for (const [id, key] of [['time-bars-log', 'log'], ['time-bars-all', 'all']]) {
+  const btn = document.getElementById(id);
+  btn.addEventListener('click', () => {
+    timeBarsState[key] = !timeBarsState[key];
+    btn.setAttribute('aria-pressed', String(timeBarsState[key]));
+    renderTimeBars();
+  });
+}
+
+// The stream timeline: one lane per client, one floating bar per execution.
+function renderTimeline() {
+  const T = S.timeline;
+  const hint = document.getElementById('timeline-hint');
+  const wrap = document.getElementById('timeline-wrap');
+  if (!T.items.length) {
+    hint.textContent = T.truncated
+      ? `Not drawn: the run has more than ${fmt(T.max)} executions.`
+      : 'Not drawn: the transaction log has no client or start time (a run from an older pgmeter).';
+    wrap.hidden = true;
+    return;
+  }
+  const c = streamColors();
+  const labels = T.clients.map(id => 'client ' + id);
+  wrap.style.height = Math.min(labels.length * 36 + 90, 900) + 'px';
+  charts.timeline = new Chart(document.getElementById('timeline'), {
+    type: 'bar',
+    data: {labels, datasets: [{
+      label: 'Executions',
+      data: T.items.map(([lane, start, dur]) => ({x: [start / 1000, (start + dur) / 1000], y: labels[lane]})),
+      backgroundColor: T.items.map(it => streamSlowest && it[3] === streamSlowest.idx ? c.slow : c.accent),
+      borderColor: c.panel, borderWidth: 1, borderSkipped: false,
+      barPercentage: 0.8, categoryPercentage: 1, minBarLength: 1,
+    }]},
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: {display: false},
+        title: {display: true, text: 'Stream timeline'},
+        tooltip: {callbacks: {label: (ctx) => {
+          const it = T.items[ctx.dataIndex];
+          return `${S.rows[it[3]].name}: ${fmtMs(it[2])}`;
+        }}},
+      },
+      scales: {
+        x: {type: 'linear', min: 0, title: {display: true, text: 'Elapsed (s)'}},
+        y: {grid: {display: false}},
+      },
+    },
+  });
+}
+
+// The per-transaction table of a stream: rank and cumulative share follow
+// total time; any column sorts, and the filter matches names.
+const streamColumns = [
+  ['rank', 'Rank'], ['name', 'Transaction'], ['executed', 'Executed'], ['errors', 'Errors'],
+  ['totalMs', 'Total'], ['sharePct', 'Share'], ['cumPct', 'Cumulative'],
+  ['mean', 'Avg'], ['min', 'Min'], ['max', 'Max'],
+];
+const streamSort = {key: 'rank', dir: 1};
+function renderStreamTable() {
+  const head = document.getElementById('stream-head');
+  head.innerHTML = '';
+  for (const [key, label] of streamColumns) {
+    const th = document.createElement('th');
+    if (key === 'name') th.style.textAlign = 'left';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sort';
+    btn.textContent = label + (streamSort.key === key ? (streamSort.dir > 0 ? ' ▲' : ' ▼') : '');
+    btn.onclick = () => {
+      streamSort.dir = streamSort.key === key ? -streamSort.dir : (key === 'name' || key === 'rank' ? 1 : -1);
+      streamSort.key = key;
+      renderStreamTable();
+    };
+    th.appendChild(btn);
+    head.appendChild(th);
+  }
+  let cum = 0;
+  const ranked = streamRanked.map((r, i) => ({...r, rank: i + 1, cumPct: (cum += r.sharePct)}));
+  const idle = S.rows.map((r, idx) => ({...r, idx})).filter(r => r.executed === 0)
+    .map(r => ({...r, rank: null, cumPct: null}));
+  const filter = document.getElementById('stream-filter').value.trim().toLowerCase();
+  const rows = ranked.concat(idle).filter(r => !filter || r.name.toLowerCase().includes(filter));
+  const {key, dir} = streamSort;
+  rows.sort((a, b) => {
+    const x = a[key], y = b[key];
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir;
+  });
+  const body = document.getElementById('stream-body');
+  body.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${esc(r.rank ?? '-')}</td><td style="text-align:left">${esc(r.name)}</td>`
+      + `<td>${fmt(r.executed)}</td><td>${fmt(r.errors)}</td>`
+      + `<td>${esc(fmtMs(r.totalMs))}</td><td>${esc(r.cumPct == null ? '-' : fmt(r.sharePct, 1) + '%')}</td>`
+      + `<td>${esc(r.cumPct == null ? '-' : fmt(r.cumPct, 1) + '%')}</td>`
+      + `<td>${esc(fmtMs(r.mean))}</td><td>${esc(fmtMs(r.min))}</td><td>${esc(fmtMs(r.max))}</td>`;
+    if (r.description) tr.title = r.description;
+    body.appendChild(tr);
+  }
+}
+document.getElementById('stream-filter').addEventListener('input', () => renderStreamTable());
+if (isStream) renderStream();
+
 // --- Chart PNG export -------------------------------------------------------
 // Chart.js draws to a canvas whose backing store is (CSS size x devicePixelRatio).
 // To export at high resolution regardless of the viewer's screen, we bump the
@@ -1322,13 +1670,14 @@ function downloadChart(chart, themeName) {
 }
 
 // Add a hover "Download PNG" button to each rendered chart's card.
-for (const chart of Object.values(charts)) {
+// By key, so a chart re-created later (the stream's time bars) still exports.
+for (const [key, chart] of Object.entries(charts)) {
   const card = chart.canvas.closest('.chart-card');
   if (!card) continue;
   const btn = document.createElement('button');
   btn.className = 'dlbtn';
   btn.textContent = 'Download PNG';
-  btn.onclick = () => downloadChart(chart);
+  btn.onclick = () => downloadChart(charts[key]);
   card.appendChild(btn);
 }
 
@@ -1462,6 +1811,8 @@ transactions:
             stats: &stats,
             overall: &overall,
             steady: None,
+            kind: ReportKind::Throughput,
+            stream: None,
             total_time_ms: 3000,
             rampup_time_ms: 0,
             rampup_end_ts: None,
@@ -1584,12 +1935,103 @@ transactions:
             .unwrap();
     }
 
+    fn timeline_input<'a>(
+        dir: &'a PathBuf,
+        spec: &'a BenchmarkSpec,
+        transactions: &'a [BenchmarkTransaction],
+        counters: &'a HashMap<u16, Counter>,
+        stats: &'a HashMap<u16, ResponseTimeStatistics>,
+        overall: &'a ResponseTimeStatistics,
+    ) -> ReportInput<'a> {
+        ReportInput {
+            target_dir: dir,
+            log_file: "transaction.log",
+            error_file: "error.log",
+            spec,
+            transactions,
+            counters,
+            stats,
+            overall,
+            steady: None,
+            kind: ReportKind::Stream,
+            stream: None,
+            total_time_ms: 1000,
+            rampup_time_ms: 0,
+            rampup_end_ts: None,
+            interrupted: false,
+            clients: 2,
+            duration_s: 1,
+            rampup_s: 0,
+        }
+    }
+
+    #[test]
+    fn timeline_has_one_lane_per_client_and_starts_at_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        // Client 3 runs beta from 1500 ms, client 7 alpha from 1000 ms;
+        // an old-format line (no client, no start) is skipped.
+        write(
+            &dir.join("transaction.log"),
+            "100 1 2 250.0 3 1500\n100 2 1 400.0 7 1000\n101 2 1 9.0\n",
+        );
+        let spec = minimal_spec();
+        let txs = vec![
+            BenchmarkTransaction {
+                id: 1,
+                name: "alpha".into(),
+                weight: 50,
+            },
+            BenchmarkTransaction {
+                id: 2,
+                name: "beta".into(),
+                weight: 50,
+            },
+        ];
+        let (counters, stats) = (HashMap::new(), HashMap::new());
+        let overall = ResponseTimeStatistics::zero("all");
+        let input = timeline_input(&dir, &spec, &txs, &counters, &stats, &overall);
+        let (clients, items, truncated) = read_timeline(&input);
+        assert_eq!(clients, vec![3, 7]);
+        assert!(!truncated);
+        // [lane, start ms from the first start, duration, row in spec order]
+        assert_eq!(
+            items,
+            vec![[0.0, 500.0, 250.0, 1.0], [1.0, 0.0, 400.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn timeline_is_dropped_past_its_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let line = "100 1 1 1.0 1 0\n";
+        write(&dir.join("transaction.log"), &line.repeat(TIMELINE_MAX + 1));
+        let spec = minimal_spec();
+        let txs = vec![BenchmarkTransaction {
+            id: 1,
+            name: "alpha".into(),
+            weight: 50,
+        }];
+        let (counters, stats) = (HashMap::new(), HashMap::new());
+        let overall = ResponseTimeStatistics::zero("all");
+        let input = timeline_input(&dir, &spec, &txs, &counters, &stats, &overall);
+        let (clients, items, truncated) = read_timeline(&input);
+        assert!(truncated);
+        assert!(clients.is_empty() && items.is_empty());
+    }
+
     #[test]
     fn rendered_html_embeds_data_and_canvases() {
         let html = render_html(r#"{"meta":{"name":"x"}}"#);
         assert!(html.contains("const DATA = {\"meta\":{\"name\":\"x\"}};"));
         assert!(html.contains("id=\"throughput\""));
         assert!(html.contains("id=\"histogram\""));
+        // Both layouts are in every report; the data picks one.
+        assert!(html.contains("id=\"stream-view\" hidden"));
+        assert!(html.contains("id=\"time-bars\""));
+        assert!(html.contains("id=\"timeline\""));
+        assert!(html.contains("DATA.meta.report === 'stream'"));
         assert!(html.contains("Chart")); // inlined chart.js present
     }
 

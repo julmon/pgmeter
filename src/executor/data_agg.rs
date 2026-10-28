@@ -314,6 +314,42 @@ pub fn print_transactions_tables(
     println!("{}", stats_table);
 }
 
+// The table of a stream run: one row per transaction, the most
+// time-consuming first, with its share of the stream's time.
+pub fn print_stream_table(stream: &super::summary::StreamSummary) {
+    let mut builder = Builder::default();
+    builder.push_record([
+        "Transaction",
+        "Executed",
+        "Errors",
+        "Total (s)",
+        "Share (%)",
+        "Avg. (ms)",
+        "Min. (ms)",
+        "Max. (ms)",
+    ]);
+    for i in stream.by_total_desc() {
+        let r = &stream.rows[i];
+        builder.push_record([
+            r.name.clone(),
+            super::terminal::fmt_int(r.executed),
+            super::terminal::fmt_int(r.errors),
+            format!("{:.3}", r.total_ms / 1000.0),
+            format!("{:.1}", r.share_pct),
+            format!("{:.3}", r.mean_ms),
+            format!("{:.3}", r.min_ms),
+            format!("{:.3}", r.max_ms),
+        ]);
+    }
+    let mut table = builder.build();
+    table
+        .with(Style::blank().horizontals([(1, HorizontalLine::new('─').intersection('─'))]))
+        .with(Modify::new(Rows::first()).with(Alignment::center()))
+        .with(Modify::new(Columns::new(1..).not(Rows::first())).with(Alignment::right()));
+    println!("Where the time went:");
+    println!("{}", table);
+}
+
 // Render the results as a pretty-printed JSON document for machine consumption.
 // `summary` and `stats` are aligned by index (same transaction order).
 // `workload_secs` is the steady-state window (elapsed minus ramp-up) that the
@@ -325,12 +361,14 @@ pub fn results_json(
     workload_secs: f64,
     interrupted: bool,
     steady: Option<&super::summary::SteadyState>,
+    stream: Option<&super::summary::StreamSummary>,
 ) -> String {
     let transactions: Vec<serde_json::Value> = summary
         .iter()
         .zip(stats.iter())
-        .map(|(s, st)| {
-            serde_json::json!({
+        .enumerate()
+        .map(|(i, (s, st))| {
+            let mut tx = serde_json::json!({
                 "name": s.name,
                 "committed": s.n_commits,
                 "errors": s.n_errors,
@@ -344,11 +382,23 @@ pub fn results_json(
                     "p95": st.percentile_95,
                     "p99": st.percentile_99,
                 },
-            })
+            });
+            if let Some(row) = stream.and_then(|st| st.rows.get(i)) {
+                tx["total_ms"] = serde_json::json!(row.total_ms);
+                tx["share_pct"] = serde_json::json!(row.share_pct);
+            }
+            tx
         })
         .collect();
 
     let doc = serde_json::json!({
+        "report": if stream.is_some() { "stream" } else { "throughput" },
+        "stream": stream.map(|s| serde_json::json!({
+            "elapsed_s": s.elapsed_secs,
+            "executed": s.executed,
+            "errors": s.errors,
+            "geomean_ms": s.geomean_ms,
+        })),
         "throughput_unit": throughput_unit,
         "duration_s": workload_secs.round() as u64,
         "interrupted": interrupted,
@@ -518,12 +568,15 @@ mod tests {
     #[test]
     fn results_json_includes_unit_and_latency() {
         let (summary, stats) = sample_results();
-        let out = results_json(&summary, &stats, "TPS", 30.2, false, None);
+        let out = results_json(&summary, &stats, "TPS", 30.2, false, None, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["throughput_unit"], "TPS");
         assert_eq!(v["duration_s"], 30);
         assert_eq!(v["interrupted"], false);
         assert!(v["steady_state"].is_null());
+        assert_eq!(v["report"], "throughput");
+        assert!(v["stream"].is_null());
+        assert!(v["transactions"][0].get("total_ms").is_none());
         let steady = crate::executor::summary::steady_state(
             &(0..12).map(|i| (i, 10)).collect::<Vec<_>>(),
             1.0,
@@ -535,6 +588,7 @@ mod tests {
             1.0,
             true,
             steady.as_ref(),
+            None,
         ))
         .unwrap();
         assert_eq!(v["interrupted"], true);
@@ -546,6 +600,29 @@ mod tests {
         assert_eq!(t["errors"], 2);
         assert_eq!(t["throughput"], 3150);
         assert_eq!(t["latency_ms"]["p99"], 1.747);
+    }
+
+    #[test]
+    fn results_json_of_a_stream_adds_its_figures() {
+        let (summary, stats) = sample_results();
+        let txs = [tx(1, "Debit/credit")];
+        let counters = HashMap::from([(
+            1,
+            crate::executor::benchmark::Counter {
+                n_commits: 2,
+                n_total: 2,
+                total_duration_ms: 3000.0,
+            },
+        )]);
+        let stream =
+            crate::executor::summary::stream_summary(&txs, &counters, &HashMap::new(), 4000, 0);
+        let out = results_json(&summary, &stats, "TPS", 4.0, false, None, Some(&stream));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["report"], "stream");
+        assert_eq!(v["stream"]["executed"], 2);
+        assert_eq!(v["stream"]["geomean_ms"], 1500.0);
+        assert_eq!(v["transactions"][0]["total_ms"], 3000.0);
+        assert_eq!(v["transactions"][0]["share_pct"], 100.0);
     }
 
     #[test]
