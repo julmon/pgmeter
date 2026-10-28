@@ -131,7 +131,12 @@ pub fn generate(input: &ReportInput, client: &mut Client) -> Result<PathBuf, Err
 
     // Time series and histogram parsed directly from the raw logs so that every
     // chart shares a single time origin.
-    let ts = build_time_series(input, throughput_factor)?;
+    let mut ts = build_time_series(input, throughput_factor)?;
+    // A stream's page draws none of the per-transaction series; with PGM-DS's
+    // 99 queries they would be most of the file.
+    if input.kind == ReportKind::Stream {
+        ts.series.clear();
+    }
 
     let palette = [
         "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
