@@ -48,7 +48,8 @@ First public release.
   README is a summary that points to it.
 - Each run writes a result directory (`pgmeter-<UTC timestamp>/`) with
   `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
-  ramp-up boundary), `transaction.log` and `error.log` (one record per line,
+  ramp-up boundary), `transaction.log` (one line per commit with the client
+  that ran it and its start time) and `error.log` (one record per line,
   line breaks in messages escaped), per-transaction CSV files
   (`pgmeter-throughput-*.csv` in the spec's unit, response times over time,
   statistics) and a self-contained HTML report with charts, percentiles,

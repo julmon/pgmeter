@@ -30,12 +30,15 @@ One line per committed transaction, ramp-up included, in the order the
 collector received them:
 
 ```
-<timestamp> <active_clients> <transaction_id> <response_time_ms>
-1793005977 1 3 4.893
+<timestamp> <active_clients> <transaction_id> <response_time_ms> <client_id> <start_ms>
+1793005977 1 3 4.893 1 10412
 ```
 
 `active_clients` is the number of distinct clients seen so far, which grows
-during the ramp-up. `transaction_id` is the `id` from the spec. Lines with a
+during the ramp-up. `transaction_id` is the `id` from the spec. `client_id`
+is the client that ran the transaction, from 1 to `-c`. `start_ms` is when
+the transaction started, in milliseconds since the run's collector started,
+so `start_ms` plus `response_time_ms` is when it ended. Lines with a
 timestamp before `rampup_end_ts` belong to the ramp-up.
 
 ## `error.log`

@@ -398,6 +398,17 @@ transactions:
         "last transaction.log line: {:?}",
         log.lines().last()
     );
+    // Every line carries the client that ran the transaction, 1 to 4, and
+    // its start in ms since the collector started, which never exceeds the
+    // whole run's length.
+    for line in log.lines() {
+        let fields: Vec<&str> = line.split(' ').collect();
+        assert_eq!(fields.len(), 6, "transaction.log line: {line:?}");
+        let client: u32 = fields[4].parse().unwrap();
+        assert!((1..=4).contains(&client), "client id in {line:?}");
+        let start_ms: u64 = fields[5].parse().unwrap();
+        assert!(start_ms < 60_000, "start ms in {line:?}");
+    }
     let errors = std::fs::read_to_string(dir.join("error.log")).unwrap();
     assert!(errors.is_empty(), "error.log: {errors}");
 }
