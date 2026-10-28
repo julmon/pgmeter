@@ -113,6 +113,18 @@ fn create(path: &Path) -> Result<BufWriter<File>, Error> {
         .map_err(|e| Error::io(format!("Cannot create {}", path.display()), e))
 }
 
+/// What one pass over the transaction log yields for the results and the report.
+pub struct Aggregate {
+    /// Steady-state response-time statistics per transaction id.
+    pub stats: HashMap<u16, ResponseTimeStatistics>,
+    /// The same statistics over every steady-state sample, all transactions together.
+    pub overall: ResponseTimeStatistics,
+    /// Commits per log second of the measured window, `(timestamp, count)`,
+    /// with the seconds in which nothing committed included as 0; the input of
+    /// [`super::summary::steady_state`].
+    pub window: Vec<(i64, u64)>,
+}
+
 // Aggregates the transaction log in a single pass and writes the per-transaction
 // CSV files; returns the response-time statistics for the results and the report.
 //
@@ -128,7 +140,7 @@ pub fn aggregate_transaction_data(
     transactions: &[BenchmarkTransaction],
     rampup_end_ts: Option<i64>,
     throughput_factor: f64,
-) -> Result<HashMap<u16, ResponseTimeStatistics>, Error> {
+) -> Result<Aggregate, Error> {
     let log_path = target_dir.join(log_file);
     let log = File::open(&log_path)
         .map_err(|e| Error::io(format!("Cannot read {}", log_path.display()), e))?;
@@ -158,6 +170,9 @@ pub fn aggregate_transaction_data(
     }
 
     let mut stats_map = HashMap::new();
+    // Every steady-state sample, moved out of the per-transaction vectors once
+    // their own statistics are done, so memory does not double.
+    let mut all_steady: Vec<f64> = Vec::new();
     for transaction in transactions {
         let safe = safe_name(&transaction.name);
         let mut agg = per_tx.remove(&transaction.id).unwrap_or_default();
@@ -198,7 +213,9 @@ pub fn aggregate_transaction_data(
             writeln!(stats_file, "{label},{value}")?;
         }
         stats_map.insert(transaction.id, stats);
+        all_steady.append(&mut agg.steady_durations_ms);
     }
+    let overall = statistics("all", &mut all_steady);
 
     // Total throughput per second across all transaction types, same unit.
     let origin = all.keys().next().copied().unwrap_or(0);
@@ -213,7 +230,22 @@ pub fn aggregate_transaction_data(
         )?;
     }
 
-    Ok(stats_map)
+    // The measured window, gaps filled: a second without a commit is a stall
+    // the steady-state check must see.
+    let window_start = rampup_end_ts.unwrap_or(i64::MIN);
+    let mut window: Vec<(i64, u64)> = Vec::new();
+    for (ts, second) in all.range(window_start..) {
+        if let Some(&(last, _)) = window.last() {
+            window.extend((last + 1..*ts).map(|gap| (gap, 0)));
+        }
+        window.push((*ts, second.count));
+    }
+
+    Ok(Aggregate {
+        stats: stats_map,
+        overall,
+        window,
+    })
 }
 
 // Render both result tables with a light, frame-less style and at an identical
@@ -292,6 +324,7 @@ pub fn results_json(
     throughput_unit: &str,
     workload_secs: f64,
     interrupted: bool,
+    steady: Option<&super::summary::SteadyState>,
 ) -> String {
     let transactions: Vec<serde_json::Value> = summary
         .iter()
@@ -319,6 +352,15 @@ pub fn results_json(
         "throughput_unit": throughput_unit,
         "duration_s": workload_secs.round() as u64,
         "interrupted": interrupted,
+        "steady_state": steady.map(|s| serde_json::json!({
+            "verdict": s.verdict,
+            "seconds": s.seconds,
+            "mean": s.mean,
+            "cv_pct": s.cv_pct,
+            "first_half": s.first_half,
+            "second_half": s.second_half,
+            "drift_pct": s.drift_pct,
+        })),
         "transactions": transactions,
     });
 
@@ -406,8 +448,9 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         std::fs::write(dir.join("transaction.log"), "100 1 1 2.0\n").unwrap();
         let transactions = vec![tx(1, "busy"), tx(2, "idle")];
-        let stats =
-            aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
+        let stats = aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0)
+            .unwrap()
+            .stats;
         assert_eq!(stats[&2].mean, 0.0);
         assert_eq!(stats[&1].mean, 2.0);
         let idle = std::fs::read_to_string(dir.join("pgmeter-stats-idle.csv")).unwrap();
@@ -415,6 +458,25 @@ mod tests {
         assert_eq!(idle.lines().nth(2), Some("mean,0"));
         let series = std::fs::read_to_string(dir.join("pgmeter-throughput-idle.csv")).unwrap();
         assert_eq!(series, "time_s,throughput\n");
+    }
+
+    // A stalled second inside the window counts as 0 commits, and the
+    // overall statistics pool every transaction's samples.
+    #[test]
+    fn aggregate_fills_stalled_seconds_and_pools_the_overall_statistics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(
+            dir.join("transaction.log"),
+            "100 1 1 1.0 1 0\n100 1 2 3.0 1 2\n103 1 1 5.0 1 3000\n",
+        )
+        .unwrap();
+        let transactions = vec![tx(1, "a"), tx(2, "b")];
+        let agg =
+            aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
+        assert_eq!(agg.window, vec![(100, 2), (101, 0), (102, 0), (103, 1)]);
+        assert_eq!(agg.overall.mean, 3.0);
+        assert_eq!(agg.overall.max, 5.0);
     }
 
     #[test]
@@ -456,14 +518,28 @@ mod tests {
     #[test]
     fn results_json_includes_unit_and_latency() {
         let (summary, stats) = sample_results();
-        let out = results_json(&summary, &stats, "TPS", 30.2, false);
+        let out = results_json(&summary, &stats, "TPS", 30.2, false, None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["throughput_unit"], "TPS");
         assert_eq!(v["duration_s"], 30);
         assert_eq!(v["interrupted"], false);
-        let v: serde_json::Value =
-            serde_json::from_str(&results_json(&summary, &stats, "TPS", 1.0, true)).unwrap();
+        assert!(v["steady_state"].is_null());
+        let steady = crate::executor::summary::steady_state(
+            &(0..12).map(|i| (i, 10)).collect::<Vec<_>>(),
+            1.0,
+        );
+        let v: serde_json::Value = serde_json::from_str(&results_json(
+            &summary,
+            &stats,
+            "TPS",
+            1.0,
+            true,
+            steady.as_ref(),
+        ))
+        .unwrap();
         assert_eq!(v["interrupted"], true);
+        assert_eq!(v["steady_state"]["verdict"], "steady");
+        assert_eq!(v["steady_state"]["seconds"], 10);
         let t = &v["transactions"][0];
         assert_eq!(t["name"], "Debit/credit");
         assert_eq!(t["committed"], 100);
@@ -516,13 +592,17 @@ mod tests {
         drop(f);
         let transactions = vec![tx(1, "only")];
 
-        let stats =
+        let agg =
             aggregate_transaction_data("transaction.log", &dir, &transactions, Some(102), 60.0)
                 .unwrap();
-        let only = &stats[&1];
+        let only = &agg.stats[&1];
         assert_eq!(only.mean, 3.0, "ramp-up samples must not inflate the mean");
         assert_eq!(only.max, 4.0);
         assert_eq!(only.min, 2.0);
+        // The window starts at the boundary; all transactions together give
+        // the same statistics here as the only one.
+        assert_eq!(agg.window, vec![(102, 2), (103, 2)]);
+        assert_eq!(agg.overall.mean, 3.0);
 
         // The per-second series still start at the first ramp-up second, and
         // carry the spec's unit: one commit in second 0 x factor 60 = 60.
@@ -534,8 +614,9 @@ mod tests {
 
         // Without a boundary, every sample counts. RELEASE_REVIEW C7: with a
         // per-second unit (factor 1) the series is a plain count, not x60.
-        let stats =
-            aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0).unwrap();
+        let stats = aggregate_transaction_data("transaction.log", &dir, &transactions, None, 1.0)
+            .unwrap()
+            .stats;
         assert_eq!(stats[&1].max, 50.0);
         let tps = std::fs::read_to_string(dir.join("pgmeter-throughput-only.csv")).unwrap();
         assert_eq!(tps.lines().nth(1), Some("0,1"));

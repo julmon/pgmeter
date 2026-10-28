@@ -258,6 +258,7 @@ pub fn kpi_banner(
     committed: u64,
     error_rate: f64,
     avg_latency_ms: f64,
+    p99_latency_ms: f64,
 ) {
     if is_quiet() {
         return;
@@ -265,7 +266,7 @@ pub fn kpi_banner(
     let dot = || style("  ·  ").dim();
     println!();
     println!(
-        "  {} {}{}{} committed{}{} errors{}{} avg",
+        "  {} {}{}{} committed{}{} errors{}{} avg{}{} p99",
         style(fmt_int(throughput)).cyan().bold(),
         style(unit).cyan(),
         dot(),
@@ -274,7 +275,38 @@ pub fn kpi_banner(
         style(format!("{:.2}%", error_rate)).bold(),
         dot(),
         style(format!("{:.2} ms", avg_latency_ms)).bold(),
+        dot(),
+        style(format!("{:.2} ms", p99_latency_ms)).bold(),
     );
+    println!();
+}
+
+// One line under the banner on how the throughput behaved over the window:
+// the verdict, the drift between its halves and the per-second variation.
+pub fn steady_state_line(steady: Option<&super::summary::SteadyState>) {
+    if is_quiet() {
+        return;
+    }
+    match steady {
+        Some(s) => {
+            let verdict = match s.verdict {
+                super::summary::Verdict::Steady => style(s.verdict.as_str()).green().bold(),
+                _ => style(s.verdict.as_str()).yellow().bold(),
+            };
+            println!(
+                "  steady state: {}{}{:+.1}% second half{}{:.1}% variation per second",
+                verdict,
+                style("  ·  ").dim(),
+                s.drift_pct,
+                style("  ·  ").dim(),
+                s.cv_pct,
+            );
+        }
+        None => println!(
+            "  steady state: {}",
+            style("not judged: under 10 full seconds measured, or nothing committed").dim()
+        ),
+    }
     println!();
 }
 

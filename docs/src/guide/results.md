@@ -11,8 +11,11 @@ With `--format table` (the default), the run ends with:
 
 - **The headline**: overall throughput in the spec's unit (TPM for PGM-C,
   TPS for PGM-B and PGM-IoT, queries per hour for PGM-H and PGM-DS), the number of
-  committed transactions, the error rate and the average response time. For
-  example `24 040 TPM · 24 103 committed · 0.43% errors · 19.82 ms avg`.
+  committed transactions, the error rate, the average and the 99th-percentile
+  response time. For example
+  `24 040 TPM · 24 103 committed · 0.43% errors · 19.82 ms avg · 61.30 ms p99`.
+- **The steady-state line** of a timed run, described below. For example
+  `steady state: drifted · -13.3% second half · 17.9% variation per second`.
 - **Results**, one row per transaction: committed count, errors, error rate,
   throughput in the spec's unit.
 - **Response times**, one row per transaction: average, minimum, maximum,
@@ -25,10 +28,31 @@ seconds. The rate is the one of the last second, not an average since the
 start.
 
 `--format json` prints the same figures as one document (`duration_s`,
-`interrupted`, `throughput_unit` and a `transactions` array with `name`,
+`interrupted`, `throughput_unit`, `steady_state` and a `transactions` array with `name`,
 `committed`, `errors`, `error_rate`, `throughput` and a `latency_ms` object
 holding `avg`, `min`, `max`, `p95`, `p99` and `stddev`); `--format csv` prints
 one row per transaction with the same columns. Both imply `--quiet`.
+`steady_state` holds `verdict`, `seconds`, `mean`, `cv_pct`, `first_half`,
+`second_half` and `drift_pct`, or is `null` when the run was not judged.
+
+## Steady state
+
+A throughput figure describes a run only if the rate held while it was
+measured. pgmeter checks this on the per-second commit counts of the
+measured window, without its first and last seconds, in which clients start
+and stop:
+
+- **Variation per second** is the coefficient of variation of the
+  per-second rate: its standard deviation as a percentage of its mean.
+- **Drift** compares the mean rate of the window's second half with its
+  first half.
+
+The verdict is `steady` under 10% variation and under 5% drift, `unstable`
+when only the variation is over, and `drifted` when the halves differ by 5%
+or more. A drifted run averages two regimes, such as a cache warming up or
+checkpoints starting, and a longer run may settle at a different rate. A
+window under 10 full seconds is not judged, and neither is a `--once` run,
+whose clients stop one after the other.
 
 ## The results directory
 
@@ -58,10 +82,13 @@ nothing is fetched. It shows:
 - An environment header: benchmark name and description, PostgreSQL version,
   key server settings (`shared_buffers`, `work_mem`, `max_wal_size`,
   `max_connections`, `effective_cache_size`) and the run parameters.
-- The headline figures: throughput, peak throughput, committed transactions,
-  errors and error rate, average latency.
+- The headline figures: throughput, committed transactions, errors and error
+  rate, and the average, 95th and 99th percentile response times.
+- The steady-state verdict with its figures.
 - The per-transaction results table.
-- Charts: throughput over time, latency over time, the response-time
+- Charts: throughput over time with the mean of each half of the window
+  dashed, latency over time as the mean and the 95th percentile of all
+  transactions or of the one picked in the chart's selector, the response-time
   distribution and errors over time; for specs with several transactions,
   also the response-time percentiles per transaction and the committed
   transaction mix. The ramp-up window is shaded.
