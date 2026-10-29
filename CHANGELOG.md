@@ -80,7 +80,8 @@ First public release.
   (`interrupted` in `run.json`); a second Ctrl-C aborts immediately with
   status 130.
 - Connection settings follow libpq conventions: `PGHOST`, `PGPORT`, `PGUSER`,
-  `PGDATABASE`, `PGPASSWORD` and `~/.pgpass`. The default user name falls back
+  `PGDATABASE`, `PGPASSWORD`, `~/.pgpass` and `PGOPTIONS`, whose server
+  settings reach every connection. The default user name falls back
   to `$USER`, `$LOGNAME` and `postgres` when the UID has no passwd entry.
 - TLS with `--sslmode` / `PGSSLMODE` (`disable`, `prefer`, `require`,
   `verify-ca`, `verify-full`, libpq semantics) through rustls; the `verify-*`
