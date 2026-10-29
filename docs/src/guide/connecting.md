@@ -18,6 +18,19 @@ password file, `PGPASSFILE` or `~/.pgpass`, matched on host, port, database
 and user as libpq does. There is no prompt and no `--password` option. The
 target shown in the run header has the password redacted.
 
+`PGOPTIONS` passes server settings to every connection pgmeter opens, as
+libpq does: `init`, each client of `run` and the report's own connection all
+start with them. For example, to run with a larger `work_mem` and no
+statement timeout without touching the server's configuration:
+
+```bash
+PGOPTIONS="-c work_mem=256MB -c statement_timeout=0" pgmeter run --spec pgm-h.yaml
+```
+
+The run header shows them in the target, as the `options` parameter. Other
+libpq environment variables, such as `PGAPPNAME` or `PGCONNECT_TIMEOUT`, are
+not read.
+
 ## TLS
 
 `--sslmode` follows libpq's meaning:

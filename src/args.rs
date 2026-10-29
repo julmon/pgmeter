@@ -104,6 +104,9 @@ pub struct CliArgs {
     pub dbname: String,
     // TLS requirement for the connections (libpq's sslmode)
     pub sslmode: SslMode,
+    // Server options sent at connection start, from PGOPTIONS (libpq's
+    // `options`, e.g. "-c work_mem=64MB"); None when unset or blank.
+    pub options: Option<String>,
     // Sub-command selected on the command line
     pub action: Action,
     // Suppress decorative progress output; emit only result data
@@ -563,6 +566,7 @@ impl CliArgs {
             password,
             dbname: dbname.to_string(),
             sslmode,
+            options: options_from(env::var("PGOPTIONS").ok()),
             action,
             quiet,
             run_args,
@@ -643,8 +647,13 @@ impl SslMode {
 // Returns the database connection string based on CLI args. Every user-supplied
 // component is percent-encoded so special characters (e.g. '@', ':', '/' in a
 // password or a socket-directory host path) don't corrupt the URL.
+//
+// The driver is not libpq and reads no environment variable itself, so
+// PGOPTIONS is passed on here as the `options` parameter, which the driver
+// sends in the startup packet as libpq does: every connection (init, the
+// clients, the report) starts with those settings.
 pub fn get_dsn(args: &CliArgs) -> String {
-    format!(
+    let mut dsn = format!(
         "postgresql://{}:{}@{}:{}/{}?sslmode={}",
         encode(&args.username),
         encode(&args.password),
@@ -652,7 +661,17 @@ pub fn get_dsn(args: &CliArgs) -> String {
         args.port,
         encode(&args.dbname),
         args.sslmode.driver_value(),
-    )
+    );
+    if let Some(options) = &args.options {
+        dsn.push_str("&options=");
+        dsn.push_str(&encode(options));
+    }
+    dsn
+}
+
+// PGOPTIONS as libpq takes it: an unset or blank variable means no options.
+fn options_from(pgoptions: Option<String>) -> Option<String> {
+    pgoptions.filter(|o| !o.trim().is_empty())
 }
 
 // Resolve the connection password. PGPASSWORD takes precedence; otherwise the
@@ -849,6 +868,38 @@ mod tests {
     // passwd entry and panicked before argument parsing when the UID had none
     // (containers with `--user 12345`). The fallback chain must always yield
     // a name.
+    // PGOPTIONS reaches the server through the DSN's `options` parameter;
+    // the driver must read back exactly what was set, spaces, `=` and
+    // commas included.
+    #[test]
+    fn pgoptions_travel_in_the_dsn_as_the_driver_options() {
+        assert_eq!(options_from(None), None);
+        assert_eq!(options_from(Some("  ".to_string())), None);
+        let set = "-c work_mem=77MB -c search_path=a,b";
+        assert_eq!(options_from(Some(set.to_string())).as_deref(), Some(set));
+
+        let mut args = CliArgs::new_from(
+            "u".to_string(),
+            ["pgmeter", "run", "--spec", "samples/pgm-b"].into_iter(),
+        )
+        .unwrap();
+        args.password = "p&w".to_string();
+
+        args.options = None;
+        let dsn = get_dsn(&args);
+        assert!(!dsn.contains("options="), "{dsn}");
+        let config: postgres::Config = dsn.parse().unwrap();
+        assert_eq!(config.get_options(), None);
+
+        args.options = Some(set.to_string());
+        let dsn = get_dsn(&args);
+        let config: postgres::Config = dsn.parse().unwrap();
+        assert_eq!(config.get_options(), Some(set), "{dsn}");
+        // The other parameters survive next to it.
+        assert_eq!(config.get_password(), Some("p&w".as_bytes()));
+        assert_eq!(config.get_ssl_mode(), postgres::config::SslMode::Prefer);
+    }
+
     #[test]
     fn username_falls_back_through_candidates_then_postgres() {
         assert_eq!(pick_username([None, None]), "postgres");

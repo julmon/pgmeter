@@ -506,6 +506,59 @@ transactions:
     );
 }
 
+/// PGOPTIONS reaches every connection, as with libpq: the clients (the
+/// async engine here) and the report's own connection. The transaction
+/// divides by zero unless the session has the work_mem PGOPTIONS set.
+#[test]
+fn pgoptions_reach_every_connection() {
+    let Some(mut env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let tmp = workdir("pgoptions");
+    let cwd = tmp.path().to_path_buf();
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-pgoptions
+scaling:
+  unit: thing
+  max_id_query: "SELECT 1"
+schema:
+  tables: []
+transactions:
+  - id: 1
+    name: check
+    weight: 1
+    sql: "SELECT 1 / (current_setting('work_mem') = '77MB')::int"
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+    env.push(("PGOPTIONS", "-c work_mem=77MB".to_string()));
+
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "run", "--spec", spec, "-c", "2", "--once", "--format", "json",
+        ],
+    );
+    assert_success(&run, "run with PGOPTIONS");
+    let doc: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    let check = &doc["transactions"][0];
+    assert_eq!(check["committed"], 2, "{check}");
+    assert_eq!(check["errors"], 0, "{check}");
+
+    let report = fs::read_to_string(result_dir(&cwd).join("report.html")).unwrap();
+    assert!(
+        report.contains(r#""work_mem":"77MB""#),
+        "the report's connection did not get PGOPTIONS"
+    );
+}
+
 #[test]
 fn pgm_b_init_then_run_with_csv_output() {
     let Some(env) = connection_env() else {
