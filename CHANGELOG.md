@@ -27,8 +27,12 @@ First public release.
   (PGM-B went from 87% to 94% of pgbench's rate on the same box); specs with
   a `script` transaction run one thread per client. `run --once` replaces
   the timed random stream with the TPC-H/DS stream model: each client runs
-  every transaction once in its own random order, then stops. PGM-H's
-  queries have equal weights, as the specification's streams give them.
+  every transaction once in its own random order, then stops, and the run
+  shows its progress as it goes: transactions done out of the planned
+  total and the ones in flight on the bar or in the `progress:` lines, and
+  one line per transaction as it completes. `transaction.log` is flushed
+  at least every second, so it can be tailed. PGM-H's queries have equal
+  weights, as the specification's streams give them.
 - Benchmarks are YAML specifications plus Lua (Luau) scripts. Transactions run
   in `simple` mode (SQL templates with Lua bindings, sent as one batch or, with
   the list form of `sql`, one round trip per statement like pgbench) or

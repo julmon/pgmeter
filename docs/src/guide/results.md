@@ -37,11 +37,21 @@ A stream run ends with:
   time-consuming first: executions, errors, total time and its share, and
   the average, minimum and maximum response times.
 
-During the run, a progress bar on the terminal shows the elapsed time, the
-current throughput and the average latency; when stderr is not a terminal,
-`--progress N` prints the same figures as a `progress:` line every N
-seconds. The rate is the one of the last second, not an average since the
+During a timed run, a progress bar on the terminal shows the elapsed time,
+the current throughput and the average latency; when stderr is not a
+terminal, `--progress N` prints the same figures as a `progress:` line every
+N seconds. The rate is the one of the last second, not an average since the
 start.
+
+A `--once` run counts transactions instead: the bar shows how many of the
+planned ones are done (`7/99`), the elapsed time and what each client is
+running and for how long; every completed transaction is printed above it
+with the time of day, its name, its response time and its client, or its
+error. When stderr is not a terminal, the completion lines are printed as
+they come and `--progress N` adds a `progress: 1234.5 s, 7/99 done, running
+Q16-Multi-Warehouse-Orders for 4m 12s` line every N seconds, so a
+multi-hour stream run can be followed from its log. `transaction.log` is
+flushed at least every second, so `tail -f` on it works too.
 
 `--format json` prints the same figures as one document (`report`, which is
 `throughput` or `stream`, `duration_s`, `interrupted`, `throughput_unit`,
