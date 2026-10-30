@@ -16,7 +16,8 @@ First public release.
 - `pgmeter init` creates the schema, loads data in parallel (`--jobs`,
   `--scalefactor`), then adds primary keys, foreign keys (`--no-fkey` to skip),
   indexes, vacuums and checkpoints. `--post-create-table` runs an SQL script
-  after table creation.
+  after table creation. `--seed` makes a load reproducible: the same seed
+  and scale factor load the same rows, whatever `--jobs`.
 - `pgmeter run` drives the workload with one connection per client
   (`--client`, `--time`, `--rampup`), prints live progress (`--progress`) and
   a results summary as a table, JSON or CSV (`--format`, `--quiet`). Specs

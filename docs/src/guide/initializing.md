@@ -3,7 +3,7 @@
 `init` creates the schema a spec declares and loads its data:
 
 ```bash
-pgmeter [connection options] init --spec <DIR|FILE> [-s N] [-j N] [--no-fkey] [--post-create-table FILE] [-q]
+pgmeter [connection options] init --spec <DIR|FILE> [-s N] [-j N] [--no-fkey] [--post-create-table FILE] [--seed N] [-q]
 ```
 
 > **`init` is destructive.** It runs `DROP TABLE IF EXISTS <table> CASCADE`
@@ -19,6 +19,7 @@ pgmeter [connection options] init --spec <DIR|FILE> [-s N] [-j N] [--no-fkey] [-
 | `-j, --jobs` | 1 | Parallel loader connections; the unit ids are distributed round-robin across them |
 | `--no-fkey` | off | Skip the foreign keys |
 | `--post-create-table` | none | An SQL file to run after the tables are created, before loading |
+| `--seed` | none | Seed of the data generators; without it every load draws fresh data |
 | `-q, --quiet` | off | No progress output |
 
 ## What happens, in order
@@ -29,7 +30,11 @@ pgmeter [connection options] init --spec <DIR|FILE> [-s N] [-j N] [--no-fkey] [-
 2. Pre-loading: the spec's `pre_load_script`, if any, on one connection. The
    bundled workloads use it for their small reference tables.
 3. Loading: `-j` jobs, each loading its share of the `1..N` unit ids with
-   `COPY`, from either the spec's row templates or its Lua loader.
+   `COPY`, from either the spec's row templates or its Lua loader. With
+   `--seed`, each unit's random generator is seeded from the seed and the
+   unit id just before the unit loads, so the same seed and scale factor
+   give the same rows whatever `-j` is; without it the data differs from
+   one load to the next.
 4. Primary keys, then foreign keys (unless `--no-fkey`), then indexes. They
    are created after the load, which is much faster than loading into indexed
    tables.
