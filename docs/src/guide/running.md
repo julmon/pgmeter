@@ -12,7 +12,7 @@ pgmeter [connection options] run --spec <DIR|FILE> [-c N] [-T N] [-r N] [-P N] [
 | `-c, --client` | 1 | Concurrent clients, one connection each |
 | `-T, --time` | 1 | Measured duration in seconds, after the ramp-up |
 | `-r, --rampup` | 0 | Ramp-up in seconds: the clients start spread over this window, and nothing in it counts |
-| `-P, --progress` | 0 | Every N seconds, print a `progress:` line with the current throughput and average latency (over the last second) when stderr is not a terminal; on a terminal the progress bar shows them live |
+| `-P, --progress` | 0 | Every N seconds, print a `progress:` line when stderr is not a terminal: the current throughput and average latency (over the last second) of a timed run, the transactions done and in flight of a `--once` run; on a terminal the progress bar shows them live |
 | `-j, --threads` | 0 | Worker threads of the async engine (see below); 0 is half the CPUs, at most one per client |
 | `--once` | off | Each client runs every transaction once, in its own random order, then stops (see below); not with `-T` |
 | `--format` | table | `table`, `json` or `csv` for the results on stdout |

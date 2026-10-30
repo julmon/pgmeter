@@ -492,6 +492,28 @@ transactions:
             .unwrap();
     assert_eq!(meta["once"], true, "{meta}");
 
+    // A stream run tells how far it is: the header counts the transactions
+    // of a client, and every completion is a line on stderr (not a terminal
+    // here, so plain lines), with the transaction's name and client.
+    let watch = cwd.join("watch");
+    fs::create_dir_all(&watch).unwrap();
+    let watched = pgmeter(&env, &watch, &["run", "--spec", spec, "-c", "2", "--once"]);
+    assert_success(&watched, "run --once with progress lines");
+    let stderr = String::from_utf8_lossy(&watched.stderr);
+    assert!(stderr.contains("(--once), 2 per client"), "{stderr}");
+    for (name, client) in [("first", 1), ("first", 2), ("third", 1), ("third", 2)] {
+        let line = stderr
+            .lines()
+            .find(|l| l.contains(name) && l.ends_with(&format!("client {client}")));
+        assert!(
+            line.is_some(),
+            "no completion line for {name}/{client}:\n{stderr}"
+        );
+    }
+    assert!(!stderr.contains("skipped"), "{stderr}");
+    let log = fs::read_to_string(result_dir(&watch).join("transaction.log")).unwrap();
+    assert_eq!(log.lines().count(), 4, "{log}");
+
     // --once and --time are two ways of ending the run; clap refuses both.
     let both = pgmeter(
         &env,

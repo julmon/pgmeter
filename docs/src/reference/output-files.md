@@ -27,7 +27,7 @@ The run parameters and timing, one JSON object:
 ## `transaction.log`
 
 One line per committed transaction, ramp-up included, in the order the
-collector received them:
+collector received them, flushed at least every second while the run goes:
 
 ```
 <timestamp> <active_clients> <transaction_id> <response_time_ms> <client_id> <start_ms>

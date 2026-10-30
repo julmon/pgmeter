@@ -1,12 +1,15 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, sleep, JoinHandle};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use console::{style, Term};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+
+use super::benchmark::BenchmarkTransaction;
 
 // A phase that is currently in progress. On a TTY it owns an animated spinner;
 // otherwise it just remembers its label so the closing line can be printed.
@@ -129,25 +132,13 @@ pub fn err_msg(error: &str) {
     eprintln!("{} {}", style("error:").red().bold(), error);
 }
 
-// Determinate bar tracking the workload's elapsed/total seconds. The message
-// suffix (live throughput/latency) is set by the caller. Hidden on a non-TTY so
-// callers can fall back to periodic log lines.
-/// `total_s` is the workload window of a timed run; `None` (a `--once` run,
-/// whose length is not known in advance) gives a spinner with the elapsed time.
-pub fn run_bar(total_s: Option<u64>) -> ProgressBar {
+// Determinate bar tracking the workload's elapsed/total seconds of a timed
+// run. The message suffix (live throughput/latency) is set by the caller.
+// Hidden on a non-TTY so callers can fall back to periodic log lines.
+pub fn run_bar(total_s: u64) -> ProgressBar {
     if !is_tty() || is_quiet() {
         return ProgressBar::hidden();
     }
-    let Some(total_s) = total_s else {
-        let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
-        let template = format!(
-            "  {{prefix:.dim}} {} {{spinner:.cyan}} {{elapsed_precise}}  {{msg}}",
-            style("Running workload").white(),
-        );
-        bar.set_style(ProgressStyle::with_template(&template).expect("valid template"));
-        bar.set_prefix("RUN");
-        return bar;
-    };
     let bar = ProgressBar::with_draw_target(Some(total_s), ProgressDrawTarget::stderr());
     // Two leading spaces shift the line right so "RUN" aligns with the icon-
     // prefixed status lines (✔/spinner + space). "Running workload" is rendered
@@ -165,13 +156,179 @@ pub fn run_bar(total_s: Option<u64>) -> ProgressBar {
     bar
 }
 
+/// The live view of a `--once` run. A stream run has a known length (every
+/// client runs each eligible transaction once) and long, uneven transactions,
+/// so its progress is shown as K/N done plus what each client is running,
+/// and every completion is printed as it happens; a timed run shows a rate.
+/// Updated by the clients, read by the workload monitor.
+pub struct StreamProgress {
+    names: HashMap<u16, String>,
+    /// Per client (index client_id - 1): the transaction in flight as its id
+    /// plus one (0 when idle) and when it started, in ms since `start`.
+    slots: Vec<(AtomicU32, AtomicU64)>,
+    done: AtomicU64,
+    total: u64,
+    start: Instant,
+    /// The bar the completion lines are printed above. The monitor draws it
+    /// once the clients are started; before that, and on a non-TTY, it is
+    /// hidden and the lines go straight to stderr.
+    bar: ProgressBar,
+}
+
+impl StreamProgress {
+    pub fn new(transactions: &[BenchmarkTransaction], clients: u16) -> Self {
+        let eligible = transactions.iter().filter(|t| t.weight > 0).count() as u64;
+        let total = eligible * clients as u64;
+        let bar = ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::hidden());
+        let template = format!(
+            "  {{prefix:.dim}} {} {{bar:24.cyan/blue}} {{pos:>3}}/{{len}}  {{elapsed_precise}}  {{msg}}",
+            style("Running workload").white(),
+        );
+        bar.set_style(
+            ProgressStyle::with_template(&template)
+                .expect("valid template")
+                .progress_chars("█▉░"),
+        );
+        bar.set_prefix("RUN");
+        Self {
+            names: transactions
+                .iter()
+                .map(|t| (t.id, t.name.clone()))
+                .collect(),
+            slots: (0..clients)
+                .map(|_| (AtomicU32::new(0), AtomicU64::new(0)))
+                .collect(),
+            done: AtomicU64::new(0),
+            total,
+            start: Instant::now(),
+            bar,
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    pub fn done(&self) -> u64 {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    fn slot(&self, client_id: u16) -> Option<&(AtomicU32, AtomicU64)> {
+        self.slots.get((client_id as usize).wrapping_sub(1))
+    }
+
+    /// A client starts a transaction.
+    pub fn begin(&self, client_id: u16, tx_id: u16) {
+        if let Some((tx, since)) = self.slot(client_id) {
+            since.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+            tx.store(tx_id as u32 + 1, Ordering::Relaxed);
+        }
+    }
+
+    /// A client finished a transaction: count it and print its line,
+    /// `HH:MM:SS  name  duration  client N` (or the error).
+    pub fn finished(&self, client_id: u16, tx_id: u16, outcome: Result<u128, &str>) {
+        if let Some((tx, _)) = self.slot(client_id) {
+            tx.store(0, Ordering::Relaxed);
+        }
+        self.done.fetch_add(1, Ordering::Relaxed);
+        if is_quiet() {
+            return;
+        }
+        let name = self.names.get(&tx_id).map_or("?", String::as_str);
+        let when = Local::now().format("%H:%M:%S");
+        let line = match outcome {
+            Ok(duration_us) => format!(
+                "  {}  {:<32} {:>10}  client {}",
+                style(when).dim(),
+                name,
+                fmt_response_ms(duration_us as f64 / 1000.0),
+                client_id
+            ),
+            Err(message) => format!(
+                "  {}  {:<32} {:>10}  client {}: {}",
+                style(when).dim(),
+                name,
+                style("ERROR").red(),
+                client_id,
+                message.replace('\n', " ")
+            ),
+        };
+        if self.bar.is_hidden() {
+            eprintln!("{line}");
+        } else {
+            self.bar.println(line);
+        }
+    }
+
+    /// The transactions in flight, the longest-running first, at most three
+    /// named: "running Q16 for 42 s" for one client, "running Q16 (c1, 42 s),
+    /// Q4 (c2, 3 s), +2" for several; empty when every client is idle.
+    pub fn running(&self) -> String {
+        let now_ms = self.start.elapsed().as_millis() as u64;
+        let mut live: Vec<(u64, usize, u16)> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (tx, since))| {
+                let tx = tx.load(Ordering::Relaxed);
+                (tx > 0).then(|| {
+                    let ms = now_ms.saturating_sub(since.load(Ordering::Relaxed));
+                    (ms, i + 1, (tx - 1) as u16)
+                })
+            })
+            .collect();
+        if live.is_empty() {
+            return String::new();
+        }
+        live.sort_by_key(|&(ms, _, _)| std::cmp::Reverse(ms));
+        let named: Vec<String> = live
+            .iter()
+            .take(3)
+            .map(|(ms, client, tx)| {
+                let name = self.names.get(tx).map_or("?", String::as_str);
+                if self.slots.len() == 1 {
+                    format!("{name} for {}", fmt_elapsed(*ms))
+                } else {
+                    format!("{name} (c{client}, {})", fmt_elapsed(*ms))
+                }
+            })
+            .collect();
+        let mut out = format!("running {}", named.join(", "));
+        if live.len() > 3 {
+            out.push_str(&format!(", +{}", live.len() - 3));
+        }
+        out
+    }
+}
+
+// An elapsed time for the in-flight list: "42 s", "12m 03s", "1h 02m".
+fn fmt_elapsed(ms: u64) -> String {
+    let s = ms / 1000;
+    if s < 60 {
+        format!("{s} s")
+    } else if s < 3600 {
+        format!("{}m {:02}s", s / 60, s % 60)
+    } else {
+        format!("{}h {:02}m", s / 3600, s % 3600 / 60)
+    }
+}
+
+/// What the workload monitor follows: the window of a timed run, in
+/// seconds, or the stream progress of a `--once` run.
+pub enum Window {
+    Timed(u64),
+    Stream(Arc<StreamProgress>),
+}
+
 // Create the workload bar and a background ticker that drives it. On a TTY the
-// ticker advances the determinate bar and refreshes the suffix with live
-// throughput/latency computed over a ~1s rolling window. On a non-TTY the bar
-// is hidden, and instead the ticker emits a pgbench-style `progress:` line every
-// `progress_s` seconds (suppressed entirely when progress_s is 0). The caller
-// flips `stop` once the clients are done, then joins the handle and calls
-// finish_run_bar on the returned bar.
+// ticker advances the determinate bar and refreshes the suffix: the live
+// throughput/latency over a ~1s rolling window of a timed run, the in-flight
+// transactions of a stream run (whose bar counts transactions, not seconds).
+// On a non-TTY the bar is hidden, and instead the ticker emits a
+// pgbench-style `progress:` line every `progress_s` seconds (suppressed
+// entirely when progress_s is 0). The caller flips `stop` once the clients are
+// done, then joins the handle and calls finish_run_bar on the returned bar.
 /// How the live rate is displayed: the spec's throughput unit label and the
 /// per-second factor that turns commits/s into it (60 for a per-minute unit).
 pub struct RateUnit {
@@ -180,7 +337,7 @@ pub struct RateUnit {
 }
 
 pub fn spawn_workload_monitor(
-    total_s: Option<u64>,
+    window: Window,
     start: Instant,
     live_commits: Arc<AtomicU64>,
     live_latency_us: Arc<AtomicU64>,
@@ -188,10 +345,19 @@ pub fn spawn_workload_monitor(
     progress_s: u16,
     rate: RateUnit,
 ) -> (ProgressBar, JoinHandle<()>) {
-    let bar = run_bar(total_s);
-    let pb = bar.clone();
     let tty = is_tty();
     let quiet = is_quiet();
+    let (bar, stream) = match window {
+        Window::Timed(total_s) => (run_bar(total_s), None),
+        Window::Stream(stream) => {
+            let bar = stream.bar.clone();
+            if tty && !quiet {
+                bar.set_draw_target(ProgressDrawTarget::stderr());
+            }
+            (bar, Some(stream))
+        }
+    };
+    let pb = bar.clone();
     let handle = thread::spawn(move || {
         // Rolling window of (elapsed_s, commits, latency_us) samples spanning ~1s,
         // used to derive an instantaneous rate that isn't dominated by startup.
@@ -204,6 +370,23 @@ pub fn spawn_workload_monitor(
             }
 
             let elapsed = start.elapsed().as_secs_f64();
+            if let Some(stream) = &stream {
+                if tty && !quiet {
+                    pb.set_position(stream.done());
+                    pb.set_message(stream.running());
+                } else if !quiet && progress_s > 0 && elapsed >= next_progress {
+                    eprintln!(
+                        "progress: {:.1} s, {}/{} done, {}",
+                        elapsed,
+                        stream.done(),
+                        stream.total(),
+                        stream.running()
+                    );
+                    next_progress += progress_s as f64;
+                }
+                sleep(Duration::from_millis(120));
+                continue;
+            }
             let commits = live_commits.load(Ordering::Relaxed);
             let latency_us = live_latency_us.load(Ordering::Relaxed);
             window.push_back((elapsed, commits, latency_us));
@@ -223,10 +406,7 @@ pub fn spawn_workload_monitor(
             };
 
             if tty {
-                match total_s {
-                    Some(total_s) => pb.set_position(elapsed.min(total_s as f64) as u64),
-                    None => pb.tick(),
-                }
+                pb.set_position(elapsed as u64);
                 pb.set_message(format!(
                     "{} {} · lat {:.2} ms",
                     fmt_int(rate_now.round() as u64),
@@ -399,6 +579,58 @@ mod tests {
         assert_eq!(fmt_int(42), "42");
         assert_eq!(fmt_int(1234), "1 234");
         assert_eq!(fmt_int(1234567), "1 234 567");
+    }
+
+    fn tx(id: u16, weight: u16) -> BenchmarkTransaction {
+        BenchmarkTransaction {
+            id,
+            name: format!("Q{id}"),
+            weight,
+        }
+    }
+
+    // The stream view counts the eligible transactions of every client, and
+    // names what is in flight, the longest-running first, three at most.
+    #[test]
+    fn stream_progress_counts_and_names_the_transactions_in_flight() {
+        set_quiet(true);
+        let stream = StreamProgress::new(&[tx(1, 1), tx(2, 0), tx(3, 1)], 5);
+        assert_eq!(stream.total(), 10);
+        assert_eq!(stream.running(), "");
+        stream.begin(2, 3);
+        sleep(Duration::from_millis(5));
+        for client in [1, 3, 4, 5] {
+            stream.begin(client, 1);
+        }
+        let running = stream.running();
+        assert!(
+            running.starts_with("running Q3 (c2, 0 s), Q1 ("),
+            "{running}"
+        );
+        assert!(running.ends_with(", +2"), "{running}");
+        stream.finished(2, 3, Ok(1_500_000));
+        stream.finished(4, 1, Err("boom"));
+        assert_eq!(stream.done(), 2);
+        assert!(!stream.running().contains("c2"), "{}", stream.running());
+
+        let one = StreamProgress::new(&[tx(1, 1)], 1);
+        one.begin(1, 1);
+        assert!(
+            one.running().starts_with("running Q1 for "),
+            "{}",
+            one.running()
+        );
+        // An unknown client id is ignored rather than indexed.
+        one.begin(0, 1);
+        one.begin(7, 1);
+        set_quiet(false);
+    }
+
+    #[test]
+    fn fmt_elapsed_switches_units() {
+        assert_eq!(fmt_elapsed(42_000), "42 s");
+        assert_eq!(fmt_elapsed(723_000), "12m 03s");
+        assert_eq!(fmt_elapsed(3_720_000), "1h 02m");
     }
 
     #[test]

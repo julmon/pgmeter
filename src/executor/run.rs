@@ -146,6 +146,8 @@ struct ClientTask {
     interrupted: Arc<AtomicBool>,
     duration_ms: u64,
     once: bool,
+    /// The live view of a `--once` run, fed by the client; None for a timed run.
+    stream: Option<Arc<terminal::StreamProgress>>,
 }
 
 /// One client of the async engine: connect, then run transactions until the
@@ -161,6 +163,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         interrupted,
         duration_ms,
         once,
+        stream,
     } = task;
 
     let (client, connection) = match tokio_postgres::connect(&dsn, tls).await {
@@ -188,11 +191,17 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
     let duration_limit = (!once).then_some(duration_ms as u128);
 
     while let Some(transaction) = picker.next(&mut rng) {
+        if let Some(stream) = &stream {
+            stream.begin(client_id, transaction.id);
+        }
         match benchmark
             .execute_simple_transaction_async(&client, transaction)
             .await
         {
             Ok(duration) => {
+                if let Some(stream) = &stream {
+                    stream.finished(client_id, transaction.id, Ok(duration));
+                }
                 let _ = tx.send(TXMessage::committed(
                     transaction.id,
                     client_id as u32,
@@ -200,11 +209,11 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
                 ));
             }
             Err(error) => {
-                let _ = tx.send(TXMessage::error(
-                    transaction.id,
-                    client_id as u32,
-                    error.to_string(),
-                ));
+                let message = error.to_string();
+                if let Some(stream) = &stream {
+                    stream.finished(client_id, transaction.id, Err(&message));
+                }
+                let _ = tx.send(TXMessage::error(transaction.id, client_id as u32, message));
             }
         }
 
@@ -319,6 +328,16 @@ impl Executor {
             max_id
         };
 
+        // The live view of a `--once` run: how many of the planned
+        // transactions are done, what each client is running, and one line
+        // per completion.
+        let stream = args.once.then(|| {
+            Arc::new(terminal::StreamProgress::new(
+                &benchmark_client.get_transactions_rw(),
+                args.client,
+            ))
+        });
+
         // Start the data collector only now that everything that can fail
         // before the clients start has succeeded.
         let dc_tx_counters = tx_counters.clone();
@@ -366,6 +385,7 @@ impl Executor {
                 Arc::clone(&live_latency_us),
                 args.progress,
                 Arc::clone(&interrupted),
+                stream.clone(),
             ),
             Engine::Async { threads } => self.run_benchmark_async(
                 threads,
@@ -382,6 +402,7 @@ impl Executor {
                 Arc::clone(&live_latency_us),
                 args.progress,
                 Arc::clone(&interrupted),
+                stream.clone(),
             ),
         };
 
@@ -472,7 +493,15 @@ impl Executor {
         eprintln!("  clients:  {}", args.client);
         eprintln!("  engine:   {}", engine.describe());
         if args.once {
-            eprintln!("  mode:     every transaction once per client (--once)");
+            let eligible = self
+                .get_benchmark(0, 0, 0)
+                .get_transactions_rw()
+                .iter()
+                .filter(|t| t.weight > 0)
+                .count();
+            eprintln!(
+                "  mode:     every transaction once per client (--once), {eligible} per client"
+            );
         } else {
             eprintln!("  duration: {} s", args.time);
         }
@@ -505,6 +534,7 @@ impl Executor {
         live_latency_us: Arc<AtomicU64>,
         progress: u16,
         interrupted: Arc<AtomicBool>,
+        stream: Option<Arc<terminal::StreamProgress>>,
     ) -> Result<(), Error> {
         let mut client_threads: Vec<JoinHandle<Result<(), Error>>> =
             Vec::with_capacity(n_clients as usize);
@@ -529,6 +559,7 @@ impl Executor {
             let tx_clone = tx.clone();
             let abort = Arc::clone(&abort);
             let interrupted = Arc::clone(&interrupted);
+            let stream = stream.clone();
 
             let handle = thread::spawn(move || -> Result<(), Error> {
                 let setup = (|| {
@@ -557,19 +588,25 @@ impl Executor {
                 let duration_limit = (!once).then_some(duration_ms as u128);
 
                 while let Some(transaction) = picker.next(&mut rng) {
+                    if let Some(stream) = &stream {
+                        stream.begin(client_id, transaction.id);
+                    }
                     // Execute the transaction
                     match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
                         Ok(duration) => {
+                            if let Some(stream) = &stream {
+                                stream.finished(client_id, transaction.id, Ok(duration));
+                            }
                             let m =
                                 TXMessage::committed(transaction.id, client_id as u32, duration);
                             let _ = tx_clone.send(m);
                         }
                         Err(error) => {
-                            let m = TXMessage::error(
-                                transaction.id,
-                                client_id as u32,
-                                error.to_string(),
-                            );
+                            let message = error.to_string();
+                            if let Some(stream) = &stream {
+                                stream.finished(client_id, transaction.id, Err(&message));
+                            }
+                            let m = TXMessage::error(transaction.id, client_id as u32, message);
                             let _ = tx_clone.send(m);
                         }
                     }
@@ -591,7 +628,10 @@ impl Executor {
 
         let start2 = Instant::now();
         let monitor = self.spawn_monitor(
-            (!once).then_some(time_ms / 1000),
+            match stream {
+                Some(stream) => terminal::Window::Stream(stream),
+                None => terminal::Window::Timed(time_ms / 1000),
+            },
             start2,
             live_commits,
             live_latency_us,
@@ -642,6 +682,7 @@ impl Executor {
         live_latency_us: Arc<AtomicU64>,
         progress: u16,
         interrupted: Arc<AtomicBool>,
+        stream: Option<Arc<terminal::StreamProgress>>,
     ) -> Result<(), Error> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(threads)
@@ -676,6 +717,7 @@ impl Executor {
                     interrupted: Arc::clone(&interrupted),
                     duration_ms,
                     once,
+                    stream: stream.clone(),
                 })));
             }
             tasks
@@ -685,7 +727,10 @@ impl Executor {
 
         let start2 = Instant::now();
         let monitor = self.spawn_monitor(
-            (!once).then_some(time_ms / 1000),
+            match stream {
+                Some(stream) => terminal::Window::Stream(stream),
+                None => terminal::Window::Timed(time_ms / 1000),
+            },
             start2,
             live_commits,
             live_latency_us,
@@ -727,7 +772,7 @@ impl Executor {
     /// over the post-rampup workload window, fed by the live counters.
     fn spawn_monitor(
         &self,
-        total_s: Option<u64>,
+        window: terminal::Window,
         start2: Instant,
         live_commits: Arc<AtomicU64>,
         live_latency_us: Arc<AtomicU64>,
@@ -735,7 +780,7 @@ impl Executor {
     ) -> WorkloadMonitor {
         let stop = Arc::new(AtomicBool::new(false));
         let (bar, handle) = terminal::spawn_workload_monitor(
-            total_s,
+            window,
             start2,
             live_commits,
             live_latency_us,
@@ -794,6 +839,7 @@ impl Executor {
             // Track start time for timestamp generation
             let start_time = Utc::now().timestamp();
             let start_instant = Instant::now();
+            let mut last_flush = Instant::now();
 
             // Wait for messages from the clients. A closed channel means the
             // run was abandoned before Terminate could be sent (every sender
@@ -894,6 +940,13 @@ impl Executor {
                         ramping_up = false;
                         rampup_end_ts = Some(start_time + start_instant.elapsed().as_secs() as i64);
                     }
+                }
+                // Flushed at least every second, so the logs can be tailed
+                // while the run goes.
+                if last_flush.elapsed() >= Duration::from_secs(1) {
+                    let _ = log_file.flush();
+                    let _ = error_file.flush();
+                    last_flush = Instant::now();
                 }
             }
             // Flush buffers before sending counters
