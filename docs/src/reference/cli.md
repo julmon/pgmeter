@@ -42,6 +42,7 @@ keys and indexes, vacuums and checkpoints. See
 | `-j, --jobs <NUM>` | 1 | Parallel loader connections |
 | `--no-fkey` | off | Skip foreign-key creation |
 | `--post-create-table <FILE>` | none | SQL file run after the tables are created |
+| `--seed <NUM>` | none | Seed of the data generators: the same seed and scale factor load the same data, whatever `-j` |
 | `-q, --quiet` | off | No progress output |
 
 ## `run`

@@ -841,3 +841,82 @@ transactions:
         );
     }
 }
+
+/// `init --seed` loads the same rows for the same seed and scale factor,
+/// whatever the number of jobs, and other rows for another seed.
+#[test]
+fn seeded_loads_are_reproducible_whatever_the_jobs() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let tmp = workdir("seed");
+    let cwd = tmp.path().to_path_buf();
+    let spec_dir = cwd.join("spec");
+    fs::create_dir_all(&spec_dir).unwrap();
+    fs::write(
+        spec_dir.join("spec.yaml"),
+        r#"
+name: e2e-seed
+scaling:
+  unit: unit
+  max_id_query: "SELECT max(unit) FROM e2e_draws"
+schema:
+  tables:
+    - name: e2e_draws
+      columns:
+        - { name: unit, type: "INTEGER NOT NULL" }
+        - { name: n, type: "INTEGER NOT NULL" }
+        - { name: i, type: "BIGINT NOT NULL" }
+        - { name: f, type: "DOUBLE PRECISION NOT NULL" }
+        - { name: s, type: "TEXT NOT NULL" }
+      primary_key: [unit, n]
+load_script: load.lua
+transactions:
+  - id: 1
+    name: noop
+    weight: 1
+    sql: "SELECT 1"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        spec_dir.join("load.lua"),
+        r#"
+for _, unit in ipairs(ids) do
+    local strings = rand_strings(50, 3, 8)
+    copy_start("COPY e2e_draws FROM stdin")
+    for n = 1, 50 do
+        copy_write(string.format("%d\t%d\t%d\t%.17g\t%s\n", unit, n,
+            rand_int(1, 1000000000), rand_float(0.0, 1.0), strings[n]))
+    end
+    copy_end()
+end
+"#,
+    )
+    .unwrap();
+    let spec = spec_dir.to_str().unwrap();
+
+    let dsn = std::env::var("PGMETER_TEST_DSN").unwrap();
+    let mut db = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+    let mut load = |label: &str, args: &[&str]| -> String {
+        let mut argv = vec!["init", "--spec", spec, "-s", "4"];
+        argv.extend_from_slice(args);
+        assert_success(&pgmeter(&env, &cwd, &argv), label);
+        db.query_one(
+            "SELECT md5(string_agg(i::text || ' ' || f::text || ' ' || s, ',' ORDER BY unit, n)) \
+             FROM e2e_draws",
+            &[],
+        )
+        .unwrap()
+        .get(0)
+    };
+    let one_job = load("init --seed 7 -j 1", &["--seed", "7", "-j", "1"]);
+    let three_jobs = load("init --seed 7 -j 3", &["--seed", "7", "-j", "3"]);
+    assert_eq!(
+        one_job, three_jobs,
+        "the same seed must load the same rows whatever -j"
+    );
+    let other_seed = load("init --seed 8 -j 3", &["--seed", "8", "-j", "3"]);
+    assert_ne!(one_job, other_seed, "another seed must load other rows");
+}

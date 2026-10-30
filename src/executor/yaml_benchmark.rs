@@ -718,7 +718,10 @@ impl YamlBenchmark {
         Ok(start.elapsed().as_micros())
     }
 
-    pub fn pre_load_data(&self, client: &mut Client) -> Result<u128, Error> {
+    pub fn pre_load_data(&self, client: &mut Client, seed: Option<u64>) -> Result<u128, Error> {
+        if let Some(seed) = seed {
+            yaml_lua::reseed_rng(yaml_lua::unit_seed(seed, 0));
+        }
         match &self.pre_load_script {
             Some(script) => yaml_lua::execute_load_script(
                 client,
@@ -732,23 +735,37 @@ impl YamlBenchmark {
         }
     }
 
-    pub fn load_data(&self, client: &mut Client, ids: Vec<u32>) -> Result<u128, Error> {
+    /// Load the given scale units, one at a time: with a seed, each unit's
+    /// generator is seeded from (seed, unit) just before it loads, so the data
+    /// depends only on the seed and the scale factor, not on the number of
+    /// jobs or on which job got which unit.
+    pub fn load_data(
+        &self,
+        client: &mut Client,
+        ids: Vec<u32>,
+        seed: Option<u64>,
+    ) -> Result<u128, Error> {
         let start = Instant::now();
 
-        // If a load_script is defined, use it (Lua-based loading)
-        if let Some(ref script) = self.load_script_src {
-            yaml_lua::execute_load_script(
-                client,
-                script,
-                self.scalefactor,
-                &self.spec.scaling.constants,
-                &self.lua_modules,
-                &ids,
-            )?;
-        } else {
-            // Otherwise use template-based COPY loading
-            for load_spec in &self.spec.load {
-                self.execute_load(client, load_spec, &ids)?;
+        for &id in &ids {
+            if let Some(seed) = seed {
+                yaml_lua::reseed_rng(yaml_lua::unit_seed(seed, id));
+            }
+            // If a load_script is defined, use it (Lua-based loading)
+            if let Some(ref script) = self.load_script_src {
+                yaml_lua::execute_load_script(
+                    client,
+                    script,
+                    self.scalefactor,
+                    &self.spec.scaling.constants,
+                    &self.lua_modules,
+                    &[id],
+                )?;
+            } else {
+                // Otherwise use template-based COPY loading
+                for load_spec in &self.spec.load {
+                    self.execute_load(client, load_spec, &[id])?;
+                }
             }
         }
 

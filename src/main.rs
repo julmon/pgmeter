@@ -62,7 +62,7 @@ fn run() -> Result<(), Error> {
             Executor::new(dsn, env.sslmode, spec_file)?
                 .init_db_schema()?
                 .exec_post_create_table_script(init.post_create_table)?
-                .load_data(init.scalefactor, init.jobs)?
+                .load_data(init.scalefactor, init.jobs, init.seed)?
                 .add_primary_keys(init.jobs)?
                 .add_foreign_keys(init.jobs, init.no_fkey)?
                 .add_indexes(init.jobs)?

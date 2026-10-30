@@ -82,10 +82,10 @@ load_script: lua/load_per_unit.lua                # runs per parallel job
   partitioned by unit id (e.g. the PGM-C `item` table, PGM-H `region`/`nation`).
   It has the full DB API but `ids` is empty.
 
-- **`load_script`** runs once per parallel job. The global `ids` is the array of
-  unit ids assigned to *that* job (the engine round-robins the `1..scalefactor`
-  ids across `-j` jobs). Your script loops over `ids` and loads each unit's data,
-  typically via the `copy_*` streaming API:
+- **`load_script`** runs once per unit id, on the job that unit is assigned
+  to (the engine round-robins the `1..scalefactor` ids across `-j` jobs). The
+  global `ids` is an array holding that unit id, so a script loops over `ids`
+  and loads each unit's data, typically via the `copy_*` streaming API:
 
 ```lua
 for _, id in ipairs(ids) do
@@ -101,9 +101,11 @@ Both scripts have `scalefactor`, `const.*`, and the full Lua API (random, SQL,
 and COPY helpers). `min_id`/`max_id` are **not** injected into loaders: iterate
 `ids` instead.
 
-> **Parallelism caveat:** because each job only sees its slice of `ids`, a
-> `load_script` must compute any global offsets from the `id` value itself (as
-> above with `(id - 1) * N + i`), never from a running counter. If a table is
-> *not* partitioned by unit (a single shared table), load it from
-> `pre_load_script`, or guard it with `if id == 1 then ... end` inside
-> `load_script` so only one job creates it.
+> **Parallelism caveat:** because each call sees one unit and the jobs run
+> concurrently, a `load_script` must compute any global offsets from the `id`
+> value itself (as above with `(id - 1) * N + i`), never from a running
+> counter. If a table is *not* partitioned by unit (a single shared table),
+> load it from `pre_load_script`, or guard it with `if id == 1 then ... end`
+> inside `load_script` so only one job creates it. Loaders that draw every
+> value with the `rand_*` functions are reproducible with `init --seed`, which
+> reseeds the generator per unit.

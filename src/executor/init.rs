@@ -64,7 +64,12 @@ impl Executor {
     }
 
     // Generate benchmark data
-    pub fn load_data(&mut self, scalefactor: u32, n_jobs: u32) -> Result<&mut Self, Error> {
+    pub fn load_data(
+        &mut self,
+        scalefactor: u32,
+        n_jobs: u32,
+        seed: Option<u64>,
+    ) -> Result<&mut Self, Error> {
         // Load the corresponding benchmark client
         let benchmark_client = self.get_benchmark(scalefactor, 0, 0);
 
@@ -77,7 +82,7 @@ impl Executor {
         let mut client = self.connect()?;
 
         // Execute PreLoadData
-        let duration_us = benchmark_client.pre_load_data(&mut client)?;
+        let duration_us = benchmark_client.pre_load_data(&mut client, seed)?;
         let duration_ms = duration_us as f64 / 1000_f64;
 
         terminal::done_msg(duration_ms);
@@ -116,7 +121,7 @@ impl Executor {
             let job = thread::spawn(move || -> Result<(), Error> {
                 // New database connection
                 let mut job_client = Client::connect(&dsn, tls)?;
-                job_benchmark_client.load_data(&mut job_client, job_ids)?;
+                job_benchmark_client.load_data(&mut job_client, job_ids, seed)?;
                 Ok(())
             });
 

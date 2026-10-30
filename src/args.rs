@@ -88,6 +88,8 @@ pub struct InitArgs {
     pub no_fkey: bool,
     // Path to SQL script to execute after table creation
     pub post_create_table: Option<String>,
+    // Seed of the data generators; None draws fresh data every time
+    pub seed: Option<u64>,
 }
 
 // CLI arguments
@@ -143,6 +145,7 @@ impl InitArgs {
             jobs: 0,
             no_fkey: false,
             post_create_table: None,
+            seed: None,
         }
     }
 }
@@ -346,6 +349,18 @@ impl CliArgs {
             .required(false)
             .value_name("FILE");
 
+        // init: Define the --seed command line option
+        let seed_option = Arg::new("seed")
+            .long("seed")
+            .action(ArgAction::Set)
+            .help(
+                "Seed of the data generators: the same seed and scale factor \
+                 load the same data, whatever --jobs",
+            )
+            .required(false)
+            .value_name("NUM")
+            .value_parser(clap::value_parser!(u64));
+
         // Define the --spec command line option, shared by init and run
         let spec_option = Arg::new("spec")
             .long("spec")
@@ -368,6 +383,7 @@ impl CliArgs {
             .arg(jobs_option)
             .arg(no_fkey_option)
             .arg(post_create_table_option)
+            .arg(seed_option)
             .arg(quiet_option.clone());
 
         // run --spec <FILE> <OPTIONS>
@@ -458,12 +474,14 @@ impl CliArgs {
             let jobs = *bm_m.get_one::<u32>("jobs").unwrap();
             let no_fkey = bm_m.get_flag("no_fkey");
             let post_create_table = bm_m.get_one::<String>("post_create_table").cloned();
+            let seed = bm_m.get_one::<u64>("seed").copied();
 
             InitArgs {
                 scalefactor,
                 jobs,
                 no_fkey,
                 post_create_table,
+                seed,
             }
         }
 

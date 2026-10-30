@@ -45,8 +45,9 @@ thread_local! {
     static COPY_WRITER: RefCell<CopyWriterHolder> = const { RefCell::new(CopyWriterHolder(None)) };
 
     /// Thread-local non-cryptographic RNG for data generation. Seeded once per
-    /// thread from the OS, then reused across the millions of rand_int/rand_float
-    /// calls a load script makes. Avoids rand::rng()'s per-call handle
+    /// thread from the OS (or per unit from `init --seed`, see `reseed_rng`),
+    /// then reused across the millions of rand_int/rand_float calls a load
+    /// script makes. Avoids rand::rng()'s per-call handle
     /// clone + reseed check and its crypto-grade ChaCha generator, neither of
     /// which we need for synthetic benchmark data.
     static FAST_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_os_rng());
@@ -58,6 +59,18 @@ where
     F: FnOnce(&mut SmallRng) -> R,
 {
     FAST_RNG.with(|cell| f(&mut cell.borrow_mut()))
+}
+
+/// Reseed this thread's RNG, so that a load reproduces the same data for the
+/// same seed (`init --seed`).
+pub fn reseed_rng(seed: u64) {
+    FAST_RNG.with(|cell| *cell.borrow_mut() = SmallRng::seed_from_u64(seed));
+}
+
+/// The seed of one scale unit's data: the user's seed and the unit id, spread
+/// so that neighbouring units do not share generator state.
+pub fn unit_seed(seed: u64, unit: u32) -> u64 {
+    seed.wrapping_add((unit as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
 }
 
 /// Binds `client` to this thread's Lua bridge for as long as the guard lives.
@@ -1271,6 +1284,23 @@ mod tests {
         assert!(v.iter().all(|s| (2..=5).contains(&s.len())));
         let fixed: String = lua.load("return rand_string(8, 2)").eval().unwrap();
         assert_eq!(fixed.len(), 2, "empty range falls back to max_len");
+    }
+
+    #[test]
+    fn reseeding_reproduces_the_draws() {
+        let lua = create_lua_vm().unwrap();
+        let draw = |seed: u64| -> (i64, f64, String) {
+            reseed_rng(seed);
+            lua.load(
+                "return rand_int(1, 1000000000), rand_float(0.0, 1.0), rand_strings(3, 4, 8)[2]",
+            )
+            .eval()
+            .unwrap()
+        };
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(42), draw(43));
+        assert_ne!(unit_seed(7, 1), unit_seed(7, 2));
+        assert_ne!(unit_seed(7, 1), unit_seed(8, 1));
     }
 
     #[test]

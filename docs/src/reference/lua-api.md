@@ -26,7 +26,7 @@
 | `min_id`, `max_id` | yes | no |
 | `scalefactor` | `0` (unused at run time) | yes |
 | `const` (table) | yes | yes |
-| `ids` (array) | no | yes (per-job slice) |
+| `ids` (array) | no | yes (the unit being loaded) |
 
 Plus the standard Luau library (`string`, `table`, `math`, `tostring`,
 `ipairs`, ...). The engine uses **Luau** (via the `mlua` crate), so Luau
