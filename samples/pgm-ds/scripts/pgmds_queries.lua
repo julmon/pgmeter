@@ -702,7 +702,7 @@ SELECT i_item_id, i_item_desc, i_category, i_class, i_current_price,
  ORDER BY i_category, i_class, i_item_id, i_item_desc, revenueratio LIMIT 100]], pick_n(CATEGORIES, 3), d, d))
 end
 
--- Q21: inventory of mid-priced items 30 days before and after a date, by warehouse and item.
+-- Q21: inventory of items in a price band 30 days before and after a date, by warehouse and item.
 Q[21] = function()
     -- The template's dates run from January 31 to July 1; inventory snapshots
     -- end in June 2000, so later dates would have nothing after them.
@@ -2400,7 +2400,7 @@ SELECT count(DISTINCT ws_order_number) AS "order count", sum(ws_ext_ship_cost) A
  ORDER BY count(DISTINCT ws_order_number) LIMIT 100]], d, d, pick(STATES), "pri"))
 end
 
--- Q95: web orders over 60 days with a second order of the same customer shipped from another warehouse, and returned.
+-- Q95: web orders over 60 days shipped from more than one warehouse and returned, for a site company.
 Q[95] = function()
     local d = first_of_month()
     run(string.format([[
@@ -2420,7 +2420,7 @@ SELECT count(DISTINCT ws_order_number) AS "order count", sum(ws_ext_ship_cost) A
  ORDER BY count(DISTINCT ws_order_number) LIMIT 100]], d, d, pick(STATES), "pri"))
 end
 
--- Q96: store sales at one hour of the evening for a household profile.
+-- Q96: store sales in one half hour for a household profile.
 Q[96] = function()
     run(string.format([[
 SELECT count(*)
