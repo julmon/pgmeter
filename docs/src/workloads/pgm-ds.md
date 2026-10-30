@@ -39,10 +39,12 @@ Scale factor 1 is about 2.4 GB with indexes and loads in a few minutes;
 start there. At scale factor 1 there is a single unit, so the fact tables
 load on one connection; `-j` still parallelizes the keys, the indexes and
 the vacuum.
-Primary keys on every table, the 73 foreign keys of the snowflake (skipped
-with `--no-fkey`), and secondary indexes on the fact tables' date and
-customer keys and on the item attributes the queries filter on, rather than
-one per foreign key.
+Primary keys on every table, the 106 foreign keys of the TPC-DS referential
+graph (skipped with `--no-fkey`), and secondary indexes chosen for the
+queries rather than one per foreign key: the sales tables' sold-date keys,
+`store_sales`' customer and store keys, `store_returns`' customer and
+returned-date keys, `inventory`'s item key, `customer`'s address key, and
+the item attributes the queries filter on.
 
 ## The queries
 
@@ -74,14 +76,14 @@ instead. Everything else is the template's shape.
 With `--once` each client runs the 99 queries once in its own random order,
 which is TPC-DS's stream model: one client is a power test, several clients
 are a throughput test. Without it the run is a continuous random stream with
-equal weights, for as long as `-T` says. A few queries (q4, q11, q14, q23,
-q64, q67, q74, q75, q78, q95) take far longer than the rest on PostgreSQL;
+equal weights, for as long as `-T` says. A few queries (q95, q14, q10, q4,
+q39, q22, q23, q67, q74, q11) take far longer than the rest on PostgreSQL;
 they count once per stream like the others.
 
 The spec reports a stream: the elapsed time, the geometric mean of the
 query times and where the time went, query by query, with a timeline per
 client in the HTML report. In one single-stream run at scale factor 1 on a
-test machine, Q14 alone took about a quarter of the time.
+test machine, q95 and q14 together took more than a quarter of the time.
 
 ## Deviations from TPC-DS
 
@@ -94,4 +96,4 @@ test machine, Q14 alone took about a quarter of the time.
   generator's are skewed.
 - Q4, Q11, Q74, Q1, Q6, Q30 and Q81 are restructured as described above.
 - The headline figure is a plain rate over the queries executed, not the
-  QphDS composite.
+  QphDS composite, which only an audited run may report.
