@@ -70,6 +70,13 @@ end
 -- the rounded unit values, so every row adds up exactly as printed (q28, q32
 -- and q92 compare these columns against averages).
 local function cents(x) return math.floor(x * 100 + 0.5) / 100 end
+-- The fact rows keep their money in integer cents and print them as
+-- %d.%02d pairs: glibc's %.2f was half the CPU of a load. Only the net
+-- profit can be negative; money() prints it with its sign.
+local function money(m)
+    if m < 0 then return string.format("-%d.%02d", (-m) // 100, (-m) % 100) end
+    return string.format("%d.%02d", m // 100, m % 100)
+end
 
 local function pick(t) return t[rand_int(1, #t)] end
 
@@ -497,25 +504,30 @@ do
             repeat item = rand_int(1, N_ITEM) until not seen[item]
             seen[item] = true
             local q = rand_int(1, 100)
-            local wc = cents(rand_float(1.0, 100.0))
-            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
-            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
+            local wc = rand_int(100, 10000)
+            local lp = wc + math.floor(wc * rand_float(0.0, 2.0) + 0.5)
+            local sp = math.max(1, math.floor(lp * (1.0 - rand_float(0.0, 1.0)) + 0.5))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
             local ext_disc = ext_list - ext_sales
-            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
+            local coupon = (rand_int(1, 10) <= 2) and math.floor(ext_sales * rand_float(0.0, 0.5) + 0.5) or 0
             local tax_rate = rand_float(0.0, 0.10)
             local net_paid = ext_sales - coupon
-            local ext_tax = cents(net_paid * tax_rate)
+            local ext_tax = math.floor(net_paid * tax_rate + 0.5)
             local net_paid_tax = net_paid + ext_tax
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%s\n",
                 sold_date, sold_time, item, cust, cdemo, hdemo, addr, store,
-                rand_int(1, N_PROMO), ticket, q, wc, lp, sp, ext_disc, ext_sales,
-                ext_wholesale, ext_list, ext_tax, coupon, net_paid, net_paid_tax, net_profit)
+                rand_int(1, N_PROMO), ticket, q,
+                wc // 100, wc % 100, lp // 100, lp % 100, sp // 100, sp % 100,
+                ext_disc // 100, ext_disc % 100, ext_sales // 100, ext_sales % 100,
+                ext_wholesale // 100, ext_wholesale % 100, ext_list // 100, ext_list % 100,
+                ext_tax // 100, ext_tax % 100, coupon // 100, coupon % 100,
+                net_paid // 100, net_paid % 100, net_paid_tax // 100, net_paid_tax % 100,
+                money(net_profit))
             rows = rows + 1
             if n >= BATCH then
                 flush_copy("COPY store_sales FROM stdin", buf, n); n = 0
@@ -523,19 +535,25 @@ do
             if rand_float(0.0, 1.0) < SR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = cents(r_amt * tax_rate)
-                local fee = cents(rand_float(0.0, 50.0))
-                local r_ship = cents(rand_float(0.0, 50.0))
+                local r_tax = math.floor(r_amt * tax_rate + 0.5)
+                local r_inc = r_amt + r_tax
+                local fee = rand_int(0, 5000)
+                local r_ship = rand_int(0, 5000)
+                local r_loss = r_inc + r_ship + fee
                 local f1 = rand_float(0.0, 1.0)
-                local cash = cents(r_amt * f1)
-                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
+                local cash = math.floor(r_amt * f1 + 0.5)
+                local reversed = math.min(math.floor(r_amt * rand_float(0.0, 1.0 - f1) + 0.5), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, cust, cdemo,
-                    hdemo, addr, store, rand_int(1, N_REASON), ticket, rq, r_amt, r_tax,
-                    r_amt + r_tax, fee, r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
+                    hdemo, addr, store, rand_int(1, N_REASON), ticket, rq,
+                    r_amt // 100, r_amt % 100, r_tax // 100, r_tax % 100,
+                    r_inc // 100, r_inc % 100, fee // 100, fee % 100,
+                    r_ship // 100, r_ship % 100, cash // 100, cash % 100,
+                    reversed // 100, reversed % 100, credit // 100, credit % 100,
+                    r_loss // 100, r_loss % 100)
                 if rn >= BATCH then
                     flush_copy("COPY store_returns FROM stdin", ret, rn); rn = 0
                 end
@@ -577,30 +595,36 @@ do
             -- for orders shipped from more than one).
             local warehouse = rand_int(1, N_WAREHOUSE)
             local q = rand_int(1, 100)
-            local wc = cents(rand_float(1.0, 100.0))
-            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
-            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
+            local wc = rand_int(100, 10000)
+            local lp = wc + math.floor(wc * rand_float(0.0, 2.0) + 0.5)
+            local sp = math.max(1, math.floor(lp * (1.0 - rand_float(0.0, 1.0)) + 0.5))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
             local ext_disc = ext_list - ext_sales
-            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
-            local ext_ship = cents(rand_float(1.0, 100.0))
+            local coupon = (rand_int(1, 10) <= 2) and math.floor(ext_sales * rand_float(0.0, 0.5) + 0.5) or 0
+            local ext_ship = rand_int(100, 10000)
             local tax_rate = rand_float(0.0, 0.10)
             local net_paid = ext_sales - coupon
-            local ext_tax = cents(net_paid * tax_rate)
+            local ext_tax = math.floor(net_paid * tax_rate + 0.5)
             local net_paid_tax = net_paid + ext_tax
             local net_paid_ship = net_paid + ext_ship
             local net_paid_ship_tax = net_paid_ship + ext_tax
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%s\n",
                 sold_date, sold_time, ship_date, bill_cust, bill_cdemo, bill_hdemo,
                 bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, call_center,
                 catalog_page, ship_mode, warehouse, item, rand_int(1, N_PROMO), order, q,
-                wc, lp, sp, ext_disc, ext_sales, ext_wholesale, ext_list, ext_tax, coupon,
-                ext_ship, net_paid, net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)
+                wc // 100, wc % 100, lp // 100, lp % 100, sp // 100, sp % 100,
+                ext_disc // 100, ext_disc % 100, ext_sales // 100, ext_sales % 100,
+                ext_wholesale // 100, ext_wholesale % 100, ext_list // 100, ext_list % 100,
+                ext_tax // 100, ext_tax % 100, coupon // 100, coupon % 100,
+                ext_ship // 100, ext_ship % 100, net_paid // 100, net_paid % 100,
+                net_paid_tax // 100, net_paid_tax % 100,
+                net_paid_ship // 100, net_paid_ship % 100,
+                net_paid_ship_tax // 100, net_paid_ship_tax % 100, money(net_profit))
             rows = rows + 1
             if n >= BATCH then
                 flush_copy("COPY catalog_sales FROM stdin", buf, n); n = 0
@@ -608,21 +632,27 @@ do
             if rand_float(0.0, 1.0) < CR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = cents(r_amt * tax_rate)
-                local fee = cents(rand_float(0.0, 50.0))
-                local r_ship = cents(rand_float(0.0, 50.0))
+                local r_tax = math.floor(r_amt * tax_rate + 0.5)
+                local r_inc = r_amt + r_tax
+                local fee = rand_int(0, 5000)
+                local r_ship = rand_int(0, 5000)
+                local r_loss = r_inc + r_ship + fee
                 local f1 = rand_float(0.0, 1.0)
-                local cash = cents(r_amt * f1)
-                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
+                local cash = math.floor(r_amt * f1 + 0.5)
+                local reversed = math.min(math.floor(r_amt * rand_float(0.0, 1.0 - f1) + 0.5), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
                     bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
                     ship_addr, call_center, catalog_page, ship_mode, warehouse,
-                    rand_int(1, N_REASON), order, rq, r_amt, r_tax, r_amt + r_tax, fee,
-                    r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
+                    rand_int(1, N_REASON), order, rq,
+                    r_amt // 100, r_amt % 100, r_tax // 100, r_tax % 100,
+                    r_inc // 100, r_inc % 100, fee // 100, fee % 100,
+                    r_ship // 100, r_ship % 100, cash // 100, cash % 100,
+                    reversed // 100, reversed % 100, credit // 100, credit % 100,
+                    r_loss // 100, r_loss % 100)
                 if rn >= BATCH then
                     flush_copy("COPY catalog_returns FROM stdin", ret, rn); rn = 0
                 end
@@ -662,30 +692,36 @@ do
             seen[item] = true
             local warehouse = rand_int(1, N_WAREHOUSE)
             local q = rand_int(1, 100)
-            local wc = cents(rand_float(1.0, 100.0))
-            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
-            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
+            local wc = rand_int(100, 10000)
+            local lp = wc + math.floor(wc * rand_float(0.0, 2.0) + 0.5)
+            local sp = math.max(1, math.floor(lp * (1.0 - rand_float(0.0, 1.0)) + 0.5))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
             local ext_disc = ext_list - ext_sales
-            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
-            local ext_ship = cents(rand_float(1.0, 100.0))
+            local coupon = (rand_int(1, 10) <= 2) and math.floor(ext_sales * rand_float(0.0, 0.5) + 0.5) or 0
+            local ext_ship = rand_int(100, 10000)
             local tax_rate = rand_float(0.0, 0.10)
             local net_paid = ext_sales - coupon
-            local ext_tax = cents(net_paid * tax_rate)
+            local ext_tax = math.floor(net_paid * tax_rate + 0.5)
             local net_paid_tax = net_paid + ext_tax
             local net_paid_ship = net_paid + ext_ship
             local net_paid_ship_tax = net_paid_ship + ext_tax
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
-                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%s\n",
                 sold_date, sold_time, ship_date, item, bill_cust, bill_cdemo, bill_hdemo,
                 bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, web_page, web_site,
-                ship_mode, warehouse, rand_int(1, N_PROMO), order, q, wc, lp, sp, ext_disc,
-                ext_sales, ext_wholesale, ext_list, ext_tax, coupon, ext_ship, net_paid,
-                net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)
+                ship_mode, warehouse, rand_int(1, N_PROMO), order, q,
+                wc // 100, wc % 100, lp // 100, lp % 100, sp // 100, sp % 100,
+                ext_disc // 100, ext_disc % 100, ext_sales // 100, ext_sales % 100,
+                ext_wholesale // 100, ext_wholesale % 100, ext_list // 100, ext_list % 100,
+                ext_tax // 100, ext_tax % 100, coupon // 100, coupon % 100,
+                ext_ship // 100, ext_ship % 100, net_paid // 100, net_paid % 100,
+                net_paid_tax // 100, net_paid_tax % 100,
+                net_paid_ship // 100, net_paid_ship % 100,
+                net_paid_ship_tax // 100, net_paid_ship_tax % 100, money(net_profit))
             rows = rows + 1
             if n >= BATCH then
                 flush_copy("COPY web_sales FROM stdin", buf, n); n = 0
@@ -693,20 +729,26 @@ do
             if rand_float(0.0, 1.0) < WR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = cents(r_amt * tax_rate)
-                local fee = cents(rand_float(0.0, 50.0))
-                local r_ship = cents(rand_float(0.0, 50.0))
+                local r_tax = math.floor(r_amt * tax_rate + 0.5)
+                local r_inc = r_amt + r_tax
+                local fee = rand_int(0, 5000)
+                local r_ship = rand_int(0, 5000)
+                local r_loss = r_inc + r_ship + fee
                 local f1 = rand_float(0.0, 1.0)
-                local cash = cents(r_amt * f1)
-                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
+                local cash = math.floor(r_amt * f1 + 0.5)
+                local reversed = math.min(math.floor(r_amt * rand_float(0.0, 1.0 - f1) + 0.5), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\t%d.%02d\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
                     bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
-                    ship_addr, web_page, rand_int(1, N_REASON), order, rq, r_amt, r_tax,
-                    r_amt + r_tax, fee, r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
+                    ship_addr, web_page, rand_int(1, N_REASON), order, rq,
+                    r_amt // 100, r_amt % 100, r_tax // 100, r_tax % 100,
+                    r_inc // 100, r_inc % 100, fee // 100, fee % 100,
+                    r_ship // 100, r_ship % 100, cash // 100, cash % 100,
+                    reversed // 100, reversed % 100, credit // 100, credit % 100,
+                    r_loss // 100, r_loss % 100)
                 if rn >= BATCH then
                     flush_copy("COPY web_returns FROM stdin", ret, rn); rn = 0
                 end
@@ -724,15 +766,17 @@ do
     local INV_WEEKS = 130
     local base = ymd_to_days(1998, 1, 1)
     local n = 0
+    -- The five warehouse rows of an item go through one format call.
     for w = 0, INV_WEEKS - 1 do
         local dsk = base + w * 7
         for item = item_off + 1, item_off + ITEM_PER do
-            for wh = 1, N_WAREHOUSE do
-                n = n + 1
-                buf[n] = string.format("%d\t%d\t%d\t%d\n", dsk, item, wh, rand_int(0, 1000))
-                if n >= BATCH then
-                    flush_copy("COPY inventory FROM stdin", buf, n); n = 0
-                end
+            n = n + 1
+            buf[n] = string.format(
+                "%d\t%d\t1\t%d\n%d\t%d\t2\t%d\n%d\t%d\t3\t%d\n%d\t%d\t4\t%d\n%d\t%d\t5\t%d\n",
+                dsk, item, rand_int(0, 1000), dsk, item, rand_int(0, 1000), dsk, item, rand_int(0, 1000),
+                dsk, item, rand_int(0, 1000), dsk, item, rand_int(0, 1000))
+            if n >= BATCH then
+                flush_copy("COPY inventory FROM stdin", buf, n); n = 0
             end
         end
     end
