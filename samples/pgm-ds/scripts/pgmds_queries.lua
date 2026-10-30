@@ -53,7 +53,7 @@ local function pick_n(t, n)
     local seen, out = {}, {}
     while #out < n and #out < #t do
         local v = pick(t)
-        if not seen[v] then seen[v] = true; out[#out + 1] = "'" .. v .. "'" end
+        if not seen[v] then seen[v] = true; out[#out + 1] = "'" .. (tostring(v):gsub("'", "''")) .. "'" end
     end
     return table.concat(out, ",")
 end
@@ -104,8 +104,26 @@ end
 local function cities(n)
     return pick_n(sample("city", "SELECT DISTINCT ca_city AS v FROM customer_address"), n)
 end
+-- The templates draw store cities, counties, states and GMT offsets from the
+-- stores (and q16's counties from the call centers): a list drawn from the
+-- customers would miss the twelve stores most of the time.
+local function store_cities(n)
+    return pick_n(sample("scity", "SELECT DISTINCT s_city AS v FROM store"), n)
+end
+local function store_counties(n)
+    return pick_n(sample("scounty", "SELECT DISTINCT s_county AS v FROM store"), n)
+end
+local function store_states(n)
+    return pick_n(sample("sstate", "SELECT DISTINCT s_state AS v FROM store"), n)
+end
 local function store_state()
     return pick(sample("sstate", "SELECT DISTINCT s_state AS v FROM store"))
+end
+local function store_gmt()
+    return pick(sample("sgmt", "SELECT DISTINCT s_gmt_offset::text AS v FROM store"))
+end
+local function call_center_counties(n)
+    return pick_n(sample("cccounty", "SELECT DISTINCT cc_county AS v FROM call_center"), n)
 end
 local function warehouse_state()
     return pick(sample("wstate", "SELECT DISTINCT w_state AS v FROM warehouse"))
@@ -508,8 +526,10 @@ SELECT channel, i_brand_id, i_class_id, i_category_id, sum(sales), sum(number_sa
         HAVING sum(ws_quantity * ws_list_price) > (SELECT average_sales FROM avg_sales)) y
  GROUP BY ROLLUP (channel, i_brand_id, i_class_id, i_category_id)
  ORDER BY channel, i_brand_id, i_class_id, i_category_id LIMIT 100]], y + 2, y + 2, y + 2))
-    -- Part b: the same week of this year and last year, store channel.
-    local ws = week_seq_of(y + 2, 12, rand_int(1, 28))
+    -- Part b: the week of a December day of the year after, and of the same
+    -- day one year earlier (52 or 53 weeks apart), store channel.
+    local day = rand_int(1, 28)
+    local ws_this, ws_last = week_seq_of(y + 1, 12, day), week_seq_of(y, 12, day)
     run("WITH " .. cross_items .. string.format([[
 
 SELECT this_year.channel ty_channel, this_year.i_brand_id ty_brand, this_year.i_class_id ty_class,
@@ -533,7 +553,7 @@ SELECT this_year.channel ty_channel, this_year.i_brand_id ty_brand, this_year.i_
  WHERE this_year.i_brand_id = last_year.i_brand_id AND this_year.i_class_id = last_year.i_class_id
    AND this_year.i_category_id = last_year.i_category_id
  ORDER BY this_year.channel, this_year.i_brand_id, this_year.i_class_id, this_year.i_category_id
- LIMIT 100]], ws, ws - 52))
+ LIMIT 100]], ws_this, ws_last))
 end
 
 -- Q15: catalog sales by customer zip for a quarter, for selected zip prefixes, states or large sales.
@@ -561,7 +581,7 @@ SELECT count(DISTINCT cs_order_number) AS order_count, sum(cs_ext_ship_cost) AS 
    AND EXISTS (SELECT * FROM catalog_sales cs2
                 WHERE cs1.cs_order_number = cs2.cs_order_number AND cs1.cs_warehouse_sk <> cs2.cs_warehouse_sk)
    AND NOT EXISTS (SELECT * FROM catalog_returns cr1 WHERE cs1.cs_order_number = cr1.cr_order_number)
- ORDER BY count(DISTINCT cs_order_number) LIMIT 100]], d, d, pick(STATES), counties(5)))
+ ORDER BY count(DISTINCT cs_order_number) LIMIT 100]], d, d, pick(STATES), call_center_counties(5)))
 end
 
 -- Q17: quantities of store sales, their returns and the catalog re-purchases, by item and state.
@@ -576,7 +596,7 @@ SELECT i_item_id, i_item_desc, s_state,
        stddev_samp(sr_return_quantity) AS store_returns_quantitystdev,
        stddev_samp(sr_return_quantity) / avg(sr_return_quantity) AS store_returns_quantitycov,
        count(cs_quantity) AS catalog_sales_quantitycount, avg(cs_quantity) AS catalog_sales_quantityave,
-       stddev_samp(cs_quantity) / avg(cs_quantity) AS catalog_sales_quantitystdev,
+       stddev_samp(cs_quantity) AS catalog_sales_quantitystdev,
        stddev_samp(cs_quantity) / avg(cs_quantity) AS catalog_sales_quantitycov
   FROM store_sales, store_returns, catalog_sales, date_dim d1, date_dim d2, date_dim d3, store, item
  WHERE d1.d_quarter_name = '%dQ1' AND d1.d_date_sk = ss_sold_date_sk
@@ -638,21 +658,22 @@ end
 
 -- Q21: inventory of mid-priced items 30 days before and after a date, by warehouse and item.
 Q[21] = function()
-    local y, m = rand_int(1998, 2000), rand_int(2, 11)
+    -- The template's dates run from January 31 to July 1; inventory snapshots
+    -- end in June 2000, so later dates would have nothing after them.
+    local y, m = rand_int(1998, 2000), rand_int(2, 6)
     local d = string.format("%04d-%02d-%02d", y, m, rand_int(1, 28))
-    local p = rand_float(0.99, 1.49)
     run(string.format([[
 SELECT *
   FROM (SELECT w_warehouse_name, i_item_id,
                sum(CASE WHEN d_date < date '%s' THEN inv_quantity_on_hand ELSE 0 END) AS inv_before,
                sum(CASE WHEN d_date >= date '%s' THEN inv_quantity_on_hand ELSE 0 END) AS inv_after
           FROM inventory, warehouse, item, date_dim
-         WHERE i_current_price BETWEEN %.2f AND %.2f AND i_item_sk = inv_item_sk
+         WHERE i_current_price BETWEEN 0.99 AND 1.49 AND i_item_sk = inv_item_sk
            AND inv_warehouse_sk = w_warehouse_sk AND inv_date_sk = d_date_sk
            AND d_date BETWEEN date '%s' - 30 AND date '%s' + 30
          GROUP BY w_warehouse_name, i_item_id) x
  WHERE (CASE WHEN inv_before > 0 THEN inv_after / inv_before ELSE NULL END) BETWEEN 2.0 / 3.0 AND 3.0 / 2.0
- ORDER BY w_warehouse_name, i_item_id LIMIT 100]], d, d, p, p + 0.5, d, d))
+ ORDER BY w_warehouse_name, i_item_id LIMIT 100]], d, d, d, d))
 end
 
 -- Q22: average inventory on hand over a year, rollup by product, brand, class and category.
@@ -687,7 +708,7 @@ best_ss_customer AS (
       FROM store_sales, customer
      WHERE ss_customer_sk = c_customer_sk
      GROUP BY c_customer_sk
-    HAVING sum(ss_quantity * ss_sales_price) > (50 / 100.0) * (SELECT tpcds_cmax FROM max_store_sales))]],
+    HAVING sum(ss_quantity * ss_sales_price) > (95 / 100.0) * (SELECT tpcds_cmax FROM max_store_sales))]],
         y, y + 1, y + 2, y + 3, y, y + 1, y + 2, y + 3)
     -- Part a: total catalog and web sales in the month.
     run("WITH " .. ctes .. string.format([[
@@ -704,7 +725,7 @@ SELECT sum(sales)
          WHERE d_year = %d AND d_moy = %d AND ws_sold_date_sk = d_date_sk
            AND ws_item_sk IN (SELECT item_sk FROM frequent_ss_items)
            AND ws_bill_customer_sk IN (SELECT c_customer_sk FROM best_ss_customer)) x
- LIMIT 100]], y + 2, m, y + 2, m))
+ LIMIT 100]], y, m, y, m))
     -- Part b: the same, by customer name.
     run("WITH " .. ctes .. string.format([[
 
@@ -724,7 +745,7 @@ SELECT c_last_name, c_first_name, sales
            AND ws_bill_customer_sk IN (SELECT c_customer_sk FROM best_ss_customer)
            AND ws_bill_customer_sk = c_customer_sk
          GROUP BY c_last_name, c_first_name) x
- ORDER BY c_last_name, c_first_name, sales LIMIT 100]], y + 2, m, y + 2, m))
+ ORDER BY c_last_name, c_first_name, sales LIMIT 100]], y, m, y, m))
 end
 
 -- Q24: store sales net of returns by customer for items of a color, for one market (both parts).
@@ -791,7 +812,7 @@ SELECT i_item_id, s_state, grouping(s_state) g_state,
    AND ss_cdemo_sk = cd_demo_sk AND cd_gender = '%s' AND cd_marital_status = '%s'
    AND cd_education_status = '%s' AND d_year = %d AND s_state IN (%s)
  GROUP BY ROLLUP (i_item_id, s_state)
- ORDER BY i_item_id, s_state LIMIT 100]], pick(GENDER), pick(MARITAL), pick(EDU), year(), pick_n(STATES, 6)))
+ ORDER BY i_item_id, s_state LIMIT 100]], pick(GENDER), pick(MARITAL), pick(EDU), year(), store_states(6)))
 end
 
 -- Q28: list-price statistics of store sales in six quantity buckets and price, coupon or cost ranges.
@@ -932,7 +953,7 @@ SELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, ss_ticket
          GROUP BY ss_ticket_number, ss_customer_sk) dn, customer
  WHERE ss_customer_sk = c_customer_sk AND cnt BETWEEN 15 AND 20
  ORDER BY c_last_name, c_first_name, c_salutation, c_preferred_cust_flag DESC, ss_ticket_number]],
-        pick(BUY_POTENTIAL), pick(BUY_POTENTIAL), y, y + 1, y + 2, counties(8)))
+        pick(BUY_POTENTIAL), pick(BUY_POTENTIAL), y, y + 1, y + 2, store_counties(8)))
 end
 
 -- Q35: demographics of customers with store sales and web or catalog sales in the first quarters of a year.
@@ -969,7 +990,7 @@ SELECT sum(ss_net_profit) / sum(ss_ext_sales_price) AS gross_margin, i_category,
  GROUP BY ROLLUP (i_category, i_class)
  ORDER BY lochierarchy DESC, CASE WHEN grouping(i_category) + grouping(i_class) = 0 THEN i_category END,
           rank_within_parent
- LIMIT 100]], year(), pick_n(STATES, 8)))
+ LIMIT 100]], year(), store_states(8)))
 end
 
 -- Q37: catalog items in a price range with 100 to 500 units in inventory over 60 days, for four manufacturers.
@@ -1012,7 +1033,8 @@ end
 -- Q39: inventory with a high coefficient of variation in one month and the next (both parts).
 Q[39] = function()
     local y, m = rand_int(1998, 1999), rand_int(1, 11)
-    for _, threshold in ipairs({1, 1.5}) do
+    -- Part b adds the 1.5 threshold on the first month only.
+    for _, extra in ipairs({"", " AND inv1.cov > 1.5"}) do
         run(string.format([[
 WITH inv AS (
     SELECT w_warehouse_name, w_warehouse_sk, i_item_sk, d_moy, stdev, mean,
@@ -1023,14 +1045,14 @@ WITH inv AS (
              WHERE inv_item_sk = i_item_sk AND inv_warehouse_sk = w_warehouse_sk AND inv_date_sk = d_date_sk
                AND d_year = %d
              GROUP BY w_warehouse_name, w_warehouse_sk, i_item_sk, d_moy) foo
-     WHERE CASE mean WHEN 0 THEN 0 ELSE stdev / mean END > %s)
+     WHERE CASE mean WHEN 0 THEN 0 ELSE stdev / mean END > 1)
 SELECT inv1.w_warehouse_sk, inv1.i_item_sk, inv1.d_moy, inv1.mean, inv1.cov,
        inv2.w_warehouse_sk, inv2.i_item_sk, inv2.d_moy, inv2.mean, inv2.cov
   FROM inv inv1, inv inv2
  WHERE inv1.i_item_sk = inv2.i_item_sk AND inv1.w_warehouse_sk = inv2.w_warehouse_sk
-   AND inv1.d_moy = %d AND inv2.d_moy = %d
+   AND inv1.d_moy = %d AND inv2.d_moy = %d%s
  ORDER BY inv1.w_warehouse_sk, inv1.i_item_sk, inv1.d_moy, inv1.mean, inv1.cov,
-          inv2.d_moy, inv2.mean, inv2.cov]], y, tostring(threshold), m, m + 1))
+          inv2.d_moy, inv2.mean, inv2.cov]], y, m, m + 1, extra))
     end
 end
 
@@ -1100,7 +1122,7 @@ SELECT s_store_name, s_store_id,
  WHERE d_date_sk = ss_sold_date_sk AND s_store_sk = ss_store_sk AND s_gmt_offset = %s AND d_year = %d
  GROUP BY s_store_name, s_store_id
  ORDER BY s_store_name, s_store_id, sun_sales, mon_sales, tue_sales, wed_sales, thu_sales, fri_sales, sat_sales
- LIMIT 100]], pick(GMT_OFFSETS), year()))
+ LIMIT 100]], store_gmt(), year()))
 end
 
 -- Q44: the ten best and ten worst items of a store by average net profit.
@@ -1161,12 +1183,13 @@ SELECT c_last_name, c_first_name, ca_city, bought_city, ss_ticket_number, amt, p
  WHERE ss_customer_sk = c_customer_sk AND customer.c_current_addr_sk = current_addr.ca_address_sk
    AND current_addr.ca_city <> bought_city
  ORDER BY c_last_name, c_first_name, ca_city, bought_city, ss_ticket_number LIMIT 100]],
-        rand_int(0, 9), rand_int(-1, 4), y, y + 1, y + 2, cities(5)))
+        rand_int(0, 9), rand_int(-1, 4), y, y + 1, y + 2, store_cities(5)))
 end
 
 -- Q47: store sales months that deviate by more than 10% from the yearly average, with neighbours.
 Q[47] = function()
-    local y = year(1)
+    -- The template draws 1999..2001: the previous December must be in the data.
+    local y = rand_int(SALE_Y1 + 1, SALE_Y2 - 1)
     run(string.format([[
 WITH v1 AS (
     SELECT i_category, i_brand, s_store_name, s_company_name, d_year, d_moy, sum(ss_sales_price) sum_sales,
@@ -1408,7 +1431,7 @@ end
 
 -- Q57: catalog sales months that deviate from the yearly average by call center, with neighbours.
 Q[57] = function()
-    local y = year(1)
+    local y = rand_int(SALE_Y1 + 1, SALE_Y2 - 1)
     run(string.format([[
 WITH v1 AS (
     SELECT i_category, i_brand, cc_name, d_year, d_moy, sum(cs_sales_price) sum_sales,
@@ -1670,7 +1693,9 @@ Q[66] = function()
             sales, dt, wh, prefix, mode, y, t, t, carriers:match("'([^']*)'"), carriers:match("','([^']*)'"))
     end
     local cols = {}
-    for m = 1, 12 do cols[#cols + 1] = string.format("sum(sales_m%d) AS sales_m%d, sum(net_m%d) AS net_m%d", m, m, m, m) end
+    for m = 1, 12 do cols[#cols + 1] = string.format("sum(sales_m%d) AS sales_m%d", m, m) end
+    for m = 1, 12 do cols[#cols + 1] = string.format("sum(sales_m%d / w_warehouse_sq_ft) AS sales_m%d_per_sq_foot", m, m) end
+    for m = 1, 12 do cols[#cols + 1] = string.format("sum(net_m%d) AS net_m%d", m, m) end
     run("SELECT w_warehouse_name, w_warehouse_sq_ft, w_city, w_county, w_state, w_country, ship_carriers, year,\n       "
         .. table.concat(cols, ",\n       ") .. "\n  FROM (\n"
         .. ch("ws", "web_sales", "ws_sold_date_sk", "ws_warehouse_sk", "ws_ship_mode_sk") .. "\n    UNION ALL\n"
@@ -1714,7 +1739,7 @@ SELECT c_last_name, c_first_name, ca_city, bought_city, ss_ticket_number, extend
          GROUP BY ss_ticket_number, ss_customer_sk, ss_addr_sk, ca_city) dn, customer, customer_address current_addr
  WHERE ss_customer_sk = c_customer_sk AND customer.c_current_addr_sk = current_addr.ca_address_sk
    AND current_addr.ca_city <> bought_city
- ORDER BY c_last_name, ss_ticket_number LIMIT 100]], rand_int(0, 9), rand_int(-1, 4), y, y + 1, y + 2, cities(2)))
+ ORDER BY c_last_name, ss_ticket_number LIMIT 100]], rand_int(0, 9), rand_int(-1, 4), y, y + 1, y + 2, store_cities(2)))
 end
 
 -- Q69: demographics of customers of three states who bought in store but not by web or catalog in a quarter.
@@ -1829,7 +1854,7 @@ SELECT c_last_name, c_first_name, c_salutation, c_preferred_cust_flag, ss_ticket
            AND date_dim.d_year IN (%d, %d, %d) AND store.s_county IN (%s)
          GROUP BY ss_ticket_number, ss_customer_sk) dj, customer
  WHERE ss_customer_sk = c_customer_sk AND cnt BETWEEN 1 AND 5
- ORDER BY cnt DESC, c_last_name ASC]], pick(BUY_POTENTIAL), pick(BUY_POTENTIAL), y, y + 1, y + 2, counties(4)))
+ ORDER BY cnt DESC, c_last_name ASC]], pick(BUY_POTENTIAL), pick(BUY_POTENTIAL), y, y + 1, y + 2, store_counties(4)))
 end
 
 -- Q74: customers whose web net paid grew faster than their store net paid, year over year.
@@ -1990,7 +2015,7 @@ ss AS (
      WHERE sr_ticket_number IS NULL
      GROUP BY d_year, ss_item_sk, ss_customer_sk)
 SELECT ss_sold_year, ss_item_sk, ss_customer_sk,
-       round(ss_qty / (coalesce(ws_qty, 0) + coalesce(cs_qty, 0)), 2) ratio,
+       round(ss_qty::numeric / (coalesce(ws_qty, 0) + coalesce(cs_qty, 0)), 2) ratio,
        ss_qty store_qty, ss_wc store_wholesale_cost, ss_sp store_sales_price,
        coalesce(ws_qty, 0) + coalesce(cs_qty, 0) other_chan_qty,
        coalesce(ws_wc, 0) + coalesce(cs_wc, 0) other_chan_wholesale_cost,
@@ -2114,9 +2139,9 @@ Q[83] = function()
         .. ch("wr_items", "web_returns", "wr_item_sk", "wr_returned_date_sk", "wr_return_quantity") .. [[
 
 SELECT sr_items.item_id, sr_items_item_qty,
-       sr_items_item_qty / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 sr_dev,
-       cr_items_item_qty, cr_items_item_qty / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 cr_dev,
-       wr_items_item_qty, wr_items_item_qty / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 wr_dev,
+       sr_items_item_qty::numeric / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 sr_dev,
+       cr_items_item_qty, cr_items_item_qty::numeric / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 cr_dev,
+       wr_items_item_qty, wr_items_item_qty::numeric / (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 * 100 wr_dev,
        (sr_items_item_qty + cr_items_item_qty + wr_items_item_qty) / 3.0 average
   FROM sr_items, cr_items, wr_items
  WHERE sr_items.item_id = cr_items.item_id AND sr_items.item_id = wr_items.item_id
@@ -2202,8 +2227,15 @@ end
 
 -- Q88: store sales counts in eight half-hour slots of the morning for three household profiles.
 Q[88] = function()
-    local d1, v1, d2, v2, d3, v3 = rand_int(0, 9), rand_int(-1, 4), rand_int(0, 9), rand_int(-1, 4), rand_int(0, 9), rand_int(-1, 4)
-    local function slot(name, h, m_lo, m_hi)
+    -- Three distinct values, each used for the dependents and the vehicles of its branch.
+    local h = {}
+    while #h < 3 do
+        local v = rand_int(-1, 4)
+        local dup = false
+        for _, x in ipairs(h) do if x == v then dup = true end end
+        if not dup then h[#h + 1] = v end
+    end
+    local function slot(name, hour, m_lo, m_hi)
         local mins = m_hi and string.format("t_minute >= %d AND t_minute < %d", m_lo, m_hi) or string.format("t_minute >= %d", m_lo)
         return string.format([[
        (SELECT count(*) %s
@@ -2213,7 +2245,7 @@ Q[88] = function()
            AND ((household_demographics.hd_dep_count = %d AND household_demographics.hd_vehicle_count <= %d + 2)
              OR (household_demographics.hd_dep_count = %d AND household_demographics.hd_vehicle_count <= %d + 2)
              OR (household_demographics.hd_dep_count = %d AND household_demographics.hd_vehicle_count <= %d + 2))
-           AND store.s_store_name = 'ese') %s]], name, h, mins, d1, v1, d2, v2, d3, v3, name)
+           AND store.s_store_name = 'ese') %s]], name, hour, mins, h[1], h[1], h[2], h[2], h[3], h[3], name)
     end
     run("SELECT *\n  FROM\n" .. slot("h8_30_to_9", 8, 30) .. ",\n" .. slot("h9_to_9_30", 9, 0, 30) .. ",\n"
         .. slot("h9_30_to_10", 9, 30) .. ",\n" .. slot("h10_to_10_30", 10, 0, 30) .. ",\n"
