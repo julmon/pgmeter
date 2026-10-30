@@ -59,13 +59,17 @@ local function ymd_to_days(y, m, d)
         + math.floor(y2 / 4) - math.floor(y2 / 100) + math.floor(y2 / 400) - 32045
 end
 
+-- A random day of the years y1..y2 as a date_sk: one draw over the whole
+-- span, every calendar day included.
 local function rand_date_sk(y1, y2)
-    return ymd_to_days(rand_int(y1, y2), rand_int(1, 12), rand_int(1, 28))
+    local base = ymd_to_days(y1, 1, 1)
+    return base + rand_int(0, ymd_to_days(y2, 12, 31) - base)
 end
 
-local function rand_date_str(y1, y2)
-    return string.format("%04d-%02d-%02d", rand_int(y1, y2), rand_int(1, 12), rand_int(1, 28))
-end
+-- Money is drawn in cents, and the extended and net columns are computed from
+-- the rounded unit values, so every row adds up exactly as printed (q28, q32
+-- and q92 compare these columns against averages).
+local function cents(x) return math.floor(x * 100 + 0.5) / 100 end
 
 local function pick(t) return t[rand_int(1, #t)] end
 
@@ -86,6 +90,8 @@ local STATES = {"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID",
 local STREET_TYPES = {"Road", "Street", "Avenue", "Lane", "Drive", "Court",
     "Blvd", "Way", "Circle", "Parkway", "Wy", "Ct", "Dr", "Ave", "Pkwy", "RD",
     "ST", "Ln", "Cir"}
+local STREET_NAMES = {"Main", "Oak", "Park", "Elm", "Lake", "Hill", "Pine",
+    "Maple", "Cedar", "Washington"}
 local CITIES = {"Springfield", "Riverside", "Greenville", "Fairview", "Salem",
     "Franklin", "Clinton", "Georgetown", "Madison", "Arlington", "Centerville",
     "Lebanon", "Oak Grove", "Pleasant Hill", "Bridgeport", "Five Points",
@@ -101,40 +107,65 @@ local LAST_NAMES = {"Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia",
     "Miller", "Davis", "Rodriguez", "Martinez", "Hernandez", "Lopez", "Wilson",
     "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee"}
 local SALUTATIONS = {"Mr.", "Mrs.", "Ms.", "Dr.", "Sir", "Miss"}
-local COUNTRIES = {"United States", "Canada", "Mexico", "Germany", "France",
-    "Japan", "Brazil", "India", "China", "Australia"}
+-- Upper case, as TPC-DS writes birth countries (q24 compares them with
+-- upper(ca_country)).
+local COUNTRIES = {"UNITED STATES", "CANADA", "MEXICO", "GERMANY", "FRANCE",
+    "JAPAN", "BRAZIL", "INDIA", "CHINA", "AUSTRALIA"}
 local CATEGORIES = {"Women", "Men", "Children", "Shoes", "Music", "Jewelry",
     "Home", "Sports", "Books", "Electronics"}
--- Item classes per category, the lists the TPC-DS query templates filter on
--- (q53, q54, q63, q89 name classes such as "personal" or "reference").
+-- Item classes per category, in the order of the TPC-DS generator: the
+-- class's position and the category's number make the brand id and name
+-- below, which is how the fixed brand lists of q53 and q63 select items.
 local CLASSES_BY_CATEGORY = {
-    {"dresses", "fragrances", "swimwear", "maternity"},
-    {"accessories", "pants", "shirts", "sportswear"},
-    {"infants", "newborn", "toddlers", "school-uniforms"},
-    {"athletic", "kids", "mens", "womens"},
-    {"classical", "country", "pop", "rock"},
-    {"birdal", "costume", "diamonds", "estate", "gold", "loose stones",
-     "mens watch", "pendants", "rings", "semi-precious", "womens watch",
-     "consignment"},
-    {"accent", "bathroom", "bedding", "blinds/shades", "curtains/drapes",
-     "decor", "flatware", "furniture", "glassware", "kids", "lighting",
-     "mattresses", "paint", "rugs", "tables", "wallpaper"},
-    {"archery", "athletic shoes", "baseball", "basketball", "camping",
-     "fishing", "fitness", "football", "golf", "guns", "hockey", "optics",
-     "outdoor", "pools", "sailing", "tennis"},
-    {"arts", "business", "computers", "cooking", "entertainments", "fiction",
-     "history", "home repair", "mystery", "parenting", "reference", "romance",
-     "science", "self-help", "sports", "travel"},
-    {"audio", "automotive", "cameras", "camcorders", "disk drives",
-     "dvd/vcr players", "karoke", "memory", "monitors", "musical", "personal",
-     "portable", "scanners", "stereo", "televisions", "wireless"},
+    {"dresses", "fragrances", "maternity", "swimwear"},
+    {"accessories", "shirts", "pants", "sports-apparel"},
+    {"newborn", "infants", "toddlers", "school-uniforms"},
+    {"womens", "mens", "kids", "athletic"},
+    {"rock", "country", "pop", "classical"},
+    {"birdal", "diamonds", "gold", "bracelets", "earings", "rings", "pendants",
+     "mens watch", "womens watch", "jewelry boxes", "semi-precious", "costume",
+     "loose stones", "estate", "custom", "consignment"},
+    {"bathroom", "bedding", "kids", "curtains/drapes", "blinds/shades", "rugs",
+     "decor", "lighting", "mattresses", "flatware", "accent", "paint",
+     "wallpaper", "glassware", "tables", "furniture"},
+    {"athletic shoes", "baseball", "basketball", "camping", "fitness",
+     "football", "hockey", "outdoor", "optics", "pools", "archery", "guns",
+     "sailing", "tennis", "fishing", "golf"},
+    {"arts", "business", "computers", "entertainments", "history", "parenting",
+     "reference", "romance", "science", "travel", "cooking", "home repair",
+     "self-help", "sports", "fiction", "mystery"},
+    {"cameras", "camcorders", "dvd/vcr players", "audio", "karoke", "musical",
+     "personal", "scanners", "televisions", "memory", "disk drives", "monitors",
+     "stereo", "automotive", "portable", "wireless"},
 }
+-- Brands per class, by category (2 for apparel and music, up to 17 for
+-- electronics); the brand id is (category * 1000 + class) * 1000 + n.
+local BRANDS_PER_CLASS = {2, 2, 2, 2, 2, 8, 10, 10, 12, 17}
+-- The brand name spells the digits of category * 10 + class, least
+-- significant first, one syllable each: "amalgamalg #1" for Women/dresses,
+-- "scholaramalgamalg #14" for Electronics/portable.
+local BRAND_SYLLABLES = {"univ", "amalg", "importo", "exporti", "edu pack",
+    "scholar", "corp", "brand", "nameless", "maxi"}
+local function brand_name(src)
+    local parts = {}
+    while src > 0 do
+        parts[#parts + 1] = BRAND_SYLLABLES[(src % 10) + 1]
+        src = math.floor(src / 10)
+    end
+    return table.concat(parts)
+end
+-- Current prices fall in three bands, as the generator's do, so most items
+-- are cheap; the wholesale cost is a fraction of the price.
+local PRICE_BANDS = {{0.09, 4.99}, {5.00, 9.99}, {10.00, 99.99}}
+local function rand_price()
+    local band = PRICE_BANDS[rand_int(1, #PRICE_BANDS)]
+    return cents(rand_float(band[1], band[2]))
+end
 -- The TPC-DS syllables; names are made of two of them (1,000 manufacturers,
 -- so that q3, q32, q37, q41, q82 and q92's i_manufact_id ranges select rows).
 local SYLLABLES = {"ought", "able", "pri", "ese", "anti", "cally", "ation",
     "eing", "bar", "n st"}
 local N_MANUFACT = 1000
-local BRAND_ROOTS = {"amalg", "edu pack", "scholar", "importo", "exporti", "brand", "univ", "nameless", "corp"}
 local function syllable_name(n)
     return SYLLABLES[(math.floor((n - 1) / 10) % 10) + 1] .. SYLLABLES[((n - 1) % 10) + 1]
 end
@@ -175,6 +206,9 @@ local CS_TARGET = 1440000
 local WS_TARGET = 720000
 local SR_RATE, CR_RATE, WR_RATE = 0.10, 0.14, 0.14
 local SALE_Y1, SALE_Y2 = 1998, 2002
+-- Sold dates are one draw over the whole window (hot path).
+local SALE_BASE = ymd_to_days(SALE_Y1, 1, 1)
+local SALE_DAYS = ymd_to_days(SALE_Y2, 12, 31) - SALE_BASE
 
 -- ###########################################################################
 -- Per-unit generation. Each id handed to this job is one scale unit; an empty
@@ -223,16 +257,18 @@ do
             local gk = cust_off + sk
             local fn = pick(FIRST_NAMES)
             local ln = pick(LAST_NAMES)
+            -- The first shipment follows the first sale by up to a year.
+            local first_sale = rand_date_sk(DATE_Y1, DATE_Y2)
             buf[n] = string.format(
-                "%d\tAAAAAAAA%08d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t\t%s.%s@example.com\t%s\n",
+                "%d\tAAAAAAAA%08d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t\t%s.%s@example.com\t%d\n",
                 gk, gk,
                 rand_int(1, N_CDEMO), rand_int(1, N_HDEMO), rand_int(1, N_ADDR),
-                rand_date_sk(DATE_Y1, DATE_Y2), rand_date_sk(DATE_Y1, DATE_Y2),
+                first_sale + rand_int(0, 365), first_sale,
                 pick(SALUTATIONS), fn, ln,
                 rand_int(0, 1) == 1 and "Y" or "N",
                 rand_int(1, 28), rand_int(1, 12), rand_int(1924, 2000),
                 pick(COUNTRIES), fn, ln,
-                rand_date_str(2002, 2003))
+                rand_date_sk(2002, 2003))
         end
         flush_copy("COPY customer FROM stdin", buf, n)
     end
@@ -256,16 +292,15 @@ do
             local cat_id = rand_int(1, #CATEGORIES)
             local classes = CLASSES_BY_CATEGORY[cat_id]
             local class_id = rand_int(1, #classes)
-            -- Brand names follow the TPC-DS pattern: two roots and a number
-            -- ("amalgimporto #1"), i_brand_id encodes them.
-            local root1, root2, brand_n = rand_int(1, #BRAND_ROOTS), rand_int(1, #BRAND_ROOTS), rand_int(1, 16)
-            local brand_id = root1 * 1000 + root2 * 100 + brand_n
-            local brand = BRAND_ROOTS[root1] .. BRAND_ROOTS[root2] .. " #" .. brand_n
+            local brand_n = rand_int(1, BRANDS_PER_CLASS[cat_id])
+            local brand_id = (cat_id * 1000 + class_id) * 1000 + brand_n
+            local brand = brand_name(cat_id * 10 + class_id) .. " #" .. brand_n
             local manu_id = rand_int(1, N_MANUFACT)
+            local price = rand_price()
             buf[n] = string.format(
-                "%d\tAAAAAAAA%08d\t1997-10-27\t2000-10-26\t%s\t%.2f\t%.2f\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\tUnknown\t%d\t%s\n",
+                "%d\tAAAAAAAA%08d\t1997-10-27\t\\N\t%s\t%.2f\t%.2f\t%d\t%s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\tUnknown\t%d\t%s\n",
                 gk, gk, descs[n],
-                rand_float(0.99, 99.99), rand_float(0.50, 80.00),
+                price, cents(price * rand_float(0.30, 0.90)),
                 brand_id, brand,
                 class_id, classes[class_id],
                 cat_id, CATEGORIES[cat_id],
@@ -295,7 +330,7 @@ do
         buf[n] = string.format(
             "%d\tAAAAAAAA%08d\t%s\t%d\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\n",
             sk, sk, NAMES[sk], rand_int(50000, 999999),
-            rand_int(1, 9999), pick(CITIES), pick(STREET_TYPES), rand_int(1, 600),
+            rand_int(1, 9999), pick(STREET_NAMES), pick(STREET_TYPES), rand_int(1, 600),
             pick(CITIES), pick(COUNTIES), pick(STATES), zip(), gmt())
     end
     flush_copy("COPY warehouse FROM stdin", buf, n)
@@ -309,15 +344,15 @@ do
     for sk = 1, 12 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1997-03-13\t2099-12-31\t%d\t%s\t%d\t%d\t8AM-4PM\t%s %s\t%d\t%s\tgeo desc\t%s %s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
-            sk, sk, rand_date_sk(2000, 2003), SYLLABLES[((sk - 1) % #SYLLABLES) + 1],
+            "%d\tAAAAAAAA%08d\t1997-03-13\t\\N\t\\N\t%s\t%d\t%d\t8AM-4PM\t%s %s\t%d\tUnknown\t%s market\t%s %s\t%d\t%s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
+            sk, sk, SYLLABLES[((sk - 1) % #SYLLABLES) + 1],
             rand_int(200, 300), rand_int(5000000, 9000000),
             pick(FIRST_NAMES), pick(LAST_NAMES),
             rand_int(1, 10), pick(DIVISIONS),
             pick(FIRST_NAMES), pick(LAST_NAMES),
             rand_int(1, 10), pick(DIVISIONS),
             rand_int(1, 10), pick(DIVISIONS),
-            rand_int(1, 9999), pick(CITIES), pick(STREET_TYPES), rand_int(1, 600),
+            rand_int(1, 9999), pick(STREET_NAMES), pick(STREET_TYPES), rand_int(1, 600),
             pick(CITIES), pick(COUNTIES), pick(STATES), zip(), gmt(),
             rand_float(0.0, 0.12))
     end
@@ -333,13 +368,13 @@ do
     for sk = 1, 6 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1998-01-01\t2099-12-31\t%d\t%d\tCall Center %d\t%s\t%d\t%d\t8AM-4PM\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\t%s\t%d\tDivision %d\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
-            sk, sk, rand_date_sk(1998, 1999), rand_date_sk(1998, 1999), sk,
+            "%d\tAAAAAAAA%08d\t1998-01-01\t\\N\t\\N\t%d\tCall Center %d\t%s\t%d\t%d\t8AM-4PM\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\t%s\t%d\tDivision %d\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
+            sk, sk, rand_date_sk(1996, 1997), sk,
             pick(CLASSES_CC), rand_int(20, 500), rand_int(1000, 9000),
             pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6),
             pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6), pick(DIVISIONS),
             rand_int(1, 6), rand_int(1, 6),
-            rand_int(1, 9999), pick(CITIES), pick(STREET_TYPES), rand_int(1, 600),
+            rand_int(1, 9999), pick(STREET_NAMES), pick(STREET_TYPES), rand_int(1, 600),
             pick(CITIES), pick(COUNTIES), pick(STATES), zip(), gmt(),
             rand_float(0.0, 0.12))
     end
@@ -354,11 +389,11 @@ do
     for sk = 1, 30 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1997-08-16\t2099-12-31\tsite_%d\t%d\t%d\t%s\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
+            "%d\tAAAAAAAA%08d\t1997-08-16\t\\N\tsite_%d\t%d\t%d\t%s\t%s %s\t%d\tcls\tmkt desc\t%s %s\t%d\t%s\t%d\t%s\t%s\tSuite %d\t%s\t%s\t%s\t%s\tUnited States\t%s\t%.2f\n",
             sk, sk, sk, rand_date_sk(1997, 1998), rand_date_sk(2002, 2003),
             pick(DIVISIONS), pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6),
             pick(FIRST_NAMES), pick(LAST_NAMES), rand_int(1, 6), SYLLABLES[((sk - 1) % #SYLLABLES) + 1],
-            rand_int(1, 9999), pick(CITIES), pick(STREET_TYPES), rand_int(1, 600),
+            rand_int(1, 9999), pick(STREET_NAMES), pick(STREET_TYPES), rand_int(1, 600),
             pick(CITIES), pick(COUNTIES), pick(STATES), zip(), gmt(),
             rand_float(0.0, 0.12))
     end
@@ -370,14 +405,15 @@ end
 -- ============================================================
 do
     local TYPES = {"welcome", "protected", "feedback", "general", "dynamic", "order", "ad"}
+    -- One page in four has 5,000 to 5,200 characters, the band q90 selects.
     local n = 0
     for sk = 1, 60 do
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t1997-09-03\t2099-12-31\t%d\t%d\t%s\t%d\thttp://www.example.com/page%d\t%s\t%d\t%d\t%d\t%d\n",
+            "%d\tAAAAAAAA%08d\t1997-09-03\t\\N\t%d\t%d\t%s\t%d\thttp://www.example.com/page%d\t%s\t%d\t%d\t%d\t%d\n",
             sk, sk, rand_date_sk(1997, 1998), rand_date_sk(2001, 2003),
             rand_int(0, 1) == 1 and "Y" or "N", rand_int(1, N_CUST), sk,
-            pick(TYPES), rand_int(100, 8000), rand_int(2, 25),
+            pick(TYPES), (sk % 4 == 0) and rand_int(5000, 5200) or rand_int(100, 8000), rand_int(2, 25),
             rand_int(1, 7), rand_int(1, 4))
     end
     flush_copy("COPY web_page FROM stdin", buf, n)
@@ -444,13 +480,15 @@ do
     local rows = 0
     while rows < SS_TARGET do
         ticket = ticket + 1
-        local sold_date = rand_date_sk(SALE_Y1, SALE_Y2)
+        local sold_date = SALE_BASE + rand_int(0, SALE_DAYS)
         local sold_time = rand_int(0, 86399)
         local cust = rand_int(1, N_CUST)
         local cdemo = rand_int(1, N_CDEMO)
         local hdemo = rand_int(1, N_HDEMO)
-        local addr = rand_int(1, N_ADDR)
-        local store = rand_int(1, N_STORE)
+        -- A few percent of the address and store keys are NULL; the return
+        -- row repeats the sale's values.
+        local addr = maybe_null(rand_int(1, N_ADDR))
+        local store = maybe_null(rand_int(1, N_STORE))
         local lines = rand_int(1, 16)
         local seen = {}
         for _ = 1, lines do
@@ -459,23 +497,23 @@ do
             repeat item = rand_int(1, N_ITEM) until not seen[item]
             seen[item] = true
             local q = rand_int(1, 100)
-            local wc = rand_float(1.0, 100.0)
-            local lp = wc * (1.0 + rand_float(0.0, 2.0))
-            local sp = lp * (1.0 - rand_float(0.0, 1.0))
+            local wc = cents(rand_float(1.0, 100.0))
+            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
+            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
-            local ext_disc = (lp - sp) * q
-            local coupon = (rand_int(1, 10) <= 2) and ext_sales * rand_float(0.0, 0.5) or 0.0
+            local ext_disc = ext_list - ext_sales
+            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
             local tax_rate = rand_float(0.0, 0.10)
-            local ext_tax = (ext_sales - coupon) * tax_rate
             local net_paid = ext_sales - coupon
+            local ext_tax = cents(net_paid * tax_rate)
             local net_paid_tax = net_paid + ext_tax
             local net_profit = net_paid - ext_wholesale
             n = n + 1
             buf[n] = string.format(
                 "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
-                sold_date, sold_time, item, cust, cdemo, hdemo, maybe_null(addr), maybe_null(store),
+                sold_date, sold_time, item, cust, cdemo, hdemo, addr, store,
                 rand_int(1, N_PROMO), ticket, q, wc, lp, sp, ext_disc, ext_sales,
                 ext_wholesale, ext_list, ext_tax, coupon, net_paid, net_paid_tax, net_profit)
             rows = rows + 1
@@ -485,16 +523,16 @@ do
             if rand_float(0.0, 1.0) < SR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = r_amt * tax_rate
-                local fee = rand_float(0.0, 50.0)
-                local r_ship = rand_float(0.0, 50.0)
+                local r_tax = cents(r_amt * tax_rate)
+                local fee = cents(rand_float(0.0, 50.0))
+                local r_ship = cents(rand_float(0.0, 50.0))
                 local f1 = rand_float(0.0, 1.0)
-                local cash = r_amt * f1
-                local reversed = r_amt * rand_float(0.0, 1.0 - f1)
+                local cash = cents(r_amt * f1)
+                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, cust, cdemo,
                     hdemo, addr, store, rand_int(1, N_REASON), ticket, rq, r_amt, r_tax,
                     r_amt + r_tax, fee, r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
@@ -518,17 +556,16 @@ do
     local rows = 0
     while rows < CS_TARGET do
         order = order + 1
-        local sold_date = rand_date_sk(SALE_Y1, SALE_Y2)
+        local sold_date = SALE_BASE + rand_int(0, SALE_DAYS)
         local sold_time = rand_int(0, 86399)
         local ship_date = sold_date + rand_int(1, 120)
         local bill_cust, bill_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
         local bill_hdemo, bill_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
         local ship_cust, ship_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
-        local ship_hdemo, ship_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
+        local ship_hdemo, ship_addr = rand_int(1, N_HDEMO), maybe_null(rand_int(1, N_ADDR))
         local call_center = rand_int(1, N_CALL_CENTER)
         local catalog_page = rand_int(1, N_CATALOG_PAGE)
         local ship_mode = rand_int(1, N_SHIP_MODE)
-        local warehouse = rand_int(1, N_WAREHOUSE)
         local lines = rand_int(1, 16)
         local seen = {}
         for _ = 1, lines do
@@ -536,19 +573,22 @@ do
             local item
             repeat item = rand_int(1, N_ITEM) until not seen[item]
             seen[item] = true
+            -- Each line ships from its own warehouse (q16, q94 and q95 look
+            -- for orders shipped from more than one).
+            local warehouse = rand_int(1, N_WAREHOUSE)
             local q = rand_int(1, 100)
-            local wc = rand_float(1.0, 100.0)
-            local lp = wc * (1.0 + rand_float(0.0, 2.0))
-            local sp = lp * (1.0 - rand_float(0.0, 1.0))
+            local wc = cents(rand_float(1.0, 100.0))
+            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
+            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
-            local ext_disc = (lp - sp) * q
-            local coupon = (rand_int(1, 10) <= 2) and ext_sales * rand_float(0.0, 0.5) or 0.0
-            local ext_ship = rand_float(1.0, 100.0)
+            local ext_disc = ext_list - ext_sales
+            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
+            local ext_ship = cents(rand_float(1.0, 100.0))
             local tax_rate = rand_float(0.0, 0.10)
-            local ext_tax = (ext_sales - coupon) * tax_rate
             local net_paid = ext_sales - coupon
+            local ext_tax = cents(net_paid * tax_rate)
             local net_paid_tax = net_paid + ext_tax
             local net_paid_ship = net_paid + ext_ship
             local net_paid_ship_tax = net_paid_ship + ext_tax
@@ -557,7 +597,7 @@ do
             buf[n] = string.format(
                 "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                 sold_date, sold_time, ship_date, bill_cust, bill_cdemo, bill_hdemo,
-                bill_addr, ship_cust, ship_cdemo, ship_hdemo, maybe_null(ship_addr), call_center,
+                bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, call_center,
                 catalog_page, ship_mode, warehouse, item, rand_int(1, N_PROMO), order, q,
                 wc, lp, sp, ext_disc, ext_sales, ext_wholesale, ext_list, ext_tax, coupon,
                 ext_ship, net_paid, net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)
@@ -568,19 +608,19 @@ do
             if rand_float(0.0, 1.0) < CR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = r_amt * tax_rate
-                local fee = rand_float(0.0, 50.0)
-                local r_ship = rand_float(0.0, 50.0)
+                local r_tax = cents(r_amt * tax_rate)
+                local fee = cents(rand_float(0.0, 50.0))
+                local r_ship = cents(rand_float(0.0, 50.0))
                 local f1 = rand_float(0.0, 1.0)
-                local cash = r_amt * f1
-                local reversed = r_amt * rand_float(0.0, 1.0 - f1)
+                local cash = cents(r_amt * f1)
+                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
-                    bill_cdemo, bill_hdemo, bill_addr, bill_cust, bill_cdemo, bill_hdemo,
-                    bill_addr, call_center, catalog_page, ship_mode, warehouse,
+                    bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
+                    ship_addr, call_center, catalog_page, ship_mode, warehouse,
                     rand_int(1, N_REASON), order, rq, r_amt, r_tax, r_amt + r_tax, fee,
                     r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
                 if rn >= BATCH then
@@ -603,17 +643,16 @@ do
     local rows = 0
     while rows < WS_TARGET do
         order = order + 1
-        local sold_date = rand_date_sk(SALE_Y1, SALE_Y2)
+        local sold_date = SALE_BASE + rand_int(0, SALE_DAYS)
         local sold_time = rand_int(0, 86399)
         local ship_date = sold_date + rand_int(1, 120)
         local bill_cust, bill_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
         local bill_hdemo, bill_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
-        local ship_cust, ship_cdemo = rand_int(1, N_CUST), rand_int(1, N_CDEMO)
+        local ship_cust, ship_cdemo = maybe_null(rand_int(1, N_CUST)), rand_int(1, N_CDEMO)
         local ship_hdemo, ship_addr = rand_int(1, N_HDEMO), rand_int(1, N_ADDR)
         local web_page = rand_int(1, N_WEB_PAGE)
         local web_site = rand_int(1, N_WEB_SITE)
         local ship_mode = rand_int(1, N_SHIP_MODE)
-        local warehouse = rand_int(1, N_WAREHOUSE)
         local lines = rand_int(1, 16)
         local seen = {}
         for _ = 1, lines do
@@ -621,19 +660,20 @@ do
             local item
             repeat item = rand_int(1, N_ITEM) until not seen[item]
             seen[item] = true
+            local warehouse = rand_int(1, N_WAREHOUSE)
             local q = rand_int(1, 100)
-            local wc = rand_float(1.0, 100.0)
-            local lp = wc * (1.0 + rand_float(0.0, 2.0))
-            local sp = lp * (1.0 - rand_float(0.0, 1.0))
+            local wc = cents(rand_float(1.0, 100.0))
+            local lp = cents(wc * (1.0 + rand_float(0.0, 2.0)))
+            local sp = math.max(0.01, cents(lp * (1.0 - rand_float(0.0, 1.0))))
             local ext_list = lp * q
             local ext_sales = sp * q
             local ext_wholesale = wc * q
-            local ext_disc = (lp - sp) * q
-            local coupon = (rand_int(1, 10) <= 2) and ext_sales * rand_float(0.0, 0.5) or 0.0
-            local ext_ship = rand_float(1.0, 100.0)
+            local ext_disc = ext_list - ext_sales
+            local coupon = (rand_int(1, 10) <= 2) and cents(ext_sales * rand_float(0.0, 0.5)) or 0.0
+            local ext_ship = cents(rand_float(1.0, 100.0))
             local tax_rate = rand_float(0.0, 0.10)
-            local ext_tax = (ext_sales - coupon) * tax_rate
             local net_paid = ext_sales - coupon
+            local ext_tax = cents(net_paid * tax_rate)
             local net_paid_tax = net_paid + ext_tax
             local net_paid_ship = net_paid + ext_ship
             local net_paid_ship_tax = net_paid_ship + ext_tax
@@ -642,7 +682,7 @@ do
             buf[n] = string.format(
                 "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                 sold_date, sold_time, ship_date, item, bill_cust, bill_cdemo, bill_hdemo,
-                bill_addr, maybe_null(ship_cust), ship_cdemo, ship_hdemo, ship_addr, web_page, web_site,
+                bill_addr, ship_cust, ship_cdemo, ship_hdemo, ship_addr, web_page, web_site,
                 ship_mode, warehouse, rand_int(1, N_PROMO), order, q, wc, lp, sp, ext_disc,
                 ext_sales, ext_wholesale, ext_list, ext_tax, coupon, ext_ship, net_paid,
                 net_paid_tax, net_paid_ship, net_paid_ship_tax, net_profit)
@@ -653,19 +693,19 @@ do
             if rand_float(0.0, 1.0) < WR_RATE then
                 local rq = rand_int(1, q)
                 local r_amt = sp * rq
-                local r_tax = r_amt * tax_rate
-                local fee = rand_float(0.0, 50.0)
-                local r_ship = rand_float(0.0, 50.0)
+                local r_tax = cents(r_amt * tax_rate)
+                local fee = cents(rand_float(0.0, 50.0))
+                local r_ship = cents(rand_float(0.0, 50.0))
                 local f1 = rand_float(0.0, 1.0)
-                local cash = r_amt * f1
-                local reversed = r_amt * rand_float(0.0, 1.0 - f1)
+                local cash = cents(r_amt * f1)
+                local reversed = math.min(cents(r_amt * rand_float(0.0, 1.0 - f1)), r_amt - cash)
                 local credit = r_amt - cash - reversed
                 rn = rn + 1
                 ret[rn] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
+                    "%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\n",
                     sold_date + rand_int(1, 120), rand_int(0, 86399), item, bill_cust,
-                    bill_cdemo, bill_hdemo, bill_addr, bill_cust, bill_cdemo, bill_hdemo,
-                    bill_addr, web_page, rand_int(1, N_REASON), order, rq, r_amt, r_tax,
+                    bill_cdemo, bill_hdemo, bill_addr, ship_cust, ship_cdemo, ship_hdemo,
+                    ship_addr, web_page, rand_int(1, N_REASON), order, rq, r_amt, r_tax,
                     r_amt + r_tax, fee, r_ship, cash, reversed, credit, r_amt + r_tax + r_ship + fee)
                 if rn >= BATCH then
                     flush_copy("COPY web_returns FROM stdin", ret, rn); rn = 0

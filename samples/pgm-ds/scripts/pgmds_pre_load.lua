@@ -8,7 +8,7 @@
 --   reason                  35 rows
 --   household_demographics  7,200 rows   (cross product)
 --   customer_demographics   1,920,800 rows (cross product)
---   date_dim                73,050 rows  (1900-01-01 .. 2100-01-01 inclusive)
+--   date_dim                73,049 rows  (1900-01-02 .. 2100-01-01 inclusive)
 --   time_dim                86,400 rows  (one row per second of day)
 --
 -- Surrogate keys are assigned sequentially from 1 (time_dim from 0) so the
@@ -77,12 +77,12 @@ do
     local n = 0
     for i = 1, 20 do
         n = n + 1
-        buf[n] = string.format("%d\tAAAAAAAA%08d\t%s\t%s\t%s\t%s\n",
+        buf[n] = string.format("%d\tAAAAAAAA%08d\t%s\t%s\t%s\t%d\n",
             i, i,
             TYPES[((i - 1) % #TYPES) + 1],
             CODES[((i - 1) % #CODES) + 1],
             CARRIERS[i],
-            string.format("%d", rand_int(1, 9999)))
+            i * 397 % 9999 + 1)
     end
     flush_copy("COPY ship_mode FROM stdin", buf, n)
 end
@@ -110,7 +110,7 @@ do
     for ib = 1, 20 do
         for bp = 1, #BUY do
             for dep = 0, 9 do
-                for veh = 0, 5 do
+                for veh = -1, 4 do
                     sk = sk + 1
                     n = n + 1
                     buf[n] = string.format("%d\t%d\t%s\t%d\t%d\n",
@@ -163,7 +163,7 @@ do
 end
 
 -- ============================================================
--- date_dim (73,049 rows: 1900-01-01 .. 2100-01-01)
+-- date_dim (73,049 rows: 1900-01-02 .. 2100-01-01, the generator's calendar)
 -- ============================================================
 do
     local DAY_NAMES = {"Sunday", "Monday", "Tuesday", "Wednesday",
@@ -180,34 +180,39 @@ do
         end
         return MDAYS[m]
     end
+    -- Week 1 starts on 1900-01-01 (a Monday); the first row is the day after.
     local base_jd = ymd_to_days(1900, 1, 1)
     local end_jd = ymd_to_days(2100, 1, 1)
+    local prev_holiday = HOLIDAYS[101]
     local n = 0
-    for jd = base_jd, end_jd do
+    for jd = base_jd + 1, end_jd do
         local y, m, d = days_to_ymd(jd)
         local dow = (jd + 1) % 7                 -- 0 = Sunday
         local qoy = math.floor((m - 1) / 3) + 1
         local month_seq = (y - 1900) * 12 + (m - 1)
-        local quarter_seq = (y - 1900) * 4 + (qoy - 1)
+        local quarter_seq = (y - 1900) * 4 + qoy
         local week_seq = math.floor((jd - base_jd) / 7) + 1
         local first_dom = ymd_to_days(y, m, 1)
         local last_dom = ymd_to_days(y, m, days_in_month(y, m))
         -- same day last quarter (3 months back, clamp day for short months)
         local lqy, lqm = y, m - 3
         if lqm < 1 then lqm = lqm + 12; lqy = lqy - 1 end
-        local holiday = HOLIDAYS[m * 100 + d] and "Y" or "N"
+        local is_holiday = HOLIDAYS[m * 100 + d]
+        local holiday = is_holiday and "Y" or "N"
+        local following = prev_holiday and "Y" or "N"
+        prev_holiday = is_holiday
         local weekend = (dow == 0 or dow == 6) and "Y" or "N"
         n = n + 1
         buf[n] = string.format(
-            "%d\tAAAAAAAA%08d\t%04d-%02d-%02d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%04dQ%d\t%s\t%s\tN\t%d\t%d\t%d\t%d\tN\tN\tN\tN\tN\n",
+            "%d\tAAAAAAAA%08d\t%04d-%02d-%02d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%04dQ%d\t%s\t%s\t%s\t%d\t%d\t%d\t%d\tN\tN\tN\tN\tN\n",
             jd, jd, y, m, d,
             month_seq, week_seq, quarter_seq, y, dow, m, d, qoy,
             y, quarter_seq, week_seq,
             DAY_NAMES[dow + 1], y, qoy,
-            holiday, weekend,
+            holiday, weekend, following,
             first_dom, last_dom,
-            ymd_to_days(y - 1, m, math.min(d, 28)),
-            ymd_to_days(lqy, lqm, math.min(d, 28)))
+            ymd_to_days(y - 1, m, math.min(d, days_in_month(y - 1, m))),
+            ymd_to_days(lqy, lqm, math.min(d, days_in_month(lqy, lqm))))
         if n >= BATCH then
             flush_copy("COPY date_dim FROM stdin", buf, n)
             n = 0
@@ -232,16 +237,14 @@ do
         else shift = "second" end
         local sub_shift
         if hour < 6 then sub_shift = "night"
-        elseif hour < 9 then sub_shift = "breakfast"
         elseif hour < 12 then sub_shift = "morning"
-        elseif hour < 14 then sub_shift = "noon"
         elseif hour < 18 then sub_shift = "afternoon"
         else sub_shift = "evening" end
         local meal
         if hour >= 6 and hour < 9 then meal = "breakfast"
         elseif hour >= 11 and hour < 14 then meal = "lunch"
         elseif hour >= 17 and hour < 20 then meal = "dinner"
-        else meal = "" end
+        else meal = "\\N" end
         n = n + 1
         buf[n] = string.format(
             "%d\tAAAAAAAA%08d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n",
