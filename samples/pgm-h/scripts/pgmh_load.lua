@@ -89,10 +89,20 @@ local function gen_phone(nation_key)
         10 + nation_key, rand_int(100, 999), rand_int(100, 999), rand_int(1000, 9999))
 end
 
+-- Money is kept in integer cents, as dbgen keeps it, and printed as two
+-- integers: glibc's float formatting was a sixth of the load's CPU.
 -- dbgen's retail price of a part, in cents (rpb_routine): 900.00 to 2099.00.
 -- lineitem derives its extended price from the same function.
 local function rpb(lp)
     return 90000 + (lp // 10) % 20001 + (lp % 1000) * 100
+end
+
+-- Cents as a money string; the account balances can be negative.
+local function money(c)
+    if c < 0 then
+        return string.format("-%d.%02d", (-c) // 100, (-c) % 100)
+    end
+    return string.format("%d.%02d", c // 100, c % 100)
 end
 
 -- dbgen's PART_SUPP_BRIDGE: the i-th (0..3) supplier of a part, within the
@@ -180,10 +190,11 @@ for _, unit in ipairs(ids) do
         for lp = s, e do
             n = n + 1
             local mfgr = rand_int(1, 5)
-            buf[n] = string.format("%d\t%s\tManufacturer#%d\tBrand#%d%d\t%s\t%d\t%s\t%.2f\t%s\n",
+            local rp = rpb(lp)
+            buf[n] = string.format("%d\t%s\tManufacturer#%d\tBrand#%d%d\t%s\t%d\t%s\t%d.%02d\t%s\n",
                 part_off + lp, gen_part_name(), mfgr, mfgr, rand_int(1, 5),
                 gen_type(), rand_int(1, 50), pick(CONTAINERS),
-                rpb(lp) / 100.0, comments[n])
+                rp // 100, rp % 100, comments[n])
         end
         flush_copy("COPY part FROM stdin", buf, n)
     end
@@ -212,9 +223,9 @@ for _, unit in ipairs(ids) do
                 local off = rand_int(0, #comment - 19 - noise)
                 comment = splice(splice(comment, off, "Customer "), off + 9 + noise, kind)
             end
-            buf[n] = string.format("%d\tSupplier#%09d\t%s\t%d\t%s\t%.2f\t%s\n",
+            buf[n] = string.format("%d\tSupplier#%09d\t%s\t%d\t%s\t%s\t%s\n",
                 gk, gk, addrs[n], nk, gen_phone(nk),
-                rand_float(-999.99, 9999.99), comment)
+                money(rand_int(-99999, 999999)), comment)
         end
         flush_copy("COPY supplier FROM stdin", buf, n)
     end
@@ -232,9 +243,11 @@ for _, unit in ipairs(ids) do
         for lp = s, e do
             for i = 0, PARTSUPPS_PER_PART - 1 do
                 n = n + 1
-                buf[n] = string.format("%d\t%d\t%d\t%.2f\t%s\n",
-                    part_off + lp, supp_off + supplier_of(lp, i), rand_int(1, 9999),
-                    rand_float(1.00, 1000.00), comments[n])
+                local qty = rand_int(1, 9999)
+                local cost = rand_int(100, 100000)
+                buf[n] = string.format("%d\t%d\t%d\t%d.%02d\t%s\n",
+                    part_off + lp, supp_off + supplier_of(lp, i), qty,
+                    cost // 100, cost % 100, comments[n])
             end
         end
         flush_copy("COPY partsupp FROM stdin", buf, n)
@@ -255,9 +268,9 @@ for _, unit in ipairs(ids) do
             n = n + 1
             local gk = cust_off + lc
             local nk = rand_int(0, 24)
-            buf[n] = string.format("%d\tCustomer#%09d\t%s\t%d\t%s\t%.2f\t%s\t%s\n",
+            buf[n] = string.format("%d\tCustomer#%09d\t%s\t%d\t%s\t%s\t%s\t%s\n",
                 gk, gk, addrs[n], nk, gen_phone(nk),
-                rand_float(-999.99, 9999.99), pick(SEGMENTS), comments[n])
+                money(rand_int(-99999, 999999)), pick(SEGMENTS), comments[n])
         end
         flush_copy("COPY customer FROM stdin", buf, n)
     end
@@ -298,27 +311,42 @@ for _, unit in ipairs(ids) do
 
             on = on + 1
             local n_lines = lines[on]
-            local o_totalprice = 0.0
+            local o_totalprice = 0 -- cents
             local shipped = 0
 
             for li = 1, n_lines do
                 ln = ln + 1
                 lc_idx = lc_idx + 1
                 local l_pk = rand_int(1, PARTS_PER_UNIT)
-                local l_sk = supplier_of(l_pk, rand_int(0, 3))
-                local l_qty = rand_int(1, 50)
-                local l_disc = rand_int(0, 10) / 100.0
-                local l_tax = rand_int(0, 8) / 100.0
-                local l_extprice = rpb(l_pk) * l_qty / 100.0
-                o_totalprice = o_totalprice + l_extprice * (1 - l_disc) * (1 + l_tax)
+                -- The small draws of a line come from three calls into the
+                -- engine instead of ten, decoded as mixed-radix digits: each
+                -- component is still uniform and independent of the others.
+                local r = rand_int(0, 4949)          -- quantity 50 x discount 11 x tax 9
+                local l_qty = r % 50 + 1
+                r = r // 50
+                local l_disc = r % 11                -- hundredths: 0.00 to 0.10
+                local l_tax = r // 11                -- hundredths: 0.00 to 0.08
+                local l_extprice = rpb(l_pk) * l_qty -- cents
+                -- dbgen's running total: integer division after the discount
+                -- and again after the tax.
+                o_totalprice = o_totalprice
+                    + (l_extprice * (100 - l_disc) // 100) * (100 + l_tax) // 100
 
-                local s_jd = o_jd + rand_int(1, 121)
-                local c_jd = o_jd + rand_int(30, 90)
-                local r_jd = s_jd + rand_int(1, 30)
+                r = rand_int(0, 221429)              -- ship 121 x commit 61 x receipt 30
+                local s_jd = o_jd + 1 + r % 121
+                r = r // 121
+                local c_jd = o_jd + 30 + r % 61
+                local r_jd = s_jd + 1 + r // 61
 
+                r = rand_int(0, 223)                 -- supplier 4 x instruct 4 x mode 7 x flag 2
+                local l_sk = supplier_of(l_pk, r % 4)
+                r = r // 4
+                local l_instruct = SHIP_INSTRUCT[r % 4 + 1]
+                r = r // 4
+                local l_mode = SHIP_MODES[r % 7 + 1]
                 local l_rflag = "N"
                 if r_jd <= JD_CURRENT then
-                    l_rflag = rand_int(0, 1) == 0 and "R" or "A"
+                    l_rflag = r // 7 == 0 and "R" or "A"
                 end
                 local l_lstatus = "O"
                 if s_jd <= JD_CURRENT then
@@ -327,10 +355,11 @@ for _, unit in ipairs(ids) do
                 end
 
                 lbuf[ln] = string.format(
-                    "%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-                    ord_off + lok, part_off + l_pk, supp_off + l_sk, li, l_qty, l_extprice, l_disc, l_tax,
+                    "%d\t%d\t%d\t%d\t%d\t%d.%02d\t0.%02d\t0.%02d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                    ord_off + lok, part_off + l_pk, supp_off + l_sk, li, l_qty,
+                    l_extprice // 100, l_extprice % 100, l_disc, l_tax,
                     l_rflag, l_lstatus, date_of(s_jd), date_of(c_jd), date_of(r_jd),
-                    pick(SHIP_INSTRUCT), pick(SHIP_MODES), l_comments[lc_idx])
+                    l_instruct, l_mode, l_comments[lc_idx])
             end
 
             -- All lines shipped by the current date: F; some: P; none: O.
@@ -346,9 +375,9 @@ for _, unit in ipairs(ids) do
                 local pair = Q13_ADJ[(r - 1) % 4 + 1] .. " " .. Q13_NOUN[(r - 1) // 4 + 1]
                 o_comment = splice(o_comment, rand_int(0, #o_comment - #pair), pair)
             end
-            obuf[on] = string.format("%d\t%d\t%s\t%.2f\t%s\t%s\tClerk#%09d\t0\t%s\n",
-                ord_off + lok, cust_off + o_ck, o_status, o_totalprice, date_of(o_jd), o_priority,
-                o_clerk, o_comment)
+            obuf[on] = string.format("%d\t%d\t%s\t%d.%02d\t%s\t%s\tClerk#%09d\t0\t%s\n",
+                ord_off + lok, cust_off + o_ck, o_status, o_totalprice // 100, o_totalprice % 100,
+                date_of(o_jd), o_priority, o_clerk, o_comment)
         end
 
         -- Flush orders
