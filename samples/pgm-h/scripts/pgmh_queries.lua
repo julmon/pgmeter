@@ -26,9 +26,9 @@ local NATIONS = {
 }
 local SEGMENTS = {"AUTOMOBILE", "BUILDING", "FURNITURE", "HOUSEHOLD", "MACHINERY"}
 local SHIP_MODES = {"REG AIR", "AIR", "RAIL", "SHIP", "TRUCK", "MAIL", "FOB"}
-local TYPES1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY"}
+local TYPES1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"}
 local TYPES2 = {"ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"}
-local TYPES3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER", "IRON"}
+local TYPES3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER"}
 local COLORS = {"almond", "antique", "aquamarine", "azure", "beige", "bisque", "black", "blanched", "blue"}
 
 local function pick(t) return t[rand_int(1, #t)] end

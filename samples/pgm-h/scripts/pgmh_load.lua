@@ -1,5 +1,10 @@
 -- PGM-H Data Loading Script
--- Populates part, supplier, partsupp, customer, orders, lineitem.
+-- Populates part, supplier, partsupp, customer, orders, lineitem following
+-- the rules of the TPC-H data generator (dbgen's build.c and dists.dss):
+-- value lists and ranges, price per part key, supplier bridge, customer
+-- mortality (one customer in three never orders), order status from the
+-- lines shipped by the "current date" 1995-06-17, and the comment markers
+-- that Q13 and Q16 search for.
 --
 -- Parallel model: `ids` is this job's slice of 1..scalefactor. Each id is one
 -- self-contained "unit" worth one SF of data, with surrogate keys offset by
@@ -13,8 +18,10 @@ local PARTS_PER_UNIT = 200000
 local SUPPLIERS_PER_UNIT = 10000
 local CUSTOMERS_PER_UNIT = 150000
 local ORDERS_PER_UNIT = 1500000
+local CLERKS_PER_UNIT = 1000
 local PARTSUPPS_PER_PART = 4
 local BATCH = 10000
+local SUPPLIER_BATCH = 5000
 
 -- Reference data
 local SEGMENTS = {"AUTOMOBILE", "BUILDING", "FURNITURE", "HOUSEHOLD", "MACHINERY"}
@@ -28,10 +35,12 @@ local CONTAINERS = {
     "JUMBO CASE", "JUMBO BOX", "JUMBO PACK", "JUMBO PKG", "JUMBO JAR", "JUMBO BAG", "JUMBO CAN", "JUMBO DRUM",
     "WRAP CASE", "WRAP BOX", "WRAP PACK", "WRAP PKG", "WRAP JAR", "WRAP BAG", "WRAP CAN", "WRAP DRUM",
 }
-local T1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY"}
+-- The 150 part types of dists.dss: 6 x 5 x 5 words.
+local T1 = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"}
 local T2 = {"ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"}
-local T3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER", "IRON"}
+local T3 = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER"}
 
+-- The 92 colours of dists.dss; a part name is five distinct ones.
 local PART_WORDS = {
     "almond", "antique", "aquamarine", "azure", "beige", "bisque", "black", "blanched",
     "blue", "blush", "brown", "burlywood", "burnished", "chartreuse", "chiffon", "chocolate",
@@ -46,11 +55,29 @@ local PART_WORDS = {
     "violet", "wheat", "white", "yellow",
 }
 
+-- The word pairs Q13 looks for in order comments (dists.dss Q13a/Q13b).
+-- dbgen's text grammar puts them in a few percent of the comments; here
+-- one comment in four gets one of the 16 pairs, so each pair matches about
+-- 1.5% of the orders.
+local Q13_ADJ = {"special", "pending", "unusual", "express"}
+local Q13_NOUN = {"packages", "requests", "accounts", "deposits"}
+
 local function pick(t) return t[rand_int(1, #t)] end
 
 local function gen_part_name()
-    return pick(PART_WORDS) .. " " .. pick(PART_WORDS) .. " " .. pick(PART_WORDS)
-        .. " " .. pick(PART_WORDS) .. " " .. pick(PART_WORDS)
+    local words, n = {}, 0
+    while n < 5 do
+        local w = pick(PART_WORDS)
+        local dup = false
+        for k = 1, n do
+            if words[k] == w then dup = true break end
+        end
+        if not dup then
+            n = n + 1
+            words[n] = w
+        end
+    end
+    return table.concat(words, " ")
 end
 
 local function gen_type()
@@ -59,7 +86,25 @@ end
 
 local function gen_phone(nation_key)
     return string.format("%d-%03d-%03d-%04d",
-        10 + nation_key, rand_int(100, 998), rand_int(100, 998), rand_int(1000, 9998))
+        10 + nation_key, rand_int(100, 999), rand_int(100, 999), rand_int(1000, 9999))
+end
+
+-- dbgen's retail price of a part, in cents (rpb_routine): 900.00 to 2099.00.
+-- lineitem derives its extended price from the same function.
+local function rpb(lp)
+    return 90000 + (lp // 10) % 20001 + (lp % 1000) * 100
+end
+
+-- dbgen's PART_SUPP_BRIDGE: the i-th (0..3) supplier of a part, within the
+-- unit. partsupp and lineitem both use it, so (l_partkey, l_suppkey) always
+-- exists in partsupp.
+local function supplier_of(lp, i)
+    return ((lp + i * (SUPPLIERS_PER_UNIT // 4 + (lp - 1) // SUPPLIERS_PER_UNIT)) % SUPPLIERS_PER_UNIT) + 1
+end
+
+-- Replace `#marker` characters of a comment at offset `off` (0-based).
+local function splice(comment, off, marker)
+    return string.sub(comment, 1, off) .. marker .. string.sub(comment, off + #marker + 1)
 end
 
 -- Pure-Lua date arithmetic (no SQL round-trips)
@@ -84,28 +129,25 @@ local function days_to_ymd(jd)
     return year, month, day
 end
 
-local function rand_date(y1, y2)
-    return string.format("%04d-%02d-%02d", rand_int(y1, y2), rand_int(1, 12), rand_int(1, 28))
+-- dbgen's calendar: orders are dated 1992-01-01 to 1998-08-02 (2,406 days)
+-- so that the latest ship date is 1998-12-01 and the latest receipt date
+-- 1998-12-31; "today" is 1995-06-17. Dates are handled as day numbers and
+-- formatted once, through this table.
+local JD_START = ymd_to_days(1992, 1, 1)
+local JD_CURRENT = ymd_to_days(1995, 6, 17)
+local ORDER_DAYS = 2406
+local DATES = {}
+for jd = JD_START, JD_START + ORDER_DAYS + 121 + 30 do
+    local y, m, d = days_to_ymd(jd)
+    DATES[jd - JD_START + 1] = string.format("%04d-%02d-%02d", y, m, d)
 end
-
--- Optimized: parse date once, add days via Julian arithmetic, format result
-local function add_days_fast(y, m, d, n)
-    local jd = ymd_to_days(y, m, d) + n
-    local ny, nm, nd = days_to_ymd(jd)
-    return string.format("%04d-%02d-%02d", ny, nm, nd), ny, nm, nd
-end
-
--- Parse "YYYY-MM-DD" into y, m, d (avoid repeated string ops)
-local function parse_date(ds)
-    return tonumber(string.sub(ds, 1, 4)),
-           tonumber(string.sub(ds, 6, 7)),
-           tonumber(string.sub(ds, 9, 10))
-end
+local function date_of(jd) return DATES[jd - JD_START + 1] end
 
 -- Pre-allocate reusable buffer tables
 local buf = {}
 local obuf = {}
 local lbuf = {}
+local lines = {}
 
 -- Helper: flush n entries from buffer to COPY
 local function flush_copy(sql, t, n)
@@ -123,9 +165,10 @@ for _, unit in ipairs(ids) do
     local supp_off = (unit - 1) * SUPPLIERS_PER_UNIT
     local cust_off = (unit - 1) * CUSTOMERS_PER_UNIT
     local ord_off  = (unit - 1) * ORDERS_PER_UNIT
+    local clerk_off = (unit - 1) * CLERKS_PER_UNIT
 
     -- --------------------------------------------------------
-    -- 1. Part
+    -- 1. Part. The brand's first digit is the manufacturer's.
     -- --------------------------------------------------------
     local n_batches = math.ceil(PARTS_PER_UNIT / BATCH)
     for b = 1, n_batches do
@@ -136,24 +179,24 @@ for _, unit in ipairs(ids) do
         local n = 0
         for lp = s, e do
             n = n + 1
-            buf[n] = string.format("%d\t%s\t%s\t%s\t%s\t%d\t%s\t%.2f\t%s\n",
-                part_off + lp, gen_part_name(),
-                string.format("Manufacturer#%d", rand_int(1, 5)),
-                string.format("Brand#%d%d", rand_int(1, 5), rand_int(1, 5)),
+            local mfgr = rand_int(1, 5)
+            buf[n] = string.format("%d\t%s\tManufacturer#%d\tBrand#%d%d\t%s\t%d\t%s\t%.2f\t%s\n",
+                part_off + lp, gen_part_name(), mfgr, mfgr, rand_int(1, 5),
                 gen_type(), rand_int(1, 50), pick(CONTAINERS),
-                (90000 + (lp % 20001) + 100 * (lp % 1000)) / 100.0,
-                comments[n])
+                rpb(lp) / 100.0, comments[n])
         end
         flush_copy("COPY part FROM stdin", buf, n)
     end
 
     -- --------------------------------------------------------
-    -- 2. Supplier
+    -- 2. Supplier. Ten comments per unit carry "Customer ...
+    --    Complaints" or "Customer ... Recommends", as dbgen plants
+    --    them; Q16 excludes the complained-about suppliers.
     -- --------------------------------------------------------
-    n_batches = math.ceil(SUPPLIERS_PER_UNIT / 5000)
+    n_batches = math.ceil(SUPPLIERS_PER_UNIT / SUPPLIER_BATCH)
     for b = 1, n_batches do
-        local s = (b - 1) * 5000 + 1
-        local e = math.min(b * 5000, SUPPLIERS_PER_UNIT)
+        local s = (b - 1) * SUPPLIER_BATCH + 1
+        local e = math.min(b * SUPPLIER_BATCH, SUPPLIERS_PER_UNIT)
         local cnt = e - s + 1
         local addrs = rand_strings(cnt, 10, 40)
         local comments = rand_strings(cnt, 25, 100)
@@ -162,16 +205,22 @@ for _, unit in ipairs(ids) do
             n = n + 1
             local gk = supp_off + ls
             local nk = rand_int(0, 24)
+            local comment = comments[n]
+            if rand_int(1, 10000) <= 10 then
+                local kind = rand_int(0, 100) < 50 and "Complaints" or "Recommends"
+                local noise = rand_int(0, #comment - 19)
+                local off = rand_int(0, #comment - 19 - noise)
+                comment = splice(splice(comment, off, "Customer "), off + 9 + noise, kind)
+            end
             buf[n] = string.format("%d\tSupplier#%09d\t%s\t%d\t%s\t%.2f\t%s\n",
                 gk, gk, addrs[n], nk, gen_phone(nk),
-                rand_float(-999.99, 9999.99), comments[n])
+                rand_float(-999.99, 9999.99), comment)
         end
         flush_copy("COPY supplier FROM stdin", buf, n)
     end
 
     -- --------------------------------------------------------
-    -- 3. Partsupp (4 per part) -- same supplier-mapping formula as
-    --    lineitem below, so (l_partkey, l_suppkey) always lands here.
+    -- 3. Partsupp (4 per part)
     -- --------------------------------------------------------
     n_batches = math.ceil(PARTS_PER_UNIT / BATCH)
     for b = 1, n_batches do
@@ -183,9 +232,9 @@ for _, unit in ipairs(ids) do
         for lp = s, e do
             for i = 0, PARTSUPPS_PER_PART - 1 do
                 n = n + 1
-                local ps_sk = ((lp + i * (SUPPLIERS_PER_UNIT / 4 + (lp - 1) / SUPPLIERS_PER_UNIT)) % SUPPLIERS_PER_UNIT) + 1
                 buf[n] = string.format("%d\t%d\t%d\t%.2f\t%s\n",
-                    part_off + lp, supp_off + ps_sk, rand_int(1, 9999), rand_float(1.00, 1000.00), comments[n])
+                    part_off + lp, supp_off + supplier_of(lp, i), rand_int(1, 9999),
+                    rand_float(1.00, 1000.00), comments[n])
             end
         end
         flush_copy("COPY partsupp FROM stdin", buf, n)
@@ -222,63 +271,84 @@ for _, unit in ipairs(ids) do
         local e = math.min(b * BATCH, ORDERS_PER_UNIT)
         local cnt = e - s + 1
 
+        -- The line counts first, so the comments are drawn for the lines
+        -- that exist.
+        local total_lines = 0
+        for k = 1, cnt do
+            lines[k] = rand_int(1, 7)
+            total_lines = total_lines + lines[k]
+        end
         local o_comments = rand_strings(cnt, 19, 78)
-        local l_comments = rand_strings(cnt * 7, 10, 43)  -- max 7 lines per order
+        local l_comments = rand_strings(total_lines, 10, 43)
         local lc_idx = 0
 
         local on = 0
         local ln = 0
 
         for lok = s, e do
-            local o_ck = (lok % CUSTOMERS_PER_UNIT) + 1
-            local o_date = rand_date(1992, 1998)
-            local oy, om, od = parse_date(o_date)
+            -- Customer mortality: keys divisible by 3 never order; dbgen
+            -- moves them to the next key, or the previous one at the top.
+            local o_ck = rand_int(1, CUSTOMERS_PER_UNIT)
+            if o_ck % 3 == 0 then
+                o_ck = (o_ck < CUSTOMERS_PER_UNIT) and o_ck + 1 or o_ck - 1
+            end
+            local o_jd = JD_START + rand_int(0, ORDER_DAYS - 1)
             local o_priority = pick(PRIORITIES)
-            local o_clerk = string.format("Clerk#%09d", rand_int(1, 1000))
+            local o_clerk = clerk_off + rand_int(1, CLERKS_PER_UNIT)
 
-            local n_lines = rand_int(1, 7)
+            on = on + 1
+            local n_lines = lines[on]
             local o_totalprice = 0.0
-            local has_returned = false
+            local shipped = 0
 
             for li = 1, n_lines do
                 ln = ln + 1
                 lc_idx = lc_idx + 1
                 local l_pk = rand_int(1, PARTS_PER_UNIT)
-                local supp_idx = rand_int(0, 3)
-                local l_sk = ((l_pk + supp_idx * (SUPPLIERS_PER_UNIT / 4 + (l_pk - 1) / SUPPLIERS_PER_UNIT)) % SUPPLIERS_PER_UNIT) + 1
+                local l_sk = supplier_of(l_pk, rand_int(0, 3))
                 local l_qty = rand_int(1, 50)
                 local l_disc = rand_int(0, 10) / 100.0
                 local l_tax = rand_int(0, 8) / 100.0
-                local base_price = (90000 + (l_pk % 20001) + 100 * (l_pk % 1000)) / 100.0
-                local l_extprice = base_price * l_qty
+                local l_extprice = rpb(l_pk) * l_qty / 100.0
                 o_totalprice = o_totalprice + l_extprice * (1 - l_disc) * (1 + l_tax)
 
-                local l_shipdate, sy, sm, sd = add_days_fast(oy, om, od, rand_int(1, 121))
-                local l_commitdate = add_days_fast(oy, om, od, rand_int(30, 90))
-                local l_receiptdate = add_days_fast(sy, sm, sd, rand_int(1, 30))
+                local s_jd = o_jd + rand_int(1, 121)
+                local c_jd = o_jd + rand_int(30, 90)
+                local r_jd = s_jd + rand_int(1, 30)
 
-                local l_rflag
-                if l_receiptdate <= "1995-06-17" then
+                local l_rflag = "N"
+                if r_jd <= JD_CURRENT then
                     l_rflag = rand_int(0, 1) == 0 and "R" or "A"
-                else
-                    l_rflag = "N"
                 end
-                if l_rflag == "R" then has_returned = true end
-
-                local l_lstatus = l_shipdate > "1995-06-17" and "O" or "F"
+                local l_lstatus = "O"
+                if s_jd <= JD_CURRENT then
+                    l_lstatus = "F"
+                    shipped = shipped + 1
+                end
 
                 lbuf[ln] = string.format(
                     "%d\t%d\t%d\t%d\t%d\t%.2f\t%.2f\t%.2f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
                     ord_off + lok, part_off + l_pk, supp_off + l_sk, li, l_qty, l_extprice, l_disc, l_tax,
-                    l_rflag, l_lstatus, l_shipdate, l_commitdate, l_receiptdate,
+                    l_rflag, l_lstatus, date_of(s_jd), date_of(c_jd), date_of(r_jd),
                     pick(SHIP_INSTRUCT), pick(SHIP_MODES), l_comments[lc_idx])
             end
 
-            on = on + 1
-            local o_status = has_returned and "P" or (o_date < "1995-06-17" and "F" or "O")
-            obuf[on] = string.format("%d\t%d\t%s\t%.2f\t%s\t%s\t%s\t0\t%s\n",
-                ord_off + lok, cust_off + o_ck, o_status, o_totalprice, o_date, o_priority, o_clerk,
-                o_comments[on])
+            -- All lines shipped by the current date: F; some: P; none: O.
+            local o_status = "O"
+            if shipped == n_lines then
+                o_status = "F"
+            elseif shipped > 0 then
+                o_status = "P"
+            end
+            local o_comment = o_comments[on]
+            local r = rand_int(1, 64)
+            if r <= 16 then
+                local pair = Q13_ADJ[(r - 1) % 4 + 1] .. " " .. Q13_NOUN[(r - 1) // 4 + 1]
+                o_comment = splice(o_comment, rand_int(0, #o_comment - #pair), pair)
+            end
+            obuf[on] = string.format("%d\t%d\t%s\t%.2f\t%s\t%s\tClerk#%09d\t0\t%s\n",
+                ord_off + lok, cust_off + o_ck, o_status, o_totalprice, date_of(o_jd), o_priority,
+                o_clerk, o_comment)
         end
 
         -- Flush orders
