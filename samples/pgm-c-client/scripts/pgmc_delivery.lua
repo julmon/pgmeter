@@ -37,9 +37,10 @@ for district_id = 1, 10 do
             order_id, warehouse_id, district_id
         )
 
-        -- Sum order line amounts
+        -- Sum order line amounts (TPC-C 2.7.4.2; OL_AMOUNT is already
+        -- quantity x price)
         local total = query_one(
-            "SELECT COALESCE(SUM(ol_amount * ol_quantity), 0) FROM order_line WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
+            "SELECT COALESCE(SUM(ol_amount), 0) FROM order_line WHERE ol_o_id = $1 AND ol_w_id = $2 AND ol_d_id = $3",
             order_id, warehouse_id, district_id
         )
 

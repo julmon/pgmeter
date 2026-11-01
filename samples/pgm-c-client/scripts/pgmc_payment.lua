@@ -23,7 +23,11 @@ else
 end
 
 local c_id = nurand(1023, C_ID, 1, const.customers_per_district)
-local h_amount = rand_float(1.00, 5000.00)
+-- TPC-C 2.5.1.3: H_AMOUNT is a cent amount in [1.00 .. 5000.00]. Kept as a
+-- decimal string so the same value reaches w_ytd, d_ytd, c_balance,
+-- c_ytd_payment and h_amount, and sum(h_amount) stays equal to w_ytd.
+local cents = rand_int(100, 500000)
+local h_amount = string.format("%d.%02d", cents // 100, cents % 100)
 
 -- gen_last() comes from scripts/pgmc_common.lua (scripts.modules)
 
@@ -59,8 +63,9 @@ if y <= 60 then
         rollback()
         error("Payment rollback: customer not found by last name")
     end
+    -- TPC-C 2.5.2.2: the customer at position n/2 rounded up.
     local n = #c_rows
-    c_id = c_rows[math.floor(n / 2) + 1]["c_id"]
+    c_id = c_rows[math.ceil(n / 2)]["c_id"]
 end
 
 -- Get customer credit status
@@ -70,16 +75,18 @@ local cust_rows = query(
 )
 local c_credit = cust_rows[1]["c_credit"]
 
--- Update customer based on credit type
+-- Update customer (TPC-C 2.5.2.2): the payment comes off the balance and is
+-- added to the year-to-date payments, the payment count goes up by one, and a
+-- bad-credit customer gets the payment recorded at the front of c_data.
 if c_credit ~= nil and string.find(c_credit, "BC") then
-    local pre_c_data = string.format("%d %d %d %d %d %.2f", c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount)
+    local pre_c_data = string.format("%d %d %d %d %d %s", c_id, c_d_id, c_w_id, district_id, warehouse_id, h_amount)
     exec(
-        "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+        "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + $1::NUMERIC, c_payment_cnt = c_payment_cnt + 1, c_data = substring($5||' '||c_data, 1, 500) WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
         h_amount, c_id, c_d_id, c_w_id, pre_c_data
     )
 else
     exec(
-        "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
+        "UPDATE customer SET c_balance = c_balance - $1::NUMERIC, c_ytd_payment = c_ytd_payment + $1::NUMERIC, c_payment_cnt = c_payment_cnt + 1 WHERE c_id = $2 AND c_d_id = $3 AND c_w_id = $4",
         h_amount, c_id, c_d_id, c_w_id
     )
 end

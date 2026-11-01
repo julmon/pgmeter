@@ -23,9 +23,10 @@ for ol_number = 1, ol_cnt do
     until not item_ids[ol_i_id]
     item_ids[ol_i_id] = true
 
-    -- 1% rollback via invalid item (on last line)
+    -- TPC-C 2.4.1.4: 1% of the orders carry an unused item number on their
+    -- last line and roll back once the other lines have been processed.
     if rbk == 1 and ol_number == ol_cnt then
-        ol_i_id = 999999
+        ol_i_id = const.items + 1
     end
 
     -- Remote warehouse 1% of the time
@@ -36,8 +37,16 @@ for ol_number = 1, ol_cnt do
         end
     end
 
-    table.insert(order_lines, {ol_number, ol_supply_w_id, ol_quantity, ol_i_id})
+    table.insert(order_lines, {ol_supply_w_id, ol_quantity, ol_i_id})
 end
+
+-- Lock the stock rows in key order, as pgmc_new_order() does, so two orders
+-- sharing items cannot deadlock each other. TPC-C does not prescribe the order
+-- the lines are processed in; the unknown item sorts last either way.
+table.sort(order_lines, function(a, b)
+    if a[1] ~= b[1] then return a[1] < b[1] end
+    return a[3] < b[3]
+end)
 
 begin()
 
@@ -69,17 +78,19 @@ exec(
     o_id, district_id, warehouse_id
 )
 
--- Build stock query for this district
+-- Build stock query for this district. The row is locked by the read: the new
+-- quantity is computed here and written back as a value, so without the lock
+-- two concurrent orders of the same item would both read the old quantity and
+-- one decrement would be lost.
 local stock_query = string.format(
-    "SELECT s_quantity, s_dist_%02d AS s_dist, s_data FROM stock WHERE s_i_id = $1 AND s_w_id = $2",
+    "SELECT s_quantity, s_dist_%02d AS s_dist, s_data FROM stock WHERE s_i_id = $1 AND s_w_id = $2 FOR UPDATE",
     district_id
 )
 
-for _, ol in ipairs(order_lines) do
-    local ol_number = ol[1]
-    local ol_supply_w_id = ol[2]
-    local ol_quantity = ol[3]
-    local ol_i_id = ol[4]
+for ol_number, ol in ipairs(order_lines) do
+    local ol_supply_w_id = ol[1]
+    local ol_quantity = ol[2]
+    local ol_i_id = ol[3]
 
     -- Get item info
     local item_rows = query("SELECT i_price, i_name, i_data FROM item WHERE i_id = $1", ol_i_id)
@@ -96,8 +107,9 @@ for _, ol in ipairs(order_lines) do
     local s_quantity = stock_rows[1]["s_quantity"]
     local s_dist = stock_rows[1]["s_dist"]
 
-    -- Adjust stock quantity
-    if (s_quantity - ol_quantity) > 10 then
+    -- Adjust stock quantity (TPC-C 2.4.2.2: if the remaining stock exceeds
+    -- the quantity ordered by 10 or more, decrement; otherwise restock by 91).
+    if (s_quantity - ol_quantity) >= 10 then
         s_quantity = s_quantity - ol_quantity
     else
         s_quantity = s_quantity - ol_quantity + 91
