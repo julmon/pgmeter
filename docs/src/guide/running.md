@@ -3,7 +3,7 @@
 `run` drives the spec's transaction mix against the data `init` loaded:
 
 ```bash
-pgmeter [connection options] run --spec <DIR|FILE> [-c N] [-T N] [-r N] [-P N] [-j N] [--format FMT] [-q]
+pgmeter [connection options] run --spec <DIR|FILE> [-c N] [-T N] [-r N] [-P N] [-j N] [--once] [--seed N] [--format FMT] [-q]
 ```
 
 | Option | Default | Description |
@@ -15,6 +15,7 @@ pgmeter [connection options] run --spec <DIR|FILE> [-c N] [-T N] [-r N] [-P N] [
 | `-P, --progress` | 0 | Every N seconds, print a `progress:` line when stderr is not a terminal: the current throughput and average latency (over the last second) of a timed run, the transactions done and in flight of a `--once` run; on a terminal the progress bar shows them live |
 | `-j, --threads` | 0 | Worker threads of the async engine (see below); 0 is half the CPUs, at most one per client |
 | `--once` | off | Each client runs every transaction once, in its own random order, then stops (see below); not with `-T` |
+| `--seed` | none | Seed of the clients' random draws, so that two runs issue the same transactions with the same parameters (see below) |
 | `--format` | table | `table`, `json` or `csv` for the results on stdout |
 | `-q, --quiet` | off | No progress output; `--format json` and `csv` imply it |
 
@@ -73,6 +74,32 @@ transaction, with a timeline per client (see [Reading the
 results](results.md)). `duration_s` and `workload_secs` in `run.json` are
 set to the window the run took, and `"once": true`. The ramp-up
 still staggers the clients' start, and Ctrl-C still ends the run early.
+
+## Running the same transactions twice
+
+Without `--seed`, every client draws its transaction order and the parameters
+of its queries from a generator seeded from the operating system, so no two
+runs execute the same statements. Averaged over a long run that does not
+matter. It does matter when two runs are compared query by query: a TPC-DS
+query whose parameter selects one of a few stores can take forty times longer
+in one run than in the other for no reason but the draw, and the difference
+looks like the server's.
+
+`--seed N` seeds each client's generator from the seed and the client id. Two
+runs with the same seed, the same spec and the same number of clients then run
+the same transactions with the same parameters, client for client, on either
+engine and whatever `--threads`: a `--once` run repeats exactly, and a timed
+run repeats the same stream for as long as it lasts. The seed is echoed in
+the run header and recorded as `seed` in `run.json`.
+
+```bash
+pgmeter -d db_a run --spec pgm-ds --once --seed 42
+pgmeter -d db_b run --spec pgm-ds --once --seed 42   # the same 99 queries, same parameters
+```
+
+The seed covers what the clients draw: the order of the transactions and
+every `rand_*` call of their bindings and scripts. It does not cover the data,
+which `init --seed` covers, nor the timing of the clients against each other.
 
 ## Stopping early
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use postgres::Client;
+use rand::rngs::SmallRng;
 
 use super::benchmark::BenchmarkTransaction;
 use super::error::{error_detail, Error};
@@ -642,11 +643,14 @@ fn max_id_from_value(value: Option<i64>) -> Result<u32, String> {
 
 impl YamlBenchmark {
     /// Run one transaction on `client` and return its duration in
-    /// microseconds (the hot path of the client threads).
+    /// microseconds (the hot path of the client threads). Every random draw
+    /// of the transaction, in the bindings or in the script, comes from `rng`,
+    /// the client's own generator (see `yaml_lua::with_client_rng`).
     pub fn execute_rw_transaction_sync(
         &self,
         client: &mut Client,
         transaction: &BenchmarkTransaction,
+        rng: &mut SmallRng,
     ) -> Result<u128, Error> {
         // Find the transaction spec
         let tx_spec = self
@@ -661,7 +665,7 @@ impl YamlBenchmark {
                 ))
             })?;
 
-        let result = match tx_spec.mode {
+        let result = yaml_lua::with_client_rng(rng, || match tx_spec.mode {
             // Evaluate bindings, substitute into the SQL template, execute.
             // No `?` here: a failure must fall through to the recovery below.
             TransactionMode::Simple => self.render_simple_sql(tx_spec).and_then(|statements| {
@@ -696,7 +700,7 @@ impl YamlBenchmark {
                     transaction.id,
                 )
             }
-        };
+        });
 
         if result.is_err() {
             recover_connection(client);
@@ -815,11 +819,13 @@ impl YamlBenchmark {
     /// Run one `simple` transaction on an async connection and return its
     /// duration in microseconds (the hot path of the async client tasks).
     /// Rendering happens on the worker thread that polls the task, with that
-    /// thread's binding VM; only the statements await.
+    /// thread's binding VM but the client's own generator `rng` (see
+    /// `yaml_lua::with_client_rng`); only the statements await.
     pub async fn execute_simple_transaction_async(
         &self,
         client: &tokio_postgres::Client,
         transaction: &BenchmarkTransaction,
+        rng: &mut SmallRng,
     ) -> Result<u128, Error> {
         let tx_spec = self
             .spec
@@ -839,7 +845,7 @@ impl YamlBenchmark {
             )));
         }
 
-        let statements = self.render_simple_sql(tx_spec)?;
+        let statements = yaml_lua::with_client_rng(rng, || self.render_simple_sql(tx_spec))?;
         let start = Instant::now();
         for sql in &statements {
             if let Err(error) = client.batch_execute(sql).await {
@@ -873,7 +879,10 @@ impl YamlBenchmark {
 mod tests {
     use super::YamlBenchmark;
     use crate::executor::error::Error;
+    use crate::executor::yaml_lua;
     use crate::executor::yaml_types::BenchmarkSpec;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
     fn spec_with_transactions(transactions_yaml: &str) -> BenchmarkSpec {
         let yaml = format!(
@@ -959,6 +968,28 @@ mod tests {
             bench.render_simple_sql(tx(2)).unwrap(),
             vec!["BEGIN; SELECT 7; COMMIT"]
         );
+    }
+
+    // Two clients seeded alike render the same SQL, draw after draw, and
+    // clients seeded differently do not: the basis of `run --seed`.
+    #[test]
+    fn render_simple_sql_draws_from_the_clients_generator() {
+        let spec = spec_with_transactions(
+            "  - id: 1\n    name: q\n    weight: 1\n    bindings: {v: 'rand_int(1, 1000000000)', f: 'rand_float(0, 1)'}\n\
+             \x20   sql: 'SELECT {{v}}, {{f}}'\n",
+        );
+        let bench = YamlBenchmark::from_spec(spec, std::env::temp_dir(), 1, 1, 1).unwrap();
+        let tx = bench.spec.transactions.first().unwrap();
+        let render = |rng: &mut SmallRng| {
+            yaml_lua::with_client_rng(rng, || bench.render_simple_sql(tx).unwrap())
+        };
+        let mut a = SmallRng::seed_from_u64(yaml_lua::unit_seed(42, 1));
+        let mut b = SmallRng::seed_from_u64(yaml_lua::unit_seed(42, 1));
+        let mut c = SmallRng::seed_from_u64(yaml_lua::unit_seed(42, 2));
+        let (a1, a2) = (render(&mut a), render(&mut a));
+        assert_eq!((&a1, &a2), (&render(&mut b), &render(&mut b)));
+        assert_ne!(a1, a2, "the generator advances between transactions");
+        assert_ne!(a1, render(&mut c), "another client draws other values");
     }
 
     // Regression for RELEASE_REVIEW B9: none of these were checked. A total
@@ -1234,7 +1265,7 @@ transactions:
         let mut client = Client::connect(&dsn, NoTls).expect("connect to PGMETER_TEST_DSN");
         for tx in benchmark.get_transactions_rw() {
             let err = benchmark
-                .execute_rw_transaction_sync(&mut client, &tx)
+                .execute_rw_transaction_sync(&mut client, &tx, &mut SmallRng::seed_from_u64(1))
                 .expect_err("division by zero must fail");
             // The server message must survive in both modes (RELEASE_REVIEW
             // B16): the Lua runtime error carries it for script mode, and

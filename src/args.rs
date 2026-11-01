@@ -76,6 +76,9 @@ pub struct RunArgs {
     // Each client runs every transaction once, in its own random order, then
     // stops (the TPC-H/DS stream model); `time` is not used
     pub once: bool,
+    // Seed of the clients' random draws (transaction order and parameters);
+    // None draws fresh values every run
+    pub seed: Option<u64>,
 }
 
 // init sub-command arguments
@@ -133,6 +136,7 @@ impl RunArgs {
             progress: 0,
             threads: 0,
             once: false,
+            seed: None,
         }
     }
 }
@@ -361,6 +365,18 @@ impl CliArgs {
             .value_name("NUM")
             .value_parser(clap::value_parser!(u64));
 
+        // run: Define the --seed command line option
+        let run_seed_option = Arg::new("seed")
+            .long("seed")
+            .action(ArgAction::Set)
+            .help(
+                "Seed of the clients' random draws: the same seed, spec and \
+                 client count run the same transactions with the same parameters",
+            )
+            .required(false)
+            .value_name("NUM")
+            .value_parser(clap::value_parser!(u64));
+
         // Define the --spec command line option, shared by init and run
         let spec_option = Arg::new("spec")
             .long("spec")
@@ -397,6 +413,7 @@ impl CliArgs {
             .arg(progress_option)
             .arg(threads_option)
             .arg(once_option)
+            .arg(run_seed_option)
             .arg(format_option)
             .arg(quiet_option);
 
@@ -493,6 +510,7 @@ impl CliArgs {
             let progress = *bm_m.get_one::<u16>("progress").unwrap();
             let threads = *bm_m.get_one::<u16>("threads").unwrap();
             let once = bm_m.get_flag("once");
+            let seed = bm_m.get_one::<u64>("seed").copied();
 
             RunArgs {
                 client,
@@ -501,6 +519,7 @@ impl CliArgs {
                 progress,
                 threads,
                 once,
+                seed,
             }
         }
 
@@ -937,6 +956,29 @@ mod tests {
 
     // RELEASE_REVIEW C8: `init` issues DROP TABLE ... CASCADE for every table
     // in the spec; the help text must say so.
+    // `run --seed` is optional and a u64; absent, the clients draw fresh
+    // values (the generators are OS-seeded).
+    #[test]
+    fn run_seed_is_optional_and_numeric() {
+        let args = CliArgs::new_from(
+            "u".to_string(),
+            ["pgmeter", "run", "--spec", "samples/pgm-b"].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(args.run_args.seed, None);
+        let args = CliArgs::new_from(
+            "u".to_string(),
+            ["pgmeter", "run", "--spec", "samples/pgm-b", "--seed", "42"].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(args.run_args.seed, Some(42));
+        assert!(CliArgs::new_from(
+            "u".to_string(),
+            ["pgmeter", "run", "--spec", "samples/pgm-b", "--seed", "-1"].into_iter(),
+        )
+        .is_err());
+    }
+
     #[test]
     fn init_help_warns_that_tables_are_dropped() {
         let Err(err) =

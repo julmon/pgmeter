@@ -160,4 +160,7 @@ The figures that matter for a comparison are the headline throughput and
 the per-transaction percentiles, at the same scale factor, client count and
 duration. [Measuring well](measuring.md) lists the habits that make such a
 comparison hold: reload before each run, discard the first run after a load,
-ramp up and measure long enough, repeat, and watch the server log.
+ramp up and measure long enough, repeat, and watch the server log. When the
+comparison goes down to single transactions whose cost depends on their
+parameters, give both runs the same `--seed` so they draw the same
+parameters (see [Running a benchmark](running.md)).

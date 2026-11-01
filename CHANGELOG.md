@@ -32,7 +32,10 @@ First public release.
   total and the ones in flight on the bar or in the `progress:` lines, and
   one line per transaction as it completes. `transaction.log` is flushed
   at least every second, so it can be tailed. PGM-H's queries have equal
-  weights, as the specification's streams give them.
+  weights, as the specification's streams give them. `run --seed` makes the
+  clients' draws reproducible: the same seed, spec and client count run the
+  same transactions with the same parameters, so two servers or
+  configurations can be compared query by query.
 - Benchmarks are YAML specifications plus Lua (Luau) scripts. Transactions run
   in `simple` mode (SQL templates with Lua bindings, sent as one batch or, with
   the list form of `sql`, one round trip per statement like pgbench) or
