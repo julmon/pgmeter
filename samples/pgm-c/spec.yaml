@@ -49,8 +49,8 @@ schema:
         - { name: w_city, type: "VARCHAR(20)" }
         - { name: w_state, type: "CHAR(2)" }
         - { name: w_zip, type: "CHAR(9)" }
-        - { name: w_tax, type: REAL }
-        - { name: w_ytd, type: "NUMERIC(24, 12)" }
+        - { name: w_tax, type: "NUMERIC(4, 4)" }
+        - { name: w_ytd, type: "NUMERIC(12, 2)" }
       primary_key: [w_id]
 
     - name: district
@@ -63,8 +63,8 @@ schema:
         - { name: d_city, type: "VARCHAR(20)" }
         - { name: d_state, type: "CHAR(2)" }
         - { name: d_zip, type: "CHAR(9)" }
-        - { name: d_tax, type: REAL }
-        - { name: d_ytd, type: "NUMERIC(24, 12)" }
+        - { name: d_tax, type: "NUMERIC(4, 4)" }
+        - { name: d_ytd, type: "NUMERIC(12, 2)" }
         - { name: d_next_o_id, type: INTEGER }
       primary_key: [d_w_id, d_id]
 
@@ -84,12 +84,12 @@ schema:
         - { name: c_phone, type: "CHAR(16)" }
         - { name: c_since, type: TIMESTAMP }
         - { name: c_credit, type: "CHAR(2)" }
-        - { name: c_credit_lim, type: "NUMERIC(24, 12)" }
-        - { name: c_discount, type: REAL }
-        - { name: c_balance, type: "NUMERIC(24, 12)" }
-        - { name: c_ytd_payment, type: "NUMERIC(24, 12)" }
-        - { name: c_payment_cnt, type: REAL }
-        - { name: c_delivery_cnt, type: REAL }
+        - { name: c_credit_lim, type: "NUMERIC(12, 2)" }
+        - { name: c_discount, type: "NUMERIC(4, 4)" }
+        - { name: c_balance, type: "NUMERIC(12, 2)" }
+        - { name: c_ytd_payment, type: "NUMERIC(12, 2)" }
+        - { name: c_payment_cnt, type: INTEGER }
+        - { name: c_delivery_cnt, type: INTEGER }
         - { name: c_data, type: "VARCHAR(500)" }
       primary_key: [c_w_id, c_d_id, c_id]
 
@@ -101,7 +101,7 @@ schema:
         - { name: h_d_id, type: INTEGER }
         - { name: h_w_id, type: INTEGER }
         - { name: h_date, type: TIMESTAMP }
-        - { name: h_amount, type: REAL }
+        - { name: h_amount, type: "NUMERIC(6, 2)" }
         - { name: h_data, type: "VARCHAR(24)" }
 
     - name: new_order
@@ -133,7 +133,7 @@ schema:
         - { name: ol_supply_w_id, type: INTEGER }
         - { name: ol_delivery_d, type: TIMESTAMP }
         - { name: ol_quantity, type: INTEGER }
-        - { name: ol_amount, type: REAL }
+        - { name: ol_amount, type: "NUMERIC(6, 2)" }
         - { name: ol_dist_info, type: "VARCHAR(24)" }
       primary_key: [ol_w_id, ol_d_id, ol_o_id, ol_number]
 
@@ -142,7 +142,7 @@ schema:
         - { name: i_id, type: INTEGER }
         - { name: i_im_id, type: INTEGER }
         - { name: i_name, type: "VARCHAR(24)" }
-        - { name: i_price, type: REAL }
+        - { name: i_price, type: "NUMERIC(5, 2)" }
         - { name: i_data, type: "VARCHAR(50)" }
       primary_key: [i_id]
 
@@ -155,9 +155,9 @@ schema:
         # purpose: PostgreSQL logs the changed span of an updated row, so
         # keeping them together keeps a stock update's WAL at a few dozen
         # bytes instead of the 240 bytes of s_dist_* in between.
-        - { name: s_ytd, type: "NUMERIC(16, 8)" }
-        - { name: s_order_cnt, type: REAL }
-        - { name: s_remote_cnt, type: REAL }
+        - { name: s_ytd, type: "NUMERIC(8, 2)" }
+        - { name: s_order_cnt, type: INTEGER }
+        - { name: s_remote_cnt, type: INTEGER }
         - { name: s_dist_01, type: "VARCHAR(24)" }
         - { name: s_dist_02, type: "VARCHAR(24)" }
         - { name: s_dist_03, type: "VARCHAR(24)" }
@@ -211,11 +211,11 @@ schema:
           p_item_ids int[], p_supply_w_ids int[], p_quantities int[])
       RETURNS numeric LANGUAGE plpgsql AS $$
       DECLARE
-          v_w_tax      real;
-          v_d_tax      real;
-          v_c_discount real;
+          v_w_tax      numeric;
+          v_d_tax      numeric;
+          v_c_discount numeric;
           v_o_id       int;
-          v_prices     real[];
+          v_prices     numeric[];
           v_total      numeric;
       BEGIN
           SELECT w_tax, c_discount INTO STRICT v_w_tax, v_c_discount
@@ -256,7 +256,7 @@ schema:
                 FROM line
                WHERE s_w_id = line.supply_w_id AND s_i_id = line.item_id
            RETURNING line.ol_number, line.item_id, line.supply_w_id, line.quantity,
-                     (line.quantity * line.price)::real AS amount,
+                     line.quantity * line.price AS amount,
                      CASE p_d_id WHEN 1 THEN s_dist_01 WHEN 2 THEN s_dist_02 WHEN 3 THEN s_dist_03
                                  WHEN 4 THEN s_dist_04 WHEN 5 THEN s_dist_05 WHEN 6 THEN s_dist_06
                                  WHEN 7 THEN s_dist_07 WHEN 8 THEN s_dist_08 WHEN 9 THEN s_dist_09
