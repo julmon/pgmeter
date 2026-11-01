@@ -1,4 +1,5 @@
-# pgmeter
+<img class="pgmeter-logo pgmeter-logo-light" alt="pgmeter" src="images/pgmeter-logo.svg">
+<img class="pgmeter-logo pgmeter-logo-dark" alt="pgmeter" src="images/pgmeter-logo-dark.svg">
 
 pgmeter is a PostgreSQL benchmarking tool written in Rust. A benchmark is a
 **YAML specification plus Lua scripts**: the spec declares the schema, how to

@@ -1,4 +1,7 @@
-# pgmeter
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/src/images/pgmeter-logo-dark.svg">
+  <img alt="pgmeter" src="docs/src/images/pgmeter-logo.svg" width="320">
+</picture>
 
 [![CI](https://github.com/julmon/pgmeter/actions/workflows/ci.yml/badge.svg)](https://github.com/julmon/pgmeter/actions/workflows/ci.yml)
 [![Docs](https://github.com/julmon/pgmeter/actions/workflows/docs.yml/badge.svg)](https://julmon.github.io/pgmeter/)

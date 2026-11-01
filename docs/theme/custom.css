@@ -1,0 +1,6 @@
+/* The logo on the landing page follows the theme: the light lockup on the
+   light themes, the dark one on navy, coal and ayu. */
+.content .pgmeter-logo { max-width: 320px; width: 100%; height: auto; margin: 0.6em 0 1em; }
+.content .pgmeter-logo-dark { display: none; }
+html.navy .pgmeter-logo-light, html.coal .pgmeter-logo-light, html.ayu .pgmeter-logo-light { display: none; }
+html.navy .pgmeter-logo-dark, html.coal .pgmeter-logo-dark, html.ayu .pgmeter-logo-dark { display: block; }
