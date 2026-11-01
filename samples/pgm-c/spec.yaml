@@ -204,8 +204,9 @@ schema:
     # transaction, set-based statements over the order lines. This is the
     # model HammerDB's TPROC-C uses for PostgreSQL, so PGM-C figures are
     # comparable with its NOPM/TPM. An unknown item (TPC-C 2.4.1.4, 1% of
-    # New-Orders) raises no_data_found, which rolls the statement back and
-    # is counted as an error by pgmeter.
+    # New-Orders) raises no_data_found once the valid lines have been
+    # processed, which rolls the statement back and is counted as an error by
+    # pgmeter.
     - |
       CREATE OR REPLACE FUNCTION pgmc_new_order(
           p_w_id int, p_d_id int, p_c_id int,
@@ -227,12 +228,12 @@ schema:
            WHERE d_w_id = p_w_id AND d_id = p_d_id
            RETURNING d_next_o_id - 1, d_tax INTO v_o_id, v_d_tax;
 
+          -- A NULL price marks an unknown item. Its line is left out below and
+          -- the transaction raises at the end, after the other lines' work, as
+          -- TPC-C 2.4.2.3 requires of the 1% rollback.
           SELECT array_agg(i_price ORDER BY u.ord) INTO v_prices
             FROM unnest(p_item_ids) WITH ORDINALITY AS u(item_id, ord)
             LEFT JOIN item ON i_id = u.item_id;
-          IF array_position(v_prices, NULL) IS NOT NULL THEN
-              RAISE EXCEPTION 'New-Order rollback: unknown item' USING ERRCODE = 'no_data_found';
-          END IF;
 
           INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_ol_cnt, o_all_local)
           VALUES (v_o_id, p_d_id, p_w_id, p_c_id, now(), cardinality(p_item_ids),
@@ -244,6 +245,7 @@ schema:
               -- same order and cannot deadlock each other.
               SELECT * FROM unnest(p_item_ids, p_supply_w_ids, p_quantities, v_prices)
                      WITH ORDINALITY AS l(item_id, supply_w_id, quantity, price, ol_number)
+               WHERE price IS NOT NULL
                ORDER BY supply_w_id, item_id
           ), stock_update AS (
               UPDATE stock
@@ -270,6 +272,9 @@ schema:
           )
           SELECT sum(ol_amount) INTO v_total FROM lines;
 
+          IF array_position(v_prices, NULL) IS NOT NULL THEN
+              RAISE EXCEPTION 'New-Order rollback: unknown item' USING ERRCODE = 'no_data_found';
+          END IF;
           RETURN v_total * (1 + v_w_tax + v_d_tax) * (1 - v_c_discount);
       END $$;
     - |
@@ -288,12 +293,13 @@ schema:
            WHERE d_w_id = p_w_id AND d_id = p_d_id RETURNING d_name INTO v_d_name;
 
           IF p_by_name THEN
-              -- TPC-C 2.5.2.2: the customer in the middle of the list sorted by first name
+              -- TPC-C 2.5.2.2: of the customers of that name sorted by first
+              -- name, the one at position n/2 rounded up
               SELECT c_id INTO STRICT v_c_id
                 FROM (SELECT c_id, row_number() OVER (ORDER BY c_first) AS rn, count(*) OVER () AS n
                         FROM customer
                        WHERE c_w_id = p_c_w_id AND c_d_id = p_c_d_id AND c_last = p_c_last) s
-               WHERE rn = n / 2 + 1;
+               WHERE rn = (n + 1) / 2;
           END IF;
 
           UPDATE customer
@@ -323,18 +329,20 @@ schema:
       BEGIN
           -- Districts are visited in order so that two concurrent deliveries of
           -- the same warehouse take their row locks in the same order and
-          -- cannot deadlock each other.
+          -- cannot deadlock each other. The oldest order is locked as it is
+          -- read, skipping one another delivery holds, so two deliveries of
+          -- the same district take different orders rather than one of them
+          -- losing the race and skipping a district that has orders (TPC-C
+          -- 2.7.4.2 skips a district only when it has none).
           FOR v_d_id IN 1..10 LOOP
-              SELECT min(no_o_id) INTO v_o_id
-                FROM new_order WHERE no_w_id = p_w_id AND no_d_id = v_d_id;
+              SELECT no_o_id INTO v_o_id
+                FROM new_order WHERE no_w_id = p_w_id AND no_d_id = v_d_id
+               ORDER BY no_o_id LIMIT 1 FOR UPDATE SKIP LOCKED;
               IF v_o_id IS NULL THEN
                   CONTINUE;  -- nothing to deliver in this district
               END IF;
               DELETE FROM new_order
                WHERE no_w_id = p_w_id AND no_d_id = v_d_id AND no_o_id = v_o_id;
-              IF NOT FOUND THEN
-                  CONTINUE;  -- a concurrent delivery took it first
-              END IF;
               UPDATE orders SET o_carrier_id = p_carrier_id
                WHERE o_w_id = p_w_id AND o_d_id = v_d_id AND o_id = v_o_id
            RETURNING o_c_id INTO v_c_id;
@@ -367,11 +375,12 @@ schema:
           v_lines   int;
       BEGIN
           IF p_by_name THEN
+              -- TPC-C 2.6.2.2: the customer at position n/2 rounded up
               SELECT c_id INTO STRICT v_c_id
                 FROM (SELECT c_id, row_number() OVER (ORDER BY c_first) AS rn, count(*) OVER () AS n
                         FROM customer
                        WHERE c_w_id = p_w_id AND c_d_id = p_d_id AND c_last = p_c_last) s
-               WHERE rn = n / 2 + 1;
+               WHERE rn = (n + 1) / 2;
           END IF;
           SELECT c_balance, c_first, c_middle, c_last INTO STRICT v_balance, v_first, v_middle, v_last
             FROM customer WHERE c_w_id = p_w_id AND c_d_id = p_d_id AND c_id = v_c_id;
