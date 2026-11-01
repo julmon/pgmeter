@@ -196,12 +196,12 @@ schema:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-# Pre-load: populate the item table (100K rows, shared across all warehouses)
 # Shared Lua helpers, loaded into the loaders' and the transactions' VMs.
 scripts:
   modules:
     - scripts/pgmc_common.lua
 
+# Pre-load: populate the item table (100K rows, shared across all warehouses)
 pre_load_script: scripts/pgmc_pre_load.lua
 # Per-warehouse loading: warehouse, district, customer, history, stock, orders, new_order, order_line
 load_script: scripts/pgmc_load.lua
