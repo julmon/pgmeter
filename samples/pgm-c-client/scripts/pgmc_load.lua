@@ -16,14 +16,30 @@ local function rand_state()
     return string.sub(chars, a, a) .. string.sub(chars, b, b)
 end
 
+-- TPC-C 4.3.2.7: a random 4-digit n-string followed by 11111.
 local function rand_zip()
-    return string.format("%04d11111", rand_int(1, 9999))
+    return string.format("%04d11111", rand_int(0, 9999))
 end
 
+-- TPC-C 4.3.2.7: a 16-digit n-string. Two 8-digit draws: a single draw up to
+-- 10^16 - 1 would exceed the 2^53 integers a Luau number holds exactly.
+local function rand_phone()
+    return string.format("%08d%08d", rand_int(0, 99999999), rand_int(0, 99999999))
+end
+
+-- TPC-C 4.3.3.1: a tax or discount drawn with 4 decimals, as "0.dddd";
+-- max_ten_thousandths is 2000 for the taxes (0.2000) and 5000 for the
+-- discount (0.5000).
+local function rand_rate(max_ten_thousandths)
+    return string.format("0.%04d", rand_int(0, max_ten_thousandths))
+end
+
+-- TPC-C 4.3.3.1: 10% of the strings carry "ORIGINAL" at a random position,
+-- replacing 8 characters so the length stays within 26..50.
 local function make_original(s)
-    if rand_int(1, 100) <= 10 and #s > 9 then
-        local pos = rand_int(1, #s - 9)
-        return string.sub(s, 1, pos - 1) .. "ORIGINAL" .. string.sub(s, pos + 9)
+    if rand_int(1, 100) <= 10 then
+        local pos = rand_int(1, #s - 7)
+        return string.sub(s, 1, pos - 1) .. "ORIGINAL" .. string.sub(s, pos + 8)
     end
     return s
 end
@@ -38,17 +54,17 @@ for _, wh_id in ipairs(ids) do
 
     -- 1. Warehouse
     copy_start("COPY warehouse FROM stdin")
-    copy_write(string.format("%d\t%s\t%s\t%s\t%s\t%s\t%s\t%.4f\t300000.00\n",
+    copy_write(string.format("%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t300000.00\n",
         wh_id, rand_string(6, 10), rand_string(10, 20), rand_string(10, 20),
-        rand_string(10, 20), rand_state(), rand_zip(), rand_float(0.10, 0.20)))
+        rand_string(10, 20), rand_state(), rand_zip(), rand_rate(2000)))
     copy_end()
 
     -- 2. District (10 per warehouse)
     copy_start("COPY district FROM stdin")
     for d_id = 1, DISTRICTS_PER_WH do
-        copy_write(string.format("%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%.4f\t30000.00\t3001\n",
+        copy_write(string.format("%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t30000.00\t3001\n",
             d_id, wh_id, rand_string(6, 10), rand_string(10, 20), rand_string(10, 20),
-            rand_string(10, 20), rand_state(), rand_zip(), rand_float(0.10, 0.20)))
+            rand_string(10, 20), rand_state(), rand_zip(), rand_rate(2000)))
     end
     copy_end()
 
@@ -68,7 +84,7 @@ for _, wh_id in ipairs(ids) do
             if rand_int(1, 10) == 1 then c_credit = "BC" end
 
             copy_write(string.format(
-                "%d\t%d\t%d\t%s\tOE\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t50000.00\t%.2f\t-10.00\t10.00\t1\t0\t%s\n",
+                "%d\t%d\t%d\t%s\tOE\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t50000.00\t%s\t-10.00\t10.00\t1\t0\t%s\n",
                 c_id, d_id, wh_id,
                 rand_string(8, 16),         -- c_first
                 gen_last(c_id - 1),         -- c_last (TPC-C 4.3.3.1)
@@ -77,10 +93,10 @@ for _, wh_id in ipairs(ids) do
                 rand_string(10, 20),        -- c_city
                 rand_state(),               -- c_state
                 rand_zip(),                 -- c_zip
-                rand_int(1000000000000000, 9999999999999999), -- c_phone (may overflow i32, passed as number)
+                rand_phone(),               -- c_phone
                 ts,                         -- c_since
                 c_credit,
-                rand_float(0.00, 0.50),     -- c_discount
+                rand_rate(5000),            -- c_discount, 0.0000 .. 0.5000
                 rand_string(300, 500)       -- c_data
             ))
 
@@ -138,11 +154,15 @@ for _, wh_id in ipairs(ids) do
     end
 
     -- 6. Orders (3000 per district = 30000 per warehouse)
+    -- TPC-C 4.3.3.1: O_C_ID is taken sequentially from a random permutation
+    -- of the district's customers, and O_OL_CNT is drawn in 5..15 per order.
+    -- The line counts are kept for the order_line loader below.
     local total_orders = DISTRICTS_PER_WH * CUSTOMERS_PER_DIST
     n_batches = math.ceil(total_orders / BATCH_SIZE)
     local o_id = 1
     d_id = 1
-    c_id = 1
+    local perm = {}
+    local ol_cnts = {}
 
     for b = 1, n_batches do
         copy_start("COPY orders FROM stdin NULL AS ''")
@@ -150,21 +170,28 @@ for _, wh_id in ipairs(ids) do
         local batch_end = math.min(b * BATCH_SIZE, total_orders)
 
         for _ = batch_start, batch_end do
+            if o_id == 1 then
+                -- A fresh permutation of 1..3000 for this district (Fisher-Yates)
+                for i = 1, CUSTOMERS_PER_DIST do perm[i] = i end
+                for i = CUSTOMERS_PER_DIST, 2, -1 do
+                    local j = rand_int(1, i)
+                    perm[i], perm[j] = perm[j], perm[i]
+                end
+            end
             local o_carrier_id = ""
             if o_id < 2101 then
                 o_carrier_id = tostring(rand_int(1, 10))
             end
-            local o_ol_cnt = (o_id * (o_id + d_id + wh_id)) % 11 + 5
+            local o_ol_cnt = rand_int(5, 15)
+            ol_cnts[(d_id - 1) * CUSTOMERS_PER_DIST + o_id] = o_ol_cnt
 
             copy_write(string.format("%d\t%d\t%d\t%d\t%s\t%s\t%d\t1\n",
-                o_id, d_id, wh_id, c_id, ts, o_carrier_id, o_ol_cnt))
+                o_id, d_id, wh_id, perm[o_id], ts, o_carrier_id, o_ol_cnt))
 
             o_id = o_id + 1
-            c_id = c_id + 1
             if o_id > CUSTOMERS_PER_DIST then
                 d_id = d_id + 1
                 o_id = 1
-                c_id = 1
             end
         end
         copy_end()
@@ -206,7 +233,7 @@ for _, wh_id in ipairs(ids) do
         local batch_end = math.min(b * OL_BATCH, total_orders)
 
         for _ = batch_start, batch_end do
-            local ol_cnt = (o_id * (o_id + d_id + wh_id)) % 11 + 5
+            local ol_cnt = ol_cnts[(d_id - 1) * CUSTOMERS_PER_DIST + o_id]
 
             for ol_num = 1, ol_cnt do
                 local item_id = rand_int(1, N_ITEMS)

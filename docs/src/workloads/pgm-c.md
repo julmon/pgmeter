@@ -33,7 +33,8 @@ The scale unit is a **warehouse**. Per warehouse:
 `item` has 100,000 rows shared by every warehouse, loaded once before the
 warehouses. At 10 warehouses the tables take about 1 GB and the indexes
 200 MB more. Primary keys
-on every table plus the two TPC-C secondary indexes, `customer
+on every table but `history`, which TPC-C leaves without a key, plus the two
+TPC-C secondary indexes, `customer
 (c_w_id, c_d_id, c_last, c_first, c_id)` for the by-name lookups and
 `orders (o_w_id, o_d_id, o_c_id, o_id)` for Order-Status, and the ten
 foreign keys of TPC-C's referential integrity. The foreign keys cost every
@@ -95,9 +96,10 @@ rollback TPC-C requires, not a failure. Any other message is a real problem.
 - The items of an order are distinct. TPC-C draws each line's item on its
   own, so an order may name the same item twice; one set-based stock update
   per order needs them distinct.
-- The number of lines per order follows a deterministic formula over the
-  order id rather than a uniform draw, which gives the same 5 to 15 range
-  and about the same average.
+- The constants of the non-uniform random function are fixed in
+  `pgmc_common.lua` rather than drawn once per database, so every load is the
+  same; the load-time and run-time constants for last names differ by 88,
+  within the 65 to 119 the specification requires.
 - The headline figure is committed transactions per minute over all five
   transactions. The results table has the committed New-Orders per minute
   for anyone who wants the TPC-C-style view; neither is tpmC.

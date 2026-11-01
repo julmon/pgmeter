@@ -16,7 +16,7 @@ end
 -- Customer last names: the TPC-C syllable scheme, 1000 distinct names for
 -- n = 0..999. The loader passes c_id - 1 for the first 1000 customers of a
 -- district and a load-time NURand for the others (TPC-C 4.3.3.1).
-local syllables = {"BAR", "OUGHT", "ABLE", "PRIS", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
+local syllables = {"BAR", "OUGHT", "ABLE", "PRI", "PRES", "ESE", "ANTI", "CALLY", "ATION", "EING"}
 
 function gen_last(n)
     if n >= 1000 then n = nurand(255, C_LAST_LOAD, 0, 999) end
