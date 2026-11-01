@@ -61,8 +61,12 @@ weight, with no think time.
 Each transaction is a `SELECT pgmc_<name>(...)` round trip; the five
 functions are created by the spec's `post_ddls` at `init` time, in plain
 PL/pgSQL you can read and change in the spec. Delivery visits the districts
-in order and New-Order updates its stock rows sorted by key, so concurrent
-transactions take their row locks in the same order and do not deadlock.
+in order and locks each district's oldest order as it reads it, skipping one
+another delivery holds, and New-Order feeds its stock update from the lines
+sorted by key, so concurrent transactions take their row locks in the same
+order. No run has deadlocked so far; the sort is an `ORDER BY` in a CTE,
+which the planner has honoured in every plan seen, not a guarantee the
+server gives.
 
 ## Errors you should expect
 
@@ -76,8 +80,21 @@ rollback TPC-C requires, not a failure. Any other message is a real problem.
   back to back, so the throughput per warehouse is far above TPC-C's
   12.86 tpmC ceiling, and the warehouse count sets the data size rather than
   the load.
+- Every transaction draws its warehouse and district at random. TPC-C
+  attaches each terminal to one district and has it emulate a user there;
+  the hot rows and the remote shares are the same, the per-terminal
+  bookkeeping is not.
 - Delivery runs inline as a normal transaction rather than through the
-  deferred queue the specification describes.
+  deferred queue the specification describes, and the districts it skipped
+  are counted, not reported.
+- The reads a transaction makes only to display them are left out: New-Order
+  does not fetch the item names nor compare the `ORIGINAL` markers of the item
+  and stock data, Payment does not read the warehouse and district addresses,
+  Order-Status does not read the customer's name and balance. Stock-Level is
+  the two statements the specification describes.
+- The items of an order are distinct. TPC-C draws each line's item on its
+  own, so an order may name the same item twice; one set-based stock update
+  per order needs them distinct.
 - The number of lines per order follows a deterministic formula over the
   order id rather than a uniform draw, which gives the same 5 to 15 range
   and about the same average.
