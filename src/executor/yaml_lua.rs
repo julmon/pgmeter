@@ -67,10 +67,29 @@ pub fn reseed_rng(seed: u64) {
     FAST_RNG.with(|cell| *cell.borrow_mut() = SmallRng::seed_from_u64(seed));
 }
 
-/// The seed of one scale unit's data: the user's seed and the unit id, spread
-/// so that neighbouring units do not share generator state.
+/// The seed of one scale unit's data, or of one client's draws: the user's
+/// seed and the unit (or client) id, spread so that neighbours do not share
+/// generator state.
 pub fn unit_seed(seed: u64, unit: u32) -> u64 {
     seed.wrapping_add((unit as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+}
+
+/// Run `f` with `rng` as this thread's generator: every `rand_*` call made
+/// inside draws from the caller's generator and advances it, and the thread's
+/// own generator is put back afterwards, panic or not. A run client owns its
+/// generator and wraps each transaction in this, so its draws depend only on
+/// its seed, not on which thread happens to run it (the async engine moves
+/// clients between worker threads) nor on what the other clients drew.
+pub fn with_client_rng<R>(rng: &mut SmallRng, f: impl FnOnce() -> R) -> R {
+    struct Swapped<'a>(&'a mut SmallRng);
+    impl Drop for Swapped<'_> {
+        fn drop(&mut self) {
+            FAST_RNG.with(|cell| std::mem::swap(&mut *cell.borrow_mut(), self.0));
+        }
+    }
+    FAST_RNG.with(|cell| std::mem::swap(&mut *cell.borrow_mut(), rng));
+    let _swapped = Swapped(rng);
+    f()
 }
 
 /// Binds `client` to this thread's Lua bridge for as long as the guard lives.
@@ -1301,6 +1320,38 @@ mod tests {
         assert_ne!(draw(42), draw(43));
         assert_ne!(unit_seed(7, 1), unit_seed(7, 2));
         assert_ne!(unit_seed(7, 1), unit_seed(8, 1));
+    }
+
+    // A client's generator drives the draws made under `with_client_rng`
+    // and comes out advanced, while the thread's own generator is left as
+    // it was: two clients seeded alike draw alike, whatever the thread did
+    // in between.
+    #[test]
+    fn with_client_rng_makes_the_draws_the_clients_own() {
+        let lua = create_lua_vm().unwrap();
+        let draw = || -> (i64, f64) {
+            lua.load("return rand_int(1, 1000000000), rand_float(0.0, 1.0)")
+                .eval()
+                .unwrap()
+        };
+        let mut a = SmallRng::seed_from_u64(99);
+        let mut b = SmallRng::seed_from_u64(99);
+        reseed_rng(1);
+        let a1 = with_client_rng(&mut a, draw);
+        let _thread_noise = draw();
+        let b1 = with_client_rng(&mut b, draw);
+        assert_eq!(a1, b1, "same client seed, same draw");
+        let a2 = with_client_rng(&mut a, draw);
+        let b2 = with_client_rng(&mut b, draw);
+        assert_eq!(a2, b2, "the client's generator advances, not the thread's");
+        assert_ne!(a1, a2);
+        // The thread's generator is untouched by the clients' draws: the
+        // sequence it yields equals the one a fresh reseed gives after one
+        // draw (the `_thread_noise` above).
+        let after = draw();
+        reseed_rng(1);
+        let _ = draw();
+        assert_eq!(after, draw());
     }
 
     #[test]

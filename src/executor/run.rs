@@ -23,6 +23,7 @@ use super::benchmark::{BenchmarkTransaction, Counter};
 use super::error::{error_detail, Error};
 use super::txmessage::{TXMessage, TXMessageKind};
 use super::yaml_benchmark::YamlBenchmark;
+use super::yaml_lua;
 use super::{redact_dsn, summary, terminal, Executor, ERROR_FILE, LOG_FILE, RUN_FILE};
 use crate::args::RunArgs;
 
@@ -146,6 +147,8 @@ struct ClientTask {
     interrupted: Arc<AtomicBool>,
     duration_ms: u64,
     once: bool,
+    /// `run --seed`, see `client_rng`.
+    seed: Option<u64>,
     /// The live view of a `--once` run, fed by the client; None for a timed run.
     stream: Option<Arc<terminal::StreamProgress>>,
 }
@@ -163,6 +166,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         interrupted,
         duration_ms,
         once,
+        seed,
         stream,
     } = task;
 
@@ -184,7 +188,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         let _ = connection.await;
     });
 
-    let mut rng = SmallRng::from_os_rng();
+    let mut rng = client_rng(seed, client_id);
     let mut picker = TransactionPicker::new(benchmark.get_transactions_rw(), once, &mut rng);
     let loop_start = Instant::now();
     // No time limit in a `--once` run: the client stops when its list ends.
@@ -195,7 +199,7 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
             stream.begin(client_id, transaction.id);
         }
         match benchmark
-            .execute_simple_transaction_async(&client, transaction)
+            .execute_simple_transaction_async(&client, transaction, &mut rng)
             .await
         {
             Ok(duration) => {
@@ -225,6 +229,19 @@ async fn run_client_task(task: ClientTask) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// One client's random generator, the source of everything the client draws:
+/// the transaction order and every `rand_*` call of its bindings and scripts.
+/// With `run --seed` it is seeded from the seed and the client id, so two runs
+/// with the same seed, spec and client count issue the same transactions with
+/// the same parameters, client for client, whatever the engine or the number
+/// of worker threads; without a seed it is seeded from the OS.
+fn client_rng(seed: Option<u64>, client_id: u16) -> SmallRng {
+    match seed {
+        Some(seed) => SmallRng::seed_from_u64(yaml_lua::unit_seed(seed, client_id as u32)),
+        None => SmallRng::from_os_rng(),
+    }
 }
 
 /// Weighted transaction selection: the index of the first cumulative weight
@@ -273,6 +290,7 @@ impl Executor {
         self.duration_s = args.time;
         self.rampup_s = args.rampup;
         self.once = args.once;
+        self.seed = args.seed;
         let rampup_ms = args.rampup as u64 * 1000;
         let time_ms = args.time as u64 * 1000;
         // Nap time before starting a new client
@@ -373,6 +391,7 @@ impl Executor {
         let workload = match engine {
             Engine::ThreadPerClient => self.run_benchmark_sync(
                 args.once,
+                args.seed,
                 args.client,
                 min_id,
                 max_id,
@@ -390,6 +409,7 @@ impl Executor {
             Engine::Async { threads } => self.run_benchmark_async(
                 threads,
                 args.once,
+                args.seed,
                 args.client,
                 min_id,
                 max_id,
@@ -447,6 +467,7 @@ impl Executor {
             "duration_s": self.duration_s,
             "rampup_s": self.rampup_s,
             "once": self.once,
+            "seed": self.seed,
             "total_time_ms": self.total_time_ms,
             "rampup_time_ms": self.rampup_time_ms,
             "workload_secs": summary::workload_secs(self.total_time_ms, self.rampup_time_ms),
@@ -506,6 +527,9 @@ impl Executor {
             eprintln!("  duration: {} s", args.time);
         }
         eprintln!("  rampup:   {} s", args.rampup);
+        if let Some(seed) = args.seed {
+            eprintln!("  seed:     {seed}");
+        }
         if args.progress > 0 {
             eprintln!("  progress: every {} s", args.progress);
         }
@@ -522,6 +546,7 @@ impl Executor {
     fn run_benchmark_sync(
         &mut self,
         once: bool,
+        seed: Option<u64>,
         n_clients: u16,
         min_id: u32,
         max_id: u32,
@@ -580,7 +605,7 @@ impl Executor {
                     }
                 };
 
-                let mut rng = SmallRng::from_os_rng();
+                let mut rng = client_rng(seed, client_id);
                 let mut picker =
                     TransactionPicker::new(benchmark.get_transactions_rw(), once, &mut rng);
                 let loop_start = Instant::now();
@@ -592,7 +617,8 @@ impl Executor {
                         stream.begin(client_id, transaction.id);
                     }
                     // Execute the transaction
-                    match benchmark.execute_rw_transaction_sync(&mut client, transaction) {
+                    match benchmark.execute_rw_transaction_sync(&mut client, transaction, &mut rng)
+                    {
                         Ok(duration) => {
                             if let Some(stream) = &stream {
                                 stream.finished(client_id, transaction.id, Ok(duration));
@@ -670,6 +696,7 @@ impl Executor {
         &mut self,
         threads: usize,
         once: bool,
+        seed: Option<u64>,
         n_clients: u16,
         min_id: u32,
         max_id: u32,
@@ -717,6 +744,7 @@ impl Executor {
                     interrupted: Arc::clone(&interrupted),
                     duration_ms,
                     once,
+                    seed,
                     stream: stream.clone(),
                 })));
             }
@@ -965,10 +993,45 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_threads, escape_log_message, pick_transaction, TransactionPicker};
+    use super::{
+        client_rng, default_threads, escape_log_message, pick_transaction, TransactionPicker,
+    };
     use crate::executor::benchmark::BenchmarkTransaction;
     use rand::rngs::SmallRng;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
+
+    // `run --seed`: a client's generator, and so its transaction order, is a
+    // function of the seed and the client id alone; clients of one run differ
+    // from each other, and without a seed two generators differ.
+    #[test]
+    fn client_rng_is_set_by_the_seed_and_the_client_id() {
+        let transactions: Vec<BenchmarkTransaction> = (1..=20).map(|id| tx(id, 1)).collect();
+        let order = |rng: &mut SmallRng| -> Vec<u16> {
+            let mut picker = TransactionPicker::new(transactions.clone(), true, rng);
+            let mut order = Vec::new();
+            while let Some(t) = picker.next(rng) {
+                order.push(t.id);
+            }
+            order
+        };
+        let mut a = client_rng(Some(42), 1);
+        let mut b = client_rng(Some(42), 1);
+        let mut c = client_rng(Some(42), 2);
+        let mut d = client_rng(Some(43), 1);
+        let a_order = order(&mut a);
+        assert_eq!(a_order, order(&mut b));
+        assert_ne!(a_order, order(&mut c), "client 2 runs another order");
+        assert_ne!(a_order, order(&mut d), "another seed, another order");
+        assert_eq!(
+            a.random::<u64>(),
+            b.random::<u64>(),
+            "still in step after the shuffle"
+        );
+        assert_ne!(
+            client_rng(None, 1).random::<u64>(),
+            client_rng(None, 1).random::<u64>()
+        );
+    }
 
     // The async engine's default worker count: half the CPUs, never 0, never
     // more than one per client.

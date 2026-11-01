@@ -62,6 +62,7 @@ Drives the spec's transaction mix. See [Running a benchmark](../guide/running.md
 | `-P, --progress <NUM>` | 0 | Print a `progress:` line every NUM seconds when stderr is not a terminal (rate and latency of a timed run, transactions done and in flight of a `--once` run); 0 disables |
 | `-j, --threads <NUM>` | 0 | Worker threads of the async engine (simple-mode specs); 0 is half the CPUs, at most one per client |
 | `--once` | off | Each client runs every transaction of the spec once, in its own random order, then stops (a TPC-H/DS-style query stream); cannot be combined with `--time` |
+| `--seed <NUM>` | none | Seed of the clients' random draws: the same seed, spec and client count run the same transactions with the same parameters, whatever the engine or `--threads` |
 | `--format <FMT>` | table | `table`, `json` or `csv` |
 | `-q, --quiet` | off | No progress output; only the result data on stdout |
 

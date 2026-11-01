@@ -108,4 +108,5 @@ and COPY helpers). `min_id`/`max_id` are **not** injected into loaders: iterate
 > load it from `pre_load_script`, or guard it with `if id == 1 then ... end`
 > inside `load_script` so only one job creates it. Loaders that draw every
 > value with the `rand_*` functions are reproducible with `init --seed`, which
-> reseeds the generator per unit.
+> reseeds the generator per unit; likewise the transactions' draws are
+> reproducible with `run --seed`, which seeds the generator per client.
