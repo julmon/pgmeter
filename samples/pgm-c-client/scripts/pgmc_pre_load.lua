@@ -5,11 +5,12 @@
 local N_ITEMS = const.items
 local BATCH_SIZE = 500
 
+-- TPC-C 4.3.3.1: 10% of the strings carry "ORIGINAL" at a random position,
+-- replacing 8 characters so the length stays within 26..50.
 local function make_original(s)
-    -- 10% chance to embed "ORIGINAL" in the string
-    if rand_int(1, 100) <= 10 and #s > 9 then
-        local pos = rand_int(1, #s - 9)
-        return string.sub(s, 1, pos - 1) .. "ORIGINAL" .. string.sub(s, pos + 9)
+    if rand_int(1, 100) <= 10 then
+        local pos = rand_int(1, #s - 7)
+        return string.sub(s, 1, pos - 1) .. "ORIGINAL" .. string.sub(s, pos + 8)
     end
     return s
 end

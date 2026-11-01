@@ -194,11 +194,9 @@ schema:
     - { name: i_customer_last_first, table: customer, columns: [c_w_id, c_d_id, c_last, c_first, c_id], unique: true }
     - { name: i_orders,              table: orders,    columns: [o_w_id, o_d_id, o_c_id, o_id],          unique: true }
 
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-# Pre-load: populate the item table (100K rows, shared across all warehouses)
-# Shared Lua helpers, loaded into the loaders' and the transactions' VMs.
+  # -------------------------------------------------------------------------
+  # Transaction functions
+  # -------------------------------------------------------------------------
   post_ddls:
     # The five TPC-C transactions as PL/pgSQL functions: one round trip per
     # transaction, set-based statements over the order lines. This is the
@@ -417,10 +415,15 @@ schema:
           RETURN v_count;
       END $$;
 
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+# Shared Lua helpers, loaded into the loaders' and the transactions' VMs.
 scripts:
   modules:
     - scripts/pgmc_common.lua
 
+# Pre-load: populate the item table (100K rows, shared across all warehouses)
 pre_load_script: scripts/pgmc_pre_load.lua
 # Per-warehouse loading: warehouse, district, customer, history, stock, orders, new_order, order_line
 load_script: scripts/pgmc_load.lua
