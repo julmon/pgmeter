@@ -11,10 +11,10 @@ pgmeter -d benchmark init --spec pgm-c-client -s 10 -j 4
 pgmeter -d benchmark run  --spec pgm-c-client -c 8 -T 120 -r 60
 ```
 
-The schema, the data, the transaction mix, the input distributions and the
-designed 1% New-Order rollback are the same as PGM-C's; the two specs share
-their loader and their Lua helpers. What differs is where the transaction
-logic runs:
+The schema, the data, the transaction mix, the input distributions, the
+transaction profiles and the designed 1% New-Order rollback are the same as
+PGM-C's; the two specs share their loader and their Lua helpers. What differs
+is where the transaction logic runs:
 
 | | PGM-C | PGM-C-client |
 |---|---|---|
@@ -34,3 +34,9 @@ The error you should expect is the same: about 1% of New-Orders end with
 `New-Order rollback: unknown item`, which is the specification's rollback,
 counted as an error. The deviations from TPC-C listed on the PGM-C page apply
 here too.
+
+Because the scripts read a value, compute on it and write it back, they lock
+what they read: New-Order takes its stock rows `FOR UPDATE`, in key order like
+the PL/pgSQL function, so concurrent orders neither lose a decrement nor
+deadlock, and Delivery picks each district's oldest order with `FOR UPDATE
+SKIP LOCKED`, so two deliveries of the same warehouse take different orders.

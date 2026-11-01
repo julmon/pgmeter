@@ -21,8 +21,9 @@ if y <= 60 then
         rollback()
         error("Order-Status rollback: customer not found")
     end
+    -- TPC-C 2.6.2.2: the customer at position n/2 rounded up.
     local n = #c_rows
-    c_id = c_rows[math.floor(n / 2) + 1]["c_id"]
+    c_id = c_rows[math.ceil(n / 2)]["c_id"]
 end
 
 -- Get customer info
@@ -31,9 +32,10 @@ query(
     warehouse_id, district_id, c_id
 )
 
--- Get last order
+-- Get the customer's last order (TPC-C 2.6.2.2: the largest o_id; the loaded
+-- orders of a district all carry the same o_entry_d)
 local o_rows = query(
-    "SELECT o_id FROM orders WHERE o_w_id = $1 AND o_d_id = $2 AND o_c_id = $3 ORDER BY o_entry_d DESC LIMIT 1",
+    "SELECT o_id FROM orders WHERE o_w_id = $1 AND o_d_id = $2 AND o_c_id = $3 ORDER BY o_id DESC LIMIT 1",
     warehouse_id, district_id, c_id
 )
 
