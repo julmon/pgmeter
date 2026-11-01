@@ -310,6 +310,10 @@ fn custom_simple_init_then_run_with_json_output() {
     let report = fs::read_to_string(dir.join("report.html")).unwrap();
     assert!(report.contains("const DATA = {"));
     assert!(report.contains("my-app-benchmark"));
+    assert!(
+        report.contains(r#"<svg class="mark""#),
+        "the report has no logo"
+    );
 }
 
 /// A spec made of `simple` transactions runs on the async engine with the

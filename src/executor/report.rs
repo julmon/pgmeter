@@ -808,16 +808,19 @@ fn render_html(json_blob: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pgmeter report</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M20.56 75A34 34 0 1 1 79.44 75" fill="none" stroke="%23336791" stroke-width="16" stroke-linecap="round"/><line x1="50" y1="58" x2="67.09" y2="42.61" stroke="%23f0a030" stroke-width="9" stroke-linecap="round"/><circle cx="50" cy="58" r="10" fill="%231f2f45"/></svg>'>
 <style>
   :root {{
     --bg: #0f172a; --panel: #1e293b; --panel2: #273449; --text: #e2e8f0;
     --muted: #94a3b8; --accent: #38bdf8; --border: #334155; --good: #4ade80; --bad: #f87171;
     --warn: #f5a35c;
+    --logo-arc: #8fb8dc; --logo-track: #3d5a7a; --logo-hub: #e2e8f0;
   }}
   :root[data-theme="light"] {{
     --bg: #f8fafc; --panel: #ffffff; --panel2: #eef2f7; --text: #1e293b;
     --muted: #64748b; --accent: #0284c7; --border: #d8dee9; --good: #16a34a; --bad: #dc2626;
     --warn: #b4470b;
+    --logo-arc: #336791; --logo-track: #c9d8e6; --logo-hub: #1f2f45;
   }}
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; background: var(--bg); color: var(--text);
@@ -862,6 +865,9 @@ fn render_html(json_blob: &str) -> String {
   .chart-card:hover .dlbtn {{ opacity: 1; }}
   .dlbtn:hover {{ color: var(--text); border-color: var(--accent); }}
   .page-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
+  .brand {{ display: flex; align-items: center; gap: 14px; min-width: 0; }}
+  .brand .mark {{ width: 56px; height: 56px; flex: 0 0 auto; }}
+  .brand .desc {{ margin-bottom: 0; }}
   .theme-toggle {{ color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px;
     flex: 0 0 auto; }}
   .theme-toggle select {{ background: var(--panel2); color: var(--text); border: 1px solid var(--border);
@@ -905,7 +911,9 @@ fn render_html(json_blob: &str) -> String {
 <body>
 <div class="wrap">
   <div class="page-head">
-    <div><h1 id="title"></h1><p class="desc" id="description"></p></div>
+    <div class="brand"><svg class="mark" viewBox="0 0 100 100" role="img" aria-label="pgmeter"><path d="M18.82 74A36 36 0 1 1 81.18 74" fill="none" stroke="var(--logo-track)" stroke-width="12" stroke-linecap="round"/><path d="M18.82 74A36 36 0 0 1 76.75 31.91" fill="none" stroke="var(--logo-arc)" stroke-width="12" stroke-linecap="round"/><line x1="50" y1="56" x2="70.06" y2="37.93" stroke="#f0a030" stroke-width="6.5" stroke-linecap="round"/><circle cx="50" cy="56" r="8" fill="var(--logo-hub)"/></svg>
+      <div><h1 id="title"></h1><p class="desc" id="description"></p></div>
+    </div>
     <label class="theme-toggle">Theme
       <select id="theme-select"><option value="dark">Dark</option><option value="light">Light</option></select>
     </label>
