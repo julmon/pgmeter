@@ -54,6 +54,13 @@ The message is the server error or the Lua error, with its detail and, for
 Lua, its traceback. Line breaks, tabs and backslashes inside it are escaped
 as `\n`, `\r`, `\t` and `\\`, so one line is always one error.
 
+A script that fails the same way many times, as a workload with designed
+rollbacks does, gets its traceback once: the first error of a transaction
+with a given message is logged in full, the next ones with the message
+alone. To find where a short line comes from, look for the first line of
+that transaction with the same message. pgmeter remembers 4096 distinct
+messages per run; past that, new ones are logged in full every time.
+
 ## `pgmeter-throughput-<name>.csv` and `pgmeter-throughput-all.csv`
 
 Throughput per second over the whole run, one file per transaction and one

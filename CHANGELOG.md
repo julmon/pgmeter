@@ -58,7 +58,8 @@ First public release.
   `run.json` (run parameters, elapsed and ramp-up times, throughput unit, the
   ramp-up boundary), `transaction.log` (one line per commit with the client
   that ran it and its start time) and `error.log` (one record per line,
-  line breaks in messages escaped), per-transaction CSV files
+  line breaks in messages escaped, the Lua traceback of a script error that
+  repeats written the first time only), per-transaction CSV files
   (`pgmeter-throughput-*.csv` in the spec's unit, response times over time,
   statistics) and a self-contained HTML report with charts, percentiles,
   server and data-set information. Committed counts, throughput, statistics

@@ -73,7 +73,9 @@ one; inside a script, a statement that fails raises a Lua error that ends
 the transaction, so this message means a script caught the error itself and
 went on. Look at the first error of that client instead.
 
-**Lua errors with a traceback**: the message names the script and line. The
+**Lua errors with a traceback**: the message names the script and line. Only
+the first occurrence of an error carries the traceback; the same error from
+the same transaction is then logged with its message alone. The
 usual causes are a `$n` placeholder with no argument, a column name that
 does not match the query's result (rows are keyed by column name), a
 1-indexed table used as if it were 0-indexed, and `scalefactor` used in a

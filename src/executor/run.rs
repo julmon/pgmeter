@@ -3,7 +3,7 @@
 //! post-ramp-up counters. `Executor::aggregate_data`, `print_results` and
 //! `generate_report` (the steps after the workload) stay in the parent module.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -281,6 +281,45 @@ fn escape_log_message(message: &str) -> String {
         }
     }
     out
+}
+
+/// Where the Lua traceback starts in an error message (mlua appends it to the
+/// error text on its own line).
+const TRACEBACK_MARK: &str = "\nstack traceback:";
+
+/// How many distinct script errors `TracebackFilter` remembers. Past it, new
+/// errors are logged in full, as if the filter were not there.
+const TRACEBACK_FILTER_CAPACITY: usize = 4096;
+
+/// Keeps `error.log` readable when a script fails the same way over and over,
+/// as a workload with designed rollbacks does (PGM-C logs about a thousand
+/// `New-Order rollback: unknown item` a minute): the first occurrence of an
+/// error of a transaction is logged with its Lua traceback, the next ones with
+/// the message alone. Two errors are the same when they come from the same
+/// transaction with the same text before the traceback.
+#[derive(Default)]
+struct TracebackFilter {
+    seen: HashMap<u16, HashSet<String>>,
+    len: usize,
+}
+
+impl TracebackFilter {
+    /// The part of `message` to log for transaction `tx_id`.
+    fn filter<'a>(&mut self, tx_id: u16, message: &'a str) -> &'a str {
+        let Some(end) = message.find(TRACEBACK_MARK) else {
+            return message;
+        };
+        let headline = &message[..end];
+        let seen = self.seen.entry(tx_id).or_default();
+        if seen.contains(headline) {
+            return headline;
+        }
+        if self.len < TRACEBACK_FILTER_CAPACITY {
+            seen.insert(headline.to_string());
+            self.len += 1;
+        }
+        message
+    }
 }
 
 impl Executor {
@@ -858,6 +897,8 @@ impl Executor {
             // Distinct clients seen so far; its size is the "active clients"
             // column of both logs.
             let mut client_ids: BTreeSet<u32> = BTreeSet::new();
+            // Logs a repeated script error without its traceback.
+            let mut tracebacks = TracebackFilter::default();
 
             let mut ramping_up: bool = true;
             let mut rampup_end_ts: Option<i64> = None;
@@ -952,7 +993,9 @@ impl Executor {
 
                         // Generate timestamp locally
                         let tx_timestamp = start_time + start_instant.elapsed().as_secs() as i64;
-                        let error_str = escape_log_message(msg.error.as_deref().unwrap_or(""));
+                        let error_str = escape_log_message(
+                            tracebacks.filter(msg.tx_id, msg.error.as_deref().unwrap_or("")),
+                        );
 
                         // Format and write the line to the error log file
                         let _ = error_file.write(buffer_i.format(tx_timestamp).as_bytes());
@@ -994,7 +1037,8 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_rng, default_threads, escape_log_message, pick_transaction, TransactionPicker,
+        client_rng, default_threads, escape_log_message, pick_transaction, TracebackFilter,
+        TransactionPicker, TRACEBACK_FILTER_CAPACITY,
     };
     use crate::executor::benchmark::BenchmarkTransaction;
     use rand::rngs::SmallRng;
@@ -1138,6 +1182,44 @@ mod tests {
         // Leading zero weight: index 0 has cumulative 0, never matched by v >= 1.
         let leading = [0, 10]; // weights 0, 10
         assert!((1..=10).all(|v| pick_transaction(&leading, v) == 1));
+    }
+
+    // PGMC_AUDIT D7: a script error that repeats is logged with its traceback
+    // once per transaction, then with its message alone.
+    #[test]
+    fn repeated_script_errors_lose_their_traceback() {
+        let rollback = "runtime error: query: db error: ERROR: New-Order rollback: unknown item\nstack traceback:\n\t[C]: in function 'query'";
+        let headline = "runtime error: query: db error: ERROR: New-Order rollback: unknown item";
+        let mut filter = TracebackFilter::default();
+        assert_eq!(filter.filter(1, rollback), rollback);
+        assert_eq!(filter.filter(1, rollback), headline);
+        assert_eq!(filter.filter(1, rollback), headline);
+        // The same text from another transaction is another error.
+        assert_eq!(filter.filter(2, rollback), rollback);
+        assert_eq!(filter.filter(2, rollback), headline);
+        // So is another message of the same transaction.
+        let other = "runtime error: [string]:3: boom\nstack traceback:\n\t[C]: in function 'error'";
+        assert_eq!(filter.filter(1, other), other);
+        assert_eq!(filter.filter(1, other), "runtime error: [string]:3: boom");
+        // Messages without a traceback (simple mode) pass through untouched.
+        let pg = "db error: ERROR: division by zero";
+        assert_eq!(filter.filter(1, pg), pg);
+        assert_eq!(filter.filter(1, pg), pg);
+    }
+
+    // The filter's memory is bounded: once full, errors it has not seen are
+    // logged in full every time, and the ones it knows stay short.
+    #[test]
+    fn traceback_filter_is_bounded() {
+        let mut filter = TracebackFilter::default();
+        let message = |i: usize| format!("error {i}\nstack traceback:\n\tframe");
+        for i in 0..TRACEBACK_FILTER_CAPACITY {
+            assert_eq!(filter.filter(1, &message(i)), message(i));
+        }
+        let extra = message(TRACEBACK_FILTER_CAPACITY);
+        assert_eq!(filter.filter(1, &extra), extra);
+        assert_eq!(filter.filter(1, &extra), extra);
+        assert_eq!(filter.filter(1, &message(0)), "error 0");
     }
 
     // Regression for RELEASE_REVIEW B11: a Lua traceback or a multi-line
