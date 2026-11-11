@@ -866,6 +866,24 @@ transactions:
             "server message lost: {line}"
         );
     }
+    // A script error that repeats carries its Lua traceback the first time
+    // only (PGMC_AUDIT D7); transaction 3 is `script-fails`.
+    let script_errors: Vec<&str> = errors
+        .lines()
+        .filter(|line| line.split(' ').nth(2) == Some("3"))
+        .collect();
+    assert!(script_errors.len() > 1, "{errors}");
+    assert!(
+        script_errors[0].contains("stack traceback:"),
+        "first script error without its traceback: {}",
+        script_errors[0]
+    );
+    for line in &script_errors[1..] {
+        assert!(
+            !line.contains("stack traceback:"),
+            "repeated script error with a traceback: {line}"
+        );
+    }
 }
 
 /// `init --seed` loads the same rows for the same seed and scale factor,
