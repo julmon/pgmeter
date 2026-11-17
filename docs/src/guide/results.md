@@ -107,49 +107,60 @@ steady-state window starts.
 ## The HTML report
 
 `report.html` opens offline in any browser: the chart library is inlined and
-nothing is fetched. It shows:
+nothing is fetched. It answers in the order a reader asks. A bar that stays
+on top names the run and jumps to each section, and the browser tab carries
+the benchmark's name and its headline figure.
 
-- An environment header: benchmark name and description, PostgreSQL version,
-  key server settings (`shared_buffers`, `work_mem`, `max_wal_size`,
-  `max_connections`, `effective_cache_size`) and the run parameters.
-- The data set: tables and indexes with their sizes.
+A throughput run's report shows:
 
-A throughput run's report then shows:
-
-- The headline figures: throughput, committed transactions, errors and error
-  rate, and the average, 95th and 99th percentile response times.
-- The steady-state verdict with its figures.
-- The per-transaction results table.
-- Charts: throughput over time with the mean of each half of the window
-  dashed, latency over time as the mean and the 95th percentile of all
-  transactions or of the one picked in the chart's selector, the response-time
-  distribution and errors over time; for specs with several transactions,
-  also the response-time percentiles per transaction and the committed
-  transaction mix. The ramp-up window is shaded.
+- **The result**: the throughput, the steady-state verdict in a word and a
+  sentence, the conditions of the run, the average, 95th and 99th percentile
+  response times and the error rate, next to the throughput over time with
+  the mean of each half of the window dashed.
+- **Steady state**: the verdict with its figures.
+- **Transactions**: the per-transaction results table, next to the latency
+  over time as the mean and the 95th percentile of all transactions or of
+  the one picked in the chart's selector.
+- **Charts**: the response-time distribution and errors over time; for specs
+  with several transactions, also the response-time percentiles per
+  transaction and the committed transaction mix.
 
 A stream run's report shows instead:
 
-- The headline figures: elapsed time, executions, the geometric mean of the
+- **The result**: the elapsed time, executions, the geometric mean of the
   response times, the transaction that took the most time with its share,
-  and errors.
-- Where the time went: the total time of each transaction as a bar, the
-  slowest first. The 16 slowest are drawn and the rest grouped, unless *Show
-  all* is pressed; *Log scale* brings the short ones into view.
-- The stream timeline: one lane per client and one bar per execution, where
-  it ran, the slowest transaction highlighted. It is drawn up to 20,000
-  executions.
-- The per-transaction table: rank, executions, errors, total time, share
-  and cumulative share, and the average, minimum and maximum response times.
-  Any column sorts, and a filter matches names.
+  and errors, next to where the time went: the total time of each
+  transaction as a bar, the slowest first. The 8 slowest are drawn, each in
+  its own colour, and the rest grouped in a last bar, unless *Show all* is
+  pressed; *Log scale* brings the short ones into view.
+- **Timeline**: one lane per client and one bar per execution, where it ran,
+  the 8 slowest transactions in the colours of their bars. It is drawn up
+  to 20,000 executions.
+- **Transactions**: rank, executions, errors, total time, share and
+  cumulative share, and the average, minimum and maximum response times, in
+  seconds. Any column sorts, and a filter matches names.
 
-![The charts of a throughput report](../images/report-charts.png)
+Both end with the same two parts:
+
+- **System**, with `--sysmon`: see below.
+- **Setup**, folded until opened: the environment (PostgreSQL version, key
+  server settings such as `shared_buffers`, `work_mem`, `max_wal_size`,
+  `max_connections` and `effective_cache_size`, and the run parameters) and
+  the data set (tables and indexes with their sizes). Printing the page
+  opens both.
+
+The time series stop where the clients were stopped: the last second or
+two of a run, in which each client only finishes the transaction it is in,
+are not drawn. The ramp-up window is shaded.
+
+![The top of a throughput report](../images/report-charts.png)
 
 [View a sample throughput report](../sample-report.html): a PGM-C run with 10
 warehouses and 8 clients for 60 s after a 10 s ramp-up, the first after the
 load, with `--sysmon local`, so the page ends with the System section of the
 machine it ran on.
 
-![The charts of a stream report](../images/report-stream.png)
+![The top of a stream report](../images/report-stream.png)
 
 [View a sample stream report](../sample-stream-report.html): PGM-DS at scale
 factor 1, two streams with `--once`.

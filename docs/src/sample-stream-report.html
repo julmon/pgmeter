@@ -11,12 +11,14 @@
     --muted: #94a3b8; --accent: #38bdf8; --border: #334155; --good: #4ade80; --bad: #f87171;
     --warn: #f5a35c;
     --logo-arc: #8fb8dc; --logo-track: #3d5a7a; --logo-hub: #e2e8f0;
+    color-scheme: dark;
   }
   :root[data-theme="light"] {
     --bg: #f8fafc; --panel: #ffffff; --panel2: #eef2f7; --text: #1e293b;
     --muted: #64748b; --accent: #0284c7; --border: #d8dee9; --good: #16a34a; --bad: #dc2626;
     --warn: #b4470b;
     --logo-arc: #336791; --logo-track: #c9d8e6; --logo-hub: #1f2f45;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -28,7 +30,9 @@
   .grid { display: grid; gap: 16px; }
   .meta-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
   .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-  .chart-grid { grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }
+  /* min(): a card never asks for more than the screen has. */
+  .chart-grid { grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); }
+  .chart-grid > .card { min-width: 0; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .kpi .value { font-size: 28px; font-weight: 700; margin-top: 6px; }
@@ -60,8 +64,51 @@
     padding: 3px 8px; cursor: pointer; opacity: 0; transition: opacity .15s; }
   .chart-card:hover .dlbtn { opacity: 1; }
   .dlbtn:hover { color: var(--text); border-color: var(--accent); }
-  .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-  .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .page-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .brand { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1 1 280px; }
+  /* The bar that stays on top: which run this is, and where to jump. */
+  .topnav { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--border);
+    margin: 18px -20px 22px; padding: 10px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }
+  .topnav .run { font-weight: 700; margin-right: auto; }
+  .topnav .links { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .topnav a { color: var(--muted); text-decoration: none; font-size: 13px; }
+  .topnav a:hover, .topnav a:focus-visible { color: var(--text); }
+  .topnav button { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; padding: 5px 10px; cursor: pointer; }
+  .topnav button:hover { border-color: var(--accent); }
+  h2, .hero, .sys-head { scroll-margin-top: 58px; }
+  /* The answer: the headline figure and its verdict, next to the chart of it. */
+  .hero { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; }
+  .hero > .card { min-width: 0; }
+  .hero-big { font-size: 46px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  .hero-big small { font-size: 18px; font-weight: 600; color: var(--muted); margin-left: 8px; }
+  .hero-said { margin: 12px 0 0; font-size: 15px; }
+  .hero-cond { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .hero-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+  .hero-facts > div { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  .hero-facts .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .hero-facts .v { font-size: 16px; font-weight: 700; margin-top: 2px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .hero-facts .s { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+  /* The table keeps the full width: nine columns do not fit beside a chart. */
+  .tx-grid { grid-template-columns: minmax(0, 1fr); }
+  .tx-grid > .card { min-width: 0; }
+  /* The selector sits above the chart, not on its title. */
+  .tx-grid .chart-tools { position: static; display: block; margin-bottom: 8px; }
+  .tx-grid .line-card { height: auto; }
+  /* The setup is reference material: closed until asked for. */
+  .fold { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-top: 10px; }
+  .fold > summary { cursor: pointer; padding: 12px 16px; font-weight: 600; }
+  .fold > summary span { color: var(--muted); font-weight: 400; margin-left: 10px; }
+  .fold > .in { padding: 4px 16px 16px; }
+  .fold .card { background: transparent; }
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: minmax(0, 1fr); }
+    .hero-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hero-big { font-size: 38px; }
+    /* On a narrow screen the bar wraps to several lines: it scrolls away. */
+    .topnav { position: static; }
+  }
   .brand .mark { width: 56px; height: 56px; flex: 0 0 auto; }
   .brand .desc { margin-bottom: 0; }
   .theme-toggle { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px;
@@ -101,6 +148,50 @@
   th button.sort { all: unset; cursor: pointer; }
   th button.sort:focus-visible { outline: 2px solid var(--accent); }
   [hidden] { display: none !important; }
+
+  h3 { font-size: 13px; margin: 28px 0 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .06em; font-weight: 600; }
+  .sys-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+    border-bottom: 1px solid var(--border); margin: 36px 0 14px; padding-bottom: 8px; }
+  .sys-head h2 { margin: 0; border: 0; padding: 0; }
+  .sys-head label, .sys-group label { color: var(--muted); font-size: 12px; }
+  .sys-head select, .sys-group select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font-size: 12px; margin-left: 6px; max-width: 100%; }
+  .sys-group { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .sys-status { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px;
+    font-size: 13px; line-height: 1.45; }
+  /* Six cards in each row, on the same columns: 6, 3 or 2 across, so a row
+     is always full and the two rows line up. */
+  .sys-six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  @media (max-width: 960px) { .sys-six { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 520px) { .sys-six { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .sys-card { min-width: 0; }
+  .sys-card .k { color: var(--muted); font-size: 12px; }
+  .sys-card .v { font-size: 14px; margin-top: 2px; word-break: break-word; }
+  .sys-card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sys-card .value { font-size: 22px; font-weight: 700; margin-top: 6px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .sys-card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums; }
+  .sys-card .which { font-size: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+    overflow-wrap: anywhere; line-height: 1.35; }
+  .sys-grid { grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); }
+  .sys-grid .card { min-width: 0; }
+  .sys-grid .wide { grid-column: 1 / -1; }
+  /* A card grows with the note under its chart. */
+  .sys-grid .line-card { height: auto; min-height: 420px; }
+  .sys-grid .line-card .legend { flex: 0 0 auto; }
+  .sys-grid .line-card .note { margin: 10px 0 0; }
+  .sys-volumes { overflow-x: auto; }
+  .sys-volumes table { font-variant-numeric: tabular-nums; }
+  .sys-volumes th, .sys-volumes td { white-space: nowrap; }
+  .sys-volumes th:nth-child(-n+3), .sys-volumes td:nth-child(-n+3) { text-align: left; }
+  .sys-volumes td:first-child { white-space: normal; overflow-wrap: anywhere; min-width: 120px; }
+  .sys-volumes td:nth-child(3) { color: var(--muted); white-space: normal; min-width: 110px; }
+  .sys-legend .item .stroke { width: 16px; height: 0; border-top: 2px solid; flex: 0 0 auto; }
+  .sys-legend .item .stroke.dash { border-top-style: dashed; }
+
   footer { margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }
 </style>
 </head>
@@ -115,13 +206,142 @@
     </label>
   </div>
 
-  <h2>Environment</h2>
+  <nav class="topnav" id="topnav" aria-label="Sections">
+    <span class="run" id="nav-run"></span>
+    <span class="links" id="nav-links"></span>
+    <button id="dl-all">Download all charts (PNG)</button>
+  </nav>
+
+  <div class="hero" id="result">
+    <div class="card hero-main">
+      <div class="hero-big"><span id="hero-value"></span><small id="hero-unit"></small></div>
+      <p class="hero-said"><span class="badge" id="hero-badge" hidden></span><span id="hero-said"></span></p>
+      <p class="hero-cond" id="hero-cond"></p>
+      <div class="hero-facts" id="hero-facts"></div>
+    </div>
+    <div class="card chart-card line-card" id="hero-throughput"><div class="cwrap"><canvas id="throughput"></canvas></div><div class="legend" id="throughput-legend"></div></div>
+    <div class="card" id="hero-time-bars" hidden>
+      <div class="toolbar">
+        <span class="hint" id="time-bars-hint"></span>
+        <span>
+          <button type="button" id="time-bars-log" aria-pressed="false">Log scale</button>
+          <button type="button" id="time-bars-all" aria-pressed="false">Show all</button>
+        </span>
+      </div>
+      <div class="chart-card stream-chart" id="time-bars-wrap"><canvas id="time-bars"></canvas></div>
+    </div>
+  </div>
+
+  <div id="throughput-view">
+  <h2 id="steady-state">Steady state</h2>
+  <div class="card steady" id="steady"></div>
+
+  <h2 id="transactions">Transactions</h2>
+  <div class="grid tx-grid">
+    <div class="card" style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Transaction</th><th>Committed</th><th>Errors</th><th>Error %</th>
+          <th id="tx-throughput-head">TPM</th><th>Avg ms</th><th>p95 ms</th><th>p99 ms</th><th>Max ms</th>
+        </tr></thead>
+        <tbody id="txbody"></tbody>
+      </table>
+    </div>
+    <div class="card chart-card line-card"><label class="chart-tools">Transaction<select id="latency-select"></select></label><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
+  </div>
+
+  <h2 id="charts">Charts</h2>
+  <div class="grid chart-grid">
+    <div class="card chart-card" id="card-percentiles"><canvas id="percentiles"></canvas></div>
+    <div class="card chart-card"><canvas id="histogram"></canvas></div>
+    <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
+    <div class="card chart-card"><canvas id="errors"></canvas></div>
+  </div>
+  </div>
+
+  <div id="stream-view" hidden>
+  <h2 id="timeline-section">Timeline</h2>
+  <div class="card">
+    <div class="toolbar"><span class="hint" id="timeline-hint">One lane per client; each bar is one execution, where it ran. Hover a bar for its name and time.</span></div>
+    <div class="chart-card stream-chart" id="timeline-wrap"><canvas id="timeline"></canvas></div>
+    <div class="legend" id="timeline-legend"></div>
+  </div>
+
+  <h2 id="stream-transactions">Transactions</h2>
+  <div class="card" style="overflow-x:auto">
+    <div class="toolbar">
+      <span class="hint">Click a column to sort. Times are the transaction's own, summed over its executions.</span>
+      <label class="hint">Filter <input type="search" id="stream-filter" placeholder="name"></label>
+    </div>
+    <table>
+      <thead><tr id="stream-head"></tr></thead>
+      <tbody id="stream-body"></tbody>
+    </table>
+  </div>
+  </div>
+
+
+  <div id="system-view" hidden>
+  <div class="sys-head"><h2 id="sys-title">System</h2>
+    <label id="sys-host-label">Host<select id="sys-host"></select></label></div>
+  <p class="sys-status" id="sys-status" hidden></p>
+  <div class="grid sys-six" id="sys-meta"></div>
+  <div class="grid sys-six" id="sys-kpis" style="margin-top:16px"></div>
+  <p class="note">The figures above cover the measured window only, after the ramp-up, like every other figure of the report.</p>
+
+  <h3>CPU</h3>
+  <div class="grid sys-grid">
+    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-cpu"></canvas></div><div class="legend sys-legend" id="sys-cpu-legend"></div><p class="note" id="sys-cpu-note"></p></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-load"></canvas></div><div class="legend sys-legend" id="sys-load-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-psi"></canvas></div><div class="legend sys-legend" id="sys-psi-legend"></div><p class="note" id="sys-psi-note"></p></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-ctxt"></canvas></div><div class="legend sys-legend" id="sys-ctxt-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-forks"></canvas></div><div class="legend sys-legend" id="sys-forks-legend"></div></div>
+  </div>
+
+  <h3>Memory</h3>
+  <div class="grid sys-grid">
+    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-mem"></canvas></div><div class="legend sys-legend" id="sys-mem-legend"></div><p class="note" id="sys-mem-note"></p></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dirty"></canvas></div><div class="legend sys-legend" id="sys-dirty-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-paging"></canvas></div><div class="legend sys-legend" id="sys-paging-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-faults"></canvas></div><div class="legend sys-legend" id="sys-faults-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-swap"></canvas></div><div class="legend sys-legend" id="sys-swap-legend"></div></div>
+  </div>
+
+  <div id="sys-disk">
+  <h3>Disk</h3>
+  <div class="card sys-volumes">
+    <table>
+      <thead><tr>
+        <th>Volume</th><th>Holds</th><th>On</th><th>Written MB/s</th><th>Read MB/s</th><th>Requests/s</th>
+        <th>Write time ms</th><th>Flush time ms</th><th>Busy %</th><th>Max %</th>
+      </tr></thead>
+      <tbody id="sys-volumes-body"></tbody>
+    </table>
+  </div>
+  <p class="note">Averages over the measured window, one row per volume. Flush time is measured at the disk under the volume. "Holds" is where PostgreSQL keeps its data files and its WAL, when pgmeter could read the server's data directory.</p>
+  <div class="sys-group"><h3>Charts by device</h3>
+    <label>Device<select id="sys-device"></select></label></div>
+  <div class="grid sys-grid">
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dthr"></canvas></div><div class="legend sys-legend" id="sys-dthr-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-diops"></canvas></div><div class="legend sys-legend" id="sys-diops-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dawait"></canvas></div><div class="legend sys-legend" id="sys-dawait-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dsize"></canvas></div><div class="legend sys-legend" id="sys-dsize-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dqueue"></canvas></div><div class="legend sys-legend" id="sys-dqueue-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dutil"></canvas></div><div class="legend sys-legend" id="sys-dutil-legend"></div></div>
+  </div>
+  <p class="note" id="sys-disk-note"></p>
+  </div>
+  </div>
+
+
+  <h2 id="setup">Setup</h2>
+  <details class="fold"><summary>Environment<span id="env-sum"></span></summary><div class="in">
   <div class="grid meta-grid" id="meta"></div>
   <div class="card" style="margin-top:16px">
     <table class="settings"><tbody id="settings"></tbody></table>
   </div>
-
-  <h2>Data set</h2>
+  </div></details>
+  <details class="fold"><summary>Data set<span id="data-sum"></span></summary><div class="in">
   <div class="grid kpi-grid" id="data-kpis"></div>
   <div class="card" style="overflow-x:auto; margin-top:16px">
     <table>
@@ -140,67 +360,7 @@
       <tbody id="indexes-body"></tbody>
     </table>
   </div>
-
-  <h2>Summary</h2>
-  <div class="grid kpi-grid" id="kpis"></div>
-
-  <div id="throughput-view">
-  <h2>Steady state</h2>
-  <div class="card steady" id="steady"></div>
-
-  <h2>Per-transaction results</h2>
-  <div class="card" style="overflow-x:auto">
-    <table>
-      <thead><tr>
-        <th>Transaction</th><th>Committed</th><th>Errors</th><th>Error %</th>
-        <th id="tx-throughput-head">TPM</th><th>Avg ms</th><th>p95 ms</th><th>p99 ms</th><th>Max ms</th>
-      </tr></thead>
-      <tbody id="txbody"></tbody>
-    </table>
-  </div>
-
-  <div class="charts-head"><h2>Charts</h2><button id="dl-all">Download all charts (PNG)</button></div>
-  <div class="grid chart-grid">
-    <div class="card chart-card line-card"><div class="cwrap"><canvas id="throughput"></canvas></div><div class="legend" id="throughput-legend"></div></div>
-    <div class="card chart-card line-card"><label class="chart-tools">Transaction<select id="latency-select"></select></label><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
-    <div class="card chart-card" id="card-percentiles"><canvas id="percentiles"></canvas></div>
-    <div class="card chart-card"><canvas id="histogram"></canvas></div>
-    <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
-    <div class="card chart-card"><canvas id="errors"></canvas></div>
-  </div>
-  </div>
-
-  <div id="stream-view" hidden>
-  <h2>Where the time went</h2>
-  <div class="card">
-    <div class="toolbar">
-      <span class="hint" id="time-bars-hint"></span>
-      <span>
-        <button type="button" id="time-bars-log" aria-pressed="false">Log scale</button>
-        <button type="button" id="time-bars-all" aria-pressed="false">Show all</button>
-      </span>
-    </div>
-    <div class="chart-card stream-chart" id="time-bars-wrap"><canvas id="time-bars"></canvas></div>
-  </div>
-
-  <h2>Stream timeline</h2>
-  <div class="card">
-    <div class="toolbar"><span class="hint" id="timeline-hint">One lane per client; each bar is one execution, where it ran. Hover a bar for its name and time.</span></div>
-    <div class="chart-card stream-chart" id="timeline-wrap"><canvas id="timeline"></canvas></div>
-  </div>
-
-  <h2>Per-transaction results</h2>
-  <div class="card" style="overflow-x:auto">
-    <div class="toolbar">
-      <span class="hint">Click a column to sort. Times are the transaction's own, summed over its executions.</span>
-      <label class="hint">Filter <input type="search" id="stream-filter" placeholder="name"></label>
-    </div>
-    <table>
-      <thead><tr id="stream-head"></tr></thead>
-      <tbody id="stream-body"></tbody>
-    </table>
-  </div>
-  </div>
+  </div></details>
 
   <footer>Generated by pgmeter</footer>
 </div>
@@ -355,37 +515,89 @@ for (const x of diIndexes) {
   indexesBody.appendChild(tr);
 }
 
-const kpis = document.getElementById('kpis');
 const tpUnit = DATA.meta.throughputUnit || 'TPM';
 const isStream = DATA.meta.report === 'stream';
 // A response time for a reader: seconds from one second up, else ms.
 const fmtMs = (ms) => ms >= 1000 ? fmt(ms / 1000, 2) + ' s' : (ms >= 10 ? fmt(ms) + ' ms' : fmt(ms, 2) + ' ms');
+// The same in seconds, for a column of a table: one unit down the column.
+const fmtSecs = (ms) => fmt(ms / 1000, 3);
 const S = DATA.stream;
 const streamRanked = isStream
   ? S.rows.map((r, idx) => ({...r, idx})).filter(r => r.executed > 0).sort((a, b) => b.totalMs - a.totalMs)
   : [];
 const streamSlowest = streamRanked.length ? streamRanked[0] : null;
-const kpiItems = isStream ? [
-  ['Elapsed', fmt(S.elapsedS, 1) + ' s'],
-  ['Executed', fmt(S.executed)],
-  ['Geometric mean', fmtMs(S.geomeanMs)],
-  [streamSlowest ? `Slowest: ${streamSlowest.name} (${fmt(streamSlowest.sharePct, 1)}%)` : 'Slowest', streamSlowest ? fmtMs(streamSlowest.totalMs) : '-'],
-  ['Errors', fmt(S.errors)],
-] : [
-  [tpUnit, fmt(DATA.kpis.throughput)],
-  ['Committed', fmt(DATA.kpis.committed)],
-  ['Errors', fmt(DATA.kpis.errors)],
-  ['Error rate', fmt(DATA.kpis.errorRate, 2) + ' %'],
-  ['Avg latency', fmt(DATA.kpis.avgLatency, 2) + ' ms'],
-  ['p95 latency', fmt(DATA.kpis.p95Latency, 2) + ' ms'],
-  ['p99 latency', fmt(DATA.kpis.p99Latency, 2) + ' ms'],
-];
-for (const [k, v] of kpiItems) {
-  const el = document.createElement('div');
-  el.className = 'card kpi';
-  el.innerHTML = `<div class="label">${esc(k)}</div><div class="value">${esc(v)}</div>`;
-  kpis.appendChild(el);
+// The answer first: the headline figure, its verdict, and what it was
+// measured under. A throughput run's headline is its rate; a stream's is the
+// time it took.
+const clock = (s) => s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${fmt(s, 1)} s`;
+const scaleText = (DATA.dataInfo && DATA.dataInfo.scaleFactor != null)
+  ? `scale factor ${fmt(DATA.dataInfo.scaleFactor)}`
+    + ((DATA.dataInfo.scalingUnit || 'scalefactor') === 'scalefactor' ? '' : ` (${DATA.dataInfo.scalingUnit})`) : '';
+const headline = isStream ? clock(S.elapsedS) : `${fmt(DATA.kpis.throughput)} ${tpUnit}`;
+document.getElementById('hero-value').textContent = isStream ? clock(S.elapsedS) : fmt(DATA.kpis.throughput);
+document.getElementById('hero-unit').textContent = isStream ? '' : tpUnit;
+document.title = `${DATA.meta.name || 'pgmeter'} · ${headline} · pgmeter report`;
+document.getElementById('nav-run').textContent = [DATA.meta.name, `${fmt(DATA.meta.clients)} clients`, headline].filter(Boolean).join(' · ');
+const heroBadge = document.getElementById('hero-badge');
+const steadySaid = {
+  steady: 'The rate held over the measured window.',
+  unstable: 'The rate swung from second to second without drifting.',
+  drifted: 'The two halves of the window ran at different rates.',
+};
+if (isStream) {
+  heroBadge.hidden = false;
+  heroBadge.textContent = S.errors ? `${fmt(S.errors)} errors` : 'no errors';
+  heroBadge.className = 'badge ' + (S.errors ? 'steady-warn' : 'steady-ok');
+  document.getElementById('hero-said').textContent = `${fmt(S.executed)} executions of ${fmt(streamRanked.length)} transactions.`;
+} else if (DATA.steady) {
+  heroBadge.hidden = false;
+  heroBadge.textContent = DATA.steady.verdict;
+  heroBadge.className = 'badge ' + (DATA.steady.verdict === 'steady' ? 'steady-ok' : 'steady-warn');
+  document.getElementById('hero-said').textContent = steadySaid[DATA.steady.verdict] || '';
+} else {
+  document.getElementById('hero-said').textContent = 'The steady state was not judged: the measured window is too short.';
 }
+document.getElementById('hero-cond').textContent = [
+  DATA.meta.name,
+  scaleText,
+  `${fmt(DATA.meta.clients)} clients`,
+  isStream ? '' : `${fmt(DATA.meta.duration)} s after a ${fmt(DATA.meta.rampup)} s ramp-up`,
+  isStream ? '' : `${fmt(DATA.kpis.committed)} committed`,
+  DATA.meta.interrupted ? 'interrupted by Ctrl-C (partial run)' : '',
+].filter(Boolean).join(' · ');
+const heroFacts = isStream ? [
+  ['Geometric mean', fmtMs(S.geomeanMs), ''],
+  ['Slowest', streamSlowest ? fmtMs(streamSlowest.totalMs) : '-', streamSlowest ? `${streamSlowest.name}, ${fmt(streamSlowest.sharePct, 1)}% of the time` : ''],
+  ['Executed', fmt(S.executed), ''],
+  ['Errors', fmt(S.errors), ''],
+] : [
+  ['Avg', fmt(DATA.kpis.avgLatency, 2) + ' ms', ''],
+  ['p95', fmt(DATA.kpis.p95Latency, 2) + ' ms', ''],
+  ['p99', fmt(DATA.kpis.p99Latency, 2) + ' ms', ''],
+  ['Errors', fmt(DATA.kpis.errorRate, 2) + '%', `${fmt(DATA.kpis.errors)} failed`],
+];
+for (const [k, v, sub] of heroFacts) {
+  const el = document.createElement('div');
+  for (const [cls, text] of [['k', k], ['v', v], ['s', sub]]) {
+    if (!text) continue;
+    const d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    el.appendChild(d);
+  }
+  document.getElementById('hero-facts').appendChild(el);
+}
+// What the folded sections hold, said on their closed line.
+document.getElementById('env-sum').textContent = [
+  DATA.server.settings && DATA.server.settings.server_version ? `PostgreSQL ${String(DATA.server.settings.server_version).split(' ')[0]}` : '',
+  DATA.server.database ? `database ${DATA.server.database}` : '',
+  DATA.server.settings && DATA.server.settings.shared_buffers ? `shared_buffers ${DATA.server.settings.shared_buffers}` : '',
+].filter(Boolean).join(', ');
+document.getElementById('data-sum').textContent = [
+  scaleText, `${fmt(diTables.length)} tables`, `${fmt(diIndexes.length)} indexes`, humanBytes(totalTableBytes + totalIndexBytes),
+].filter(Boolean).join(', ');
+// A printed report shows everything.
+window.addEventListener('beforeprint', () => document.querySelectorAll('details').forEach(d => { d.open = true; }));
 
 // Steady state: did the rate hold over the measured window?
 const steadyBox = document.getElementById('steady');
@@ -399,7 +611,7 @@ if (st) {
   }[st.verdict] || '';
   const badge = ok ? 'steady-ok' : 'steady-warn';
   steadyBox.innerHTML = `<div class="verdict"><span class="badge ${esc(badge)}">${esc(st.verdict)}</span>${esc(what)}`
-    + `<div class="note">Steady means under ${fmt(st.maxCvPct)}% variation per second and under ${fmt(st.maxDriftPct)}% drift between the halves, over ${fmt(st.seconds)} full seconds.</div></div>`
+    + `<div class="note">Steady means under ${fmt(st.maxCvPct)}% variation per second and under ${fmt(st.maxDriftPct)}% drift between the halves, over ${fmt(st.seconds)} full seconds. The window mean counts those full seconds only, so it differs a little from the headline, which divides everything committed by the measured time.</div></div>`
     + `<div class="figures">`
     + `<div><div class="k">Window mean</div><div class="v">${fmt(st.mean)} ${esc(tpUnit)}</div></div>`
     + `<div><div class="k">Variation per second</div><div class="v">${fmt(st.cvPct, 1)}%</div></div>`
@@ -489,6 +701,8 @@ const charts = {};
 if (isStream) {
   document.getElementById('throughput-view').hidden = true;
   document.getElementById('stream-view').hidden = false;
+  document.getElementById('hero-throughput').hidden = true;
+  document.getElementById('hero-time-bars').hidden = false;
 } else {
 // Throughput over time
 charts.throughput = new Chart(document.getElementById('throughput'), {
@@ -617,13 +831,15 @@ if (DATA.errors.counts.length) {
 }
 
 // --- Stream view ------------------------------------------------------------
-// Colours shared by the stream charts: the slowest transaction stands out.
+// Colours shared by the stream charts: the heaviest transactions have one
+// each, the same in the bars and in the timeline; the others are muted.
+const STREAM_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7'];
+const TOP_BARS = STREAM_PALETTE.length;
+const streamColorOf = new Map(streamRanked.slice(0, TOP_BARS).map((r, i) => [r.idx, STREAM_PALETTE[i]]));
 function streamColors() {
   const css = getComputedStyle(document.documentElement);
   return {
-    accent: '#4e79a7',
-    slow: css.getPropertyValue('--warn').trim() || '#f28e2b',
-    rest: '#94a3b8',
+    rest: (css.getPropertyValue('--border') || '#334155').trim(),
     panel: css.getPropertyValue('--panel').trim() || '#1e293b',
   };
 }
@@ -634,9 +850,9 @@ function renderStream() {
   renderStreamTable();
 }
 
-// Where the time went: total time per transaction, slowest first. The 16
-// slowest are drawn and the rest grouped, unless "Show all" is pressed.
-const TOP_BARS = 16;
+// Where the time went: total time per transaction, slowest first. The
+// heaviest are drawn and the rest grouped in a last bar, unless "Show all"
+// is pressed.
 const timeBarsState = {log: false, all: false};
 function renderTimeBars() {
   const c = streamColors();
@@ -645,7 +861,7 @@ function renderTimeBars() {
   const labels = shown.map(r => r.name);
   const values = shown.map(r => r.totalMs / 1000);
   const shares = shown.map(r => r.sharePct);
-  const colors = shown.map(r => streamSlowest && r.idx === streamSlowest.idx ? c.slow : c.accent);
+  const colors = shown.map(r => streamColorOf.get(r.idx) || c.rest);
   if (grouped) {
     const rest = streamRanked.slice(TOP_BARS);
     labels.push(`${rest.length} others`);
@@ -656,7 +872,7 @@ function renderTimeBars() {
   const top = streamRanked.slice(0, Math.min(TOP_BARS, streamRanked.length));
   const topShare = top.reduce((a, r) => a + r.sharePct, 0);
   document.getElementById('time-bars-hint').textContent = streamRanked.length > TOP_BARS
-    ? `Total time per transaction, slowest first. The ${top.length} slowest take ${fmt(topShare, 1)}% of the time.`
+    ? `Total time per transaction, slowest first. The ${top.length} slowest take ${fmt(topShare, 1)}% of the time; the last bar is all the others together.`
     : 'Total time per transaction, slowest first.';
   const wrap = document.getElementById('time-bars-wrap');
   wrap.style.height = (labels.length * 24 + 70) + 'px';
@@ -702,12 +918,30 @@ function renderTimeline() {
   const c = streamColors();
   const labels = T.clients.map(id => 'client ' + id);
   wrap.style.height = Math.min(labels.length * 36 + 90, 900) + 'px';
+  // The key of the colours, which the bars above share.
+  const legend = document.getElementById('timeline-legend');
+  legend.replaceChildren();
+  const keys = streamRanked.slice(0, TOP_BARS).map(r => [r.name, streamColorOf.get(r.idx)]);
+  if (streamRanked.length > TOP_BARS) keys.push([`${streamRanked.length - TOP_BARS} others`, c.rest]);
+  for (const [name, color] of keys) {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.style.cursor = 'default';
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = color;
+    const txt = document.createElement('span');
+    txt.textContent = name;
+    el.append(sw, txt);
+    legend.appendChild(el);
+  }
+  if (charts.timeline) charts.timeline.destroy();
   charts.timeline = new Chart(document.getElementById('timeline'), {
     type: 'bar',
     data: {labels, datasets: [{
       label: 'Executions',
       data: T.items.map(([lane, start, dur]) => ({x: [start / 1000, (start + dur) / 1000], y: labels[lane]})),
-      backgroundColor: T.items.map(it => streamSlowest && it[3] === streamSlowest.idx ? c.slow : c.accent),
+      backgroundColor: T.items.map(it => streamColorOf.get(it[3]) || c.rest),
       borderColor: c.panel, borderWidth: 1, borderSkipped: false,
       barPercentage: 0.8, categoryPercentage: 1, minBarLength: 1,
     }]},
@@ -733,8 +967,8 @@ function renderTimeline() {
 // total time; any column sorts, and the filter matches names.
 const streamColumns = [
   ['rank', 'Rank'], ['name', 'Transaction'], ['executed', 'Executed'], ['errors', 'Errors'],
-  ['totalMs', 'Total'], ['sharePct', 'Share'], ['cumPct', 'Cumulative'],
-  ['mean', 'Avg'], ['min', 'Min'], ['max', 'Max'],
+  ['totalMs', 'Total s'], ['sharePct', 'Share'], ['cumPct', 'Cumulative'],
+  ['mean', 'Avg s'], ['min', 'Min s'], ['max', 'Max s'],
 ];
 const streamSort = {key: 'rank', dir: 1};
 function renderStreamTable() {
@@ -774,9 +1008,9 @@ function renderStreamTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${esc(r.rank ?? '-')}</td><td style="text-align:left">${esc(r.name)}</td>`
       + `<td>${fmt(r.executed)}</td><td>${fmt(r.errors)}</td>`
-      + `<td>${esc(fmtMs(r.totalMs))}</td><td>${esc(r.cumPct == null ? '-' : fmt(r.sharePct, 1) + '%')}</td>`
+      + `<td>${esc(fmtSecs(r.totalMs))}</td><td>${esc(r.cumPct == null ? '-' : fmt(r.sharePct, 1) + '%')}</td>`
       + `<td>${esc(r.cumPct == null ? '-' : fmt(r.cumPct, 1) + '%')}</td>`
-      + `<td>${esc(fmtMs(r.mean))}</td><td>${esc(fmtMs(r.min))}</td><td>${esc(fmtMs(r.max))}</td>`;
+      + `<td>${esc(fmtSecs(r.mean))}</td><td>${esc(fmtSecs(r.min))}</td><td>${esc(fmtSecs(r.max))}</td>`;
     if (r.description) tr.title = r.description;
     body.appendChild(tr);
   }
@@ -784,6 +1018,289 @@ function renderStreamTable() {
 document.getElementById('stream-filter').addEventListener('input', () => renderStreamTable());
 if (isStream) renderStream();
 
+
+// --- System section ---------------------------------------------------------
+// A colour per CPU state, memory class and I/O direction, the same on every
+// host and in both themes: the colours of the transaction charts, in their
+// order.
+const SYS_COLORS = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7'];
+const SYS = DATA.system || [];
+const sysHostSelect = document.getElementById('sys-host');
+const sysDeviceSelect = document.getElementById('sys-device');
+let sysShownHost = -1;
+
+function sysCards(boxId, rows) {
+  const box = document.getElementById(boxId);
+  box.replaceChildren();
+  for (const row of rows) {
+    const el = document.createElement('div');
+    el.className = 'card sys-card';
+    for (const [cls, text] of row) {
+      if (text == null || text === '') continue;
+      const d = document.createElement('div');
+      d.className = cls;
+      d.textContent = text;
+      el.appendChild(d);
+    }
+    box.appendChild(el);
+  }
+}
+
+// The legend under a chart: a square for an area, a stroke for a line,
+// dashed like the line. One series needs none when the title names it.
+function sysLegend(id, chart, always) {
+  const box = document.getElementById(id + '-legend');
+  box.replaceChildren();
+  box.hidden = chart.data.datasets.length < 2 && !always;
+  if (box.hidden) return;
+  chart.data.datasets.forEach((ds, i) => {
+    const el = document.createElement('div');
+    el.className = 'item';
+    const sw = document.createElement('span');
+    if (ds.fill) { sw.className = 'swatch'; sw.style.background = ds.backgroundColor; }
+    else { sw.className = 'stroke' + (ds.borderDash ? ' dash' : ''); sw.style.borderTopColor = ds.borderColor; }
+    const txt = document.createElement('span');
+    txt.textContent = ds.label;
+    el.append(sw, txt);
+    el.onclick = () => {
+      const visible = !chart.isDatasetVisible(i);
+      chart.setDatasetVisibility(i, visible);
+      el.classList.toggle('hidden', !visible);
+      chart.update();
+    };
+    box.appendChild(el);
+  });
+}
+
+function sysChart(id, title, yTitle, datasets, o = {}) {
+  if (charts[id]) charts[id].destroy();
+  const panel = (getComputedStyle(document.documentElement).getPropertyValue('--panel') || '#1e293b').trim();
+  const unit = o.unit || '';
+  const decimals = o.decimals == null ? 1 : o.decimals;
+  const sets = datasets.map((ds, i) => o.stacked
+    ? {label: ds.label, data: ds.data, backgroundColor: ds.color, borderColor: panel, borderWidth: 1.5,
+       fill: i === 0 ? 'origin' : '-1', cubicInterpolationMode: 'monotone'}
+    : {label: ds.label, data: ds.data, borderColor: ds.color, backgroundColor: ds.color,
+       borderWidth: ds.width || 1.5, borderDash: ds.dash, fill: false});
+  const opts = lineOpts(yTitle);
+  opts.animation = false;
+  opts.scales.x.ticks = {maxTicksLimit: 15};
+  opts.scales.y.stacked = !!o.stacked;
+  if (o.yMax != null) { opts.scales.y.max = o.yMax; opts.scales.y.ticks = {includeBounds: false}; }
+  opts.plugins = {
+    legend: {display: false},
+    title: {display: true, text: title},
+    tooltip: {callbacks: {
+      title: (items) => `${items[0].label} s`,
+      label: (item) => `${item.dataset.label}: ${item.parsed.y == null ? '-' : fmt(item.parsed.y, decimals)}${unit}`,
+      footer: o.footer || (() => ''),
+    }},
+  };
+  charts[id] = new Chart(document.getElementById(id), {
+    type: 'line',
+    data: {labels: DATA.timeAxis, datasets: sets},
+    options: opts,
+    plugins: [rampupPlugin],
+  });
+  sysLegend(id, charts[id], o.alwaysLegend);
+}
+
+function renderSystem() {
+  if (!SYS.length) return;
+  const themeName = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  const s = SYS_COLORS;
+  const muted = themeName === 'light' ? '#475569' : '#94a3b8';
+  const hostIndex = Number(sysHostSelect.value) || 0;
+  const {host, summary, cpu, mem, disks} = SYS[hostIndex];
+  const GIB = 1048576;
+  const stat = (v, decimals, unit) => v ? `${fmt(v.avg, decimals)}${unit}` : '-';
+  const top = (v, decimals, unit) => v ? `max ${fmt(v.max, decimals)}${unit}` : '';
+  const scaled = (v, by) => v ? {avg: v.avg / by, max: v.max / by} : null;
+
+  document.getElementById('sys-title').textContent = SYS.length > 1 ? 'System' : `System: ${host.host}`;
+  const status = document.getElementById('sys-status');
+  status.hidden = !host.truncated;
+  status.textContent = host.truncated
+    ? `Series truncated at ${fmt(host.truncatedAtS)} s: ${host.truncated.replace(/[.\s]+$/, '')}. The figures cover the samples received.` : '';
+
+  sysCards('sys-meta', [
+    [['k', 'Host'], ['v', host.host], ['sub', host.target]],
+    [['k', 'Role'], ['v', host.database ? 'database server' : 'other host']],
+    [['k', 'Kernel'], ['v', host.kernel]],
+    [['k', 'CPUs'], ['v', String(host.cpus)]],
+    [['k', 'Memory'], ['v', `${fmt(host.memTotalKb / GIB, 1)} GiB`]],
+    [['k', 'Sampling'], ['v', `every ${host.intervalS} s`], ['sub', `${fmt(host.samples)} samples`]],
+  ]);
+
+  const volumes = summary.volumes;
+  const titled = (v) => v.holds.length ? `${v.name} (${v.holds.join(' + ')})` : v.name;
+  const busiest = volumes.reduce((a, v) => (!a || v.busy_pct.avg > a.busy_pct.avg) ? v : a, null);
+  const wal = volumes.find(v => v.holds.includes('WAL') && v.flush_ms);
+  // Which disks a card is about, spelled out: every name up to three volumes.
+  const written = volumes.length === 0 ? '' : volumes.length === 1 ? titled(volumes[0])
+    : volumes.length <= 3 ? `all ${volumes.length} volumes: ${volumes.map(v => v.name).join(', ')}`
+    : `all ${volumes.length} volumes`;
+  sysCards('sys-kpis', [
+    [['label', 'CPU busy'], ['value', stat(summary.cpu.busy_pct, 1, '%')], ['sub', top(summary.cpu.busy_pct, 1, '%')]],
+    [['label', 'I/O wait'], ['value', stat(summary.cpu.iowait_pct, 1, '%')], ['sub', top(summary.cpu.iowait_pct, 1, '%')]],
+    [['label', 'Memory used'], ['value', summary.memory.used_kb ? `${fmt(summary.memory.used_kb.max / GIB, 1)} GiB` : '-'],
+     ['sub', `max, of ${fmt(host.memTotalKb / GIB, 1)} GiB`]],
+    [['label', 'Disk written'], ['value', stat(summary.written_mb_s, 1, ' MB/s')],
+     ['sub', top(summary.written_mb_s, 1, ' MB/s')], ['which', written]],
+    [['label', 'Busiest volume'], ['value', busiest ? stat(busiest.busy_pct, 1, '%') : '-'],
+     ['sub', busiest ? `busy; ${top(busiest.busy_pct, 1, '%')}` : ''], ['which', busiest ? titled(busiest) : '']],
+    // How long a commit waits for the disk, when the WAL volume is known.
+    wal
+      ? [['label', 'WAL flush time'], ['value', stat(wal.flush_ms, 2, ' ms')], ['sub', top(wal.flush_ms, 2, ' ms')],
+         ['which', wal.flush_device === wal.device ? wal.name : `${wal.flush_device}, the disk under ${wal.name}`]]
+      : [['label', 'I/O pressure'], ['value', stat(summary.io_pressure_pct, 1, '%')], ['sub', top(summary.io_pressure_pct, 1, '%')]],
+  ]);
+
+  // CPU time: states at zero for the whole run are left out and named.
+  const states = [['user', cpu.user, s[0]], ['system', cpu.system, s[1]], ['iowait', cpu.iowait, s[2]],
+    ['softirq', cpu.softirq, s[3]], ['irq', cpu.irq, s[4]], ['nice', cpu.nice, s[5]],
+    ['steal', cpu.steal, s[6]], ['guest', cpu.guest, s[7]]];
+  const shown = states.filter(([, data]) => data.some(v => v > 0));
+  const absent = states.filter(([, data]) => !data.some(v => v > 0)).map(([name]) => name);
+  sysChart('sys-cpu', 'CPU time by state', '% of all CPUs',
+    shown.map(([label, data, color]) => ({label, data, color})),
+    {stacked: true, yMax: 100, unit: '%', alwaysLegend: true,
+     footer: (items) => { const v = cpu.idle[items[0].dataIndex]; return v == null ? '' : `idle: ${fmt(v, 1)}%`; }});
+  sysChart('sys-load', 'Run queue and load', 'Tasks', [
+    {label: 'runnable', data: cpu.running, color: s[0]},
+    {label: 'blocked on I/O', data: cpu.blocked, color: s[1]},
+    {label: 'load average (1 min)', data: cpu.load1, color: s[2]},
+    {label: `${host.cpus} CPUs`, data: DATA.timeAxis.map(() => host.cpus), color: muted, dash: [6, 4], width: 1},
+  ]);
+  const hasPsi = [cpu.psiCpu, cpu.psiIo, cpu.psiMem].some(series => series.some(v => v != null));
+  sysChart('sys-psi', 'Pressure', '% of time stalled', [
+    {label: 'CPU', data: cpu.psiCpu, color: s[0]},
+    {label: 'I/O', data: cpu.psiIo, color: s[1]},
+    {label: 'I/O, all tasks', data: cpu.psiIoFull, color: s[1], dash: [5, 4]},
+    {label: 'memory', data: cpu.psiMem, color: s[2]},
+    {label: 'memory, all tasks', data: cpu.psiMemFull, color: s[2], dash: [5, 4]},
+  ], {unit: '%'});
+  sysChart('sys-ctxt', 'Context switches', 'Switches/s',
+    [{label: 'context switches', data: cpu.ctxt, color: s[0]}], {unit: '/s', decimals: 0});
+  sysChart('sys-forks', 'Processes created', 'Processes/s',
+    [{label: 'processes created', data: cpu.forks, color: s[0]}], {unit: '/s', decimals: 0});
+  // Each note sits in the card of the chart it explains, so a screenshot of
+  // one chart keeps its explanation.
+  document.getElementById('sys-cpu-note').textContent =
+    'The unfilled part up to 100% is idle time.'
+    + (absent.length ? ` Never above zero during this run, so not drawn: ${absent.join(', ')}.` : '');
+  document.getElementById('sys-psi-note').textContent = hasPsi
+    ? 'The share of time some task waited for the resource; dashed lines are the time every task did.'
+    : 'This host reports no pressure figures (they need Linux 4.20 or later, with pressure stall information enabled).';
+
+  const memTotal = host.memTotalKb / GIB;
+  sysChart('sys-mem', 'Memory use', 'GiB', [
+    {label: 'anonymous', data: mem.anon, color: s[0]},
+    {label: 'shared', data: mem.shared, color: s[1]},
+    {label: 'page cache', data: mem.cache, color: s[2]},
+    {label: 'slab', data: mem.slab, color: s[3]},
+    {label: 'page tables', data: mem.pageTables, color: s[4]},
+    {label: 'other', data: mem.other, color: s[5]},
+  ], {stacked: true, yMax: Math.ceil(memTotal * 10) / 10, unit: ' GiB', decimals: 2, alwaysLegend: true,
+      footer: (items) => { const v = mem.available[items[0].dataIndex]; return v == null ? '' : `available: ${fmt(v, 2)} GiB`; }});
+  sysChart('sys-dirty', 'Dirty and writeback', 'MiB', [
+    {label: 'dirty', data: mem.dirty, color: s[0]},
+    {label: 'writeback', data: mem.writeback, color: s[1]},
+  ], {unit: ' MiB', decimals: 2});
+  sysChart('sys-paging', 'Paged in and out', 'MB/s', [
+    {label: 'read from disk', data: mem.pgin, color: s[0]},
+    {label: 'written to disk', data: mem.pgout, color: s[1]},
+  ], {unit: ' MB/s'});
+  sysChart('sys-faults', 'Page faults', 'Faults/s',
+    [{label: 'page faults', data: mem.faults, color: s[0]}], {unit: '/s', decimals: 0});
+  sysChart('sys-swap', 'Swap and major faults', 'Pages/s', [
+    {label: 'swapped in', data: mem.swapIn, color: s[0]},
+    {label: 'swapped out', data: mem.swapOut, color: s[1]},
+    {label: 'major faults', data: mem.majFaults, color: s[2]},
+  ], {unit: '/s'});
+  document.getElementById('sys-mem-note').textContent =
+    `The unfilled part up to ${fmt(memTotal, 1)} GiB is free memory. Shared memory holds PostgreSQL's shared buffers. `
+    + 'A major fault is a page that had to be read back from disk. '
+    + (mem.oomKills > 0 ? `The kernel killed ${fmt(mem.oomKills)} process(es) for lack of memory during this run.`
+                        : 'The kernel killed no process for lack of memory during this run.');
+
+  // Disks: the table of volumes, then the charts of the device picked.
+  const diskBox = document.getElementById('sys-disk');
+  diskBox.hidden = disks.length === 0;
+  if (!disks.length) return;
+  const body = document.getElementById('sys-volumes-body');
+  body.replaceChildren();
+  for (const v of volumes) {
+    const tr = document.createElement('tr');
+    [v.name, v.holds.join(' + ') || '-', v.on.join(', on ') || '-',
+     fmt(v.written_mb_s.avg, 1), fmt(v.read_mb_s.avg, 1), fmt(v.requests_s.avg),
+     fmt(v.write_ms, 2), v.flush_ms ? fmt(v.flush_ms.avg, 2) : '-',
+     fmt(v.busy_pct.avg, 1), fmt(v.busy_pct.max, 1),
+    ].forEach(text => { const td = document.createElement('td'); td.textContent = text; tr.appendChild(td); });
+    body.appendChild(tr);
+  }
+  // A new host brings its own devices: the selector starts again on the first.
+  if (hostIndex !== sysShownHost) {
+    sysShownHost = hostIndex;
+    sysDeviceSelect.replaceChildren();
+    disks.forEach((d, i) => sysDeviceSelect.add(new Option(d.top ? d.title : `${d.name} (lower layer)`, String(i))));
+  }
+  const d = disks[Number(sysDeviceSelect.value) || 0];
+  const flushLabel = d.flushName ? `flush (${d.flushName})` : 'flush';
+  sysChart('sys-dthr', `Throughput of ${d.title}`, 'MB/s', [
+    {label: 'read', data: d.rmb, color: s[0]},
+    {label: 'write', data: d.wmb, color: s[1]},
+  ], {unit: ' MB/s'});
+  const requests = [{label: 'read', data: d.r, color: s[0]}, {label: 'write', data: d.w, color: s[1]}];
+  if (d.f) requests.push({label: flushLabel, data: d.f, color: s[2]});
+  sysChart('sys-diops', `Requests of ${d.title}`, 'Requests/s', requests, {unit: '/s', decimals: 0});
+  const waits = [{label: 'read', data: d.rAwait, color: s[0]}, {label: 'write', data: d.wAwait, color: s[1]}];
+  if (d.fAwait) waits.push({label: flushLabel, data: d.fAwait, color: s[2]});
+  sysChart('sys-dawait', `Request time of ${d.title}`, 'ms per request, queue included', waits, {unit: ' ms', decimals: 2});
+  sysChart('sys-dsize', `Request size of ${d.title}`, 'kB per request', [
+    {label: 'read', data: d.rSize, color: s[0]},
+    {label: 'write', data: d.wSize, color: s[1]},
+  ], {unit: ' kB'});
+  sysChart('sys-dqueue', `Queue size of ${d.title}`, 'Requests waiting or in progress',
+    [{label: 'queue size', data: d.queue, color: s[0]}], {decimals: 2});
+  const tops = disks.filter(x => x.top).slice(0, 8);
+  sysChart('sys-dutil', 'Time busy, all volumes', '% of time',
+    tops.map((x, i) => ({label: x.title, data: x.util, color: s[i]})), {unit: '%', yMax: 100, alwaysLegend: true});
+  const chains = volumes.map(v => [v.name, ...v.on].join(', on '));
+  document.getElementById('sys-disk-note').textContent =
+    'The first five charts follow the device picked above; the last one compares the top of each stack, the devices file systems sit on'
+    + (chains.length ? `: ${chains.join('; ')}. ` : '. ')
+    + 'The layers underneath carry the same I/O and are in the selector. '
+    + (d.flushName ? `Flushes are counted at the disk, so the flush lines are those of ${d.flushName}: every volume on that disk shares them. ` : '')
+    + (summary.idle_volumes.length ? `Never 1% busy during this run, so not shown: ${summary.idle_volumes.join(', ')}.` : '');
+}
+
+if (SYS.length) {
+  document.getElementById('system-view').hidden = false;
+  SYS.forEach((h, i) => sysHostSelect.add(new Option(
+    `${h.host.host} (${h.host.target})${h.host.database ? ' - database server' : ''}`, String(i))));
+  // The section opens on the host PostgreSQL runs on, wherever it is in the list.
+  sysHostSelect.value = String(Math.max(0, SYS.findIndex(h => h.host.database)));
+  document.getElementById('sys-host-label').hidden = SYS.length < 2;
+  sysHostSelect.addEventListener('change', renderSystem);
+  sysDeviceSelect.addEventListener('change', renderSystem);
+  renderSystem();
+}
+
+// The links of the bar on top: the sections this report has, in page order.
+for (const [id, label] of [
+  ['result', 'Result'],
+  ['steady-state', 'Steady state'], ['transactions', 'Transactions'], ['charts', 'Charts'],
+  ['timeline-section', 'Timeline'], ['stream-transactions', 'Transactions'],
+  ['system-view', 'System'], ['setup', 'Setup'],
+]) {
+  const target = document.getElementById(id);
+  if (!target || target.hidden || (target.closest('[hidden]'))) continue;
+  const a = document.createElement('a');
+  a.href = '#' + id;
+  a.textContent = label;
+  document.getElementById('nav-links').appendChild(a);
+}
 // --- Chart PNG export -------------------------------------------------------
 // Chart.js draws to a canvas whose backing store is (CSS size x devicePixelRatio).
 // To export at high resolution regardless of the viewer's screen, we bump the
@@ -921,10 +1438,25 @@ function applyTheme(name) {
   document.documentElement.setAttribute('data-theme', name);
   Chart.defaults.color = p.tick;
   Chart.defaults.borderColor = p.grid;
+  // A chart keeps the colours it resolved when it was created: changing the
+  // defaults is not enough, each chart is given the theme's colours.
   for (const chart of Object.values(charts)) {
     chart.data.datasets.forEach(ds => { if (ds.label === 'Total') ds.borderColor = p.totalLine; });
+    const o = chart.options;
+    for (const scale of Object.values(o.scales || {})) {
+      scale.ticks.color = p.tick;
+      scale.grid.color = p.grid;
+      if (scale.border) scale.border.color = p.grid;
+      if (scale.title) scale.title.color = p.tick;
+    }
+    if (o.plugins.title) o.plugins.title.color = p.tick;
+    if (o.plugins.legend && o.plugins.legend.labels) o.plugins.legend.labels.color = p.tick;
     chart.update();
   }
+  // The stream charts take their colours from the page when they are drawn.
+  if (isStream) renderStream();
+  // The System charts carry theme colours of their own: draw them again.
+  if (typeof renderSystem === 'function') renderSystem();
 }
 
 const themeSelect = document.getElementById('theme-select');
