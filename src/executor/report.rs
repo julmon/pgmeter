@@ -939,7 +939,7 @@ fn render_html(json_blob: &str) -> String {
     <table class="settings"><tbody id="settings"></tbody></table>
   </div>
 
-  <h2>Data</h2>
+  <h2>Data set</h2>
   <div class="grid kpi-grid" id="data-kpis"></div>
   <div class="card" style="overflow-x:auto; margin-top:16px">
     <table>
