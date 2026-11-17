@@ -481,6 +481,30 @@ fn build_time_series(input: &ReportInput, factor: f64) -> Result<TimeSeries, Err
     }
 
     // X axis is each bucket's start second, so "Elapsed (s)" stays meaningful.
+    // The clients are stopped in the middle of a second, and each finishes
+    // the transaction it is in: the last seconds of the log are partial, and
+    // drawn as they are they read as a collapse at the end of the run. The
+    // stop comes `workload` seconds after the ramp-up ended, known to the
+    // second; the buckets that are not wholly before it, less that second,
+    // are not drawn. A stream's clients stop one by one: nothing is cut.
+    let drawn = if input.kind == ReportKind::Stream {
+        n_buckets
+    } else {
+        let rampup_end = input
+            .rampup_end_ts
+            .map_or(0.0, |end| (end - min_ts).max(0) as f64);
+        let workload = input.total_time_ms.saturating_sub(input.rampup_time_ms) as f64 / 1000.0;
+        let stop = rampup_end + workload - 1.0;
+        let whole = (0..n_buckets as u64)
+            .take_while(|b| ((b + 1) * bucket_secs) as f64 <= stop)
+            .count();
+        whole.clamp(1, n_buckets)
+    };
+    let n_buckets = drawn;
+    total_count.truncate(n_buckets);
+    total_lat_sum.truncate(n_buckets);
+    total_bins.truncate(n_buckets);
+
     let time_axis: Vec<u64> = (0..n_buckets as u64).map(|b| b * bucket_secs).collect();
     // Throughput is a per-second rate (count / bucket width) scaled by the unit factor.
     let total_tpm: Vec<u64> = total_count
@@ -845,7 +869,9 @@ fn render_html(json_blob: &str) -> String {
   .grid {{ display: grid; gap: 16px; }}
   .meta-grid {{ grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
   .kpi-grid {{ grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }}
-  .chart-grid {{ grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }}
+  /* min(): a card never asks for more than the screen has. */
+  .chart-grid {{ grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); }}
+  .chart-grid > .card {{ min-width: 0; }}
   .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }}
   .kpi .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
   .kpi .value {{ font-size: 28px; font-weight: 700; margin-top: 6px; }}
@@ -1516,6 +1542,7 @@ function renderTimeline() {
   const c = streamColors();
   const labels = T.clients.map(id => 'client ' + id);
   wrap.style.height = Math.min(labels.length * 36 + 90, 900) + 'px';
+  if (charts.timeline) charts.timeline.destroy();
   charts.timeline = new Chart(document.getElementById('timeline'), {
     type: 'bar',
     data: {labels, datasets: [{
@@ -1736,10 +1763,23 @@ function applyTheme(name) {
   document.documentElement.setAttribute('data-theme', name);
   Chart.defaults.color = p.tick;
   Chart.defaults.borderColor = p.grid;
+  // A chart keeps the colours it resolved when it was created: changing the
+  // defaults is not enough, each chart is given the theme's colours.
   for (const chart of Object.values(charts)) {
     chart.data.datasets.forEach(ds => { if (ds.label === 'Total') ds.borderColor = p.totalLine; });
+    const o = chart.options;
+    for (const scale of Object.values(o.scales || {})) {
+      scale.ticks.color = p.tick;
+      scale.grid.color = p.grid;
+      if (scale.border) scale.border.color = p.grid;
+      if (scale.title) scale.title.color = p.tick;
+    }
+    if (o.plugins.title) o.plugins.title.color = p.tick;
+    if (o.plugins.legend && o.plugins.legend.labels) o.plugins.legend.labels.color = p.tick;
     chart.update();
   }
+  // The stream charts take their colours from the page when they are drawn.
+  if (isStream) renderStream();
   // The System charts carry theme colours of their own: draw them again.
   if (typeof renderSystem === 'function') renderSystem();
 }
@@ -1848,7 +1888,8 @@ transactions:
             steady: None,
             kind: ReportKind::Throughput,
             stream: None,
-            total_time_ms: 3000,
+            // Long enough for the three seconds of the log to be whole ones.
+            total_time_ms: 5000,
             rampup_time_ms: 0,
             rampup_end_ts: None,
             interrupted: false,
@@ -1883,6 +1924,31 @@ transactions:
         // One error at second 1 relative to origin.
         assert_eq!(ts.error_time_axis, vec![0, 1]);
         assert_eq!(ts.error_counts, vec![0, 1]);
+
+        // A run stopped 3 s in: its clients were cut in the middle of the
+        // last second of the log, which is not drawn, nor is the one before,
+        // since the stop is only known to the second.
+        let stopped = ReportInput {
+            total_time_ms: 3000,
+            ..input
+        };
+        let ts = build_time_series(&stopped, 60.0).unwrap();
+        assert_eq!(ts.time_axis, vec![0, 1]);
+        assert_eq!(ts.total_tpm, vec![120, 60]);
+        assert!(ts
+            .series
+            .iter()
+            .all(|s| s.tpm.len() == 2 && s.p95.len() == 2));
+        // A stream's clients stop one by one: nothing is cut.
+        let stream = ReportInput {
+            total_time_ms: 3000,
+            kind: ReportKind::Stream,
+            ..input
+        };
+        assert_eq!(
+            build_time_series(&stream, 60.0).unwrap().time_axis,
+            vec![0, 1, 2]
+        );
 
         // Regression for RELEASE_REVIEW B2: with ramp-up ending at t=101 the
         // time series keep every sample but the histogram drops the two at
