@@ -10,9 +10,14 @@ use super::sysmon::{Device, HostSeries, TimedSample};
 
 const KB_PER_GIB: f64 = 1_048_576.0;
 
-/// One value per bucket of the time axis: the mean of the samples that fall
-/// in it, None where there is none (before the sampler's first interval,
-/// after it died).
+/// One value per bucket of the time axis, None where no sample covers it
+/// (before the sampler's first interval, after it died).
+///
+/// A sample describes the interval that ends when it was received, and
+/// counts in every bucket that interval overlaps, for the time they share.
+/// Placing it in the one bucket of its timestamp would leave holes: a
+/// sample that arrives a few milliseconds late skips a bucket, and with
+/// `--sysmon-interval 5` four buckets in five would be empty.
 struct Buckets<'a> {
     samples: &'a [TimedSample],
     origin: i64,
@@ -22,22 +27,33 @@ struct Buckets<'a> {
 
 impl Buckets<'_> {
     fn series(&self, pick: impl Fn(&Sample) -> Option<f64>) -> Vec<Option<f64>> {
-        let mut sums = vec![(0.0_f64, 0_u32); self.len];
+        let width = self.bucket_secs as f64;
+        // Per bucket: the values weighted by the seconds shared, and those seconds.
+        let mut sums = vec![(0.0_f64, 0.0_f64); self.len];
         for timed in self.samples {
-            let elapsed = timed.timestamp - self.origin as f64;
-            if elapsed < 0.0 {
+            let Some(value) = pick(&timed.sample) else {
+                continue;
+            };
+            let end = timed.timestamp - self.origin as f64;
+            let start = (end - timed.sample.interval_s).max(0.0);
+            if end <= start {
                 continue;
             }
-            let index = (elapsed / self.bucket_secs as f64) as usize;
-            if let (Some(slot), Some(value)) = (sums.get_mut(index), pick(&timed.sample)) {
-                slot.0 += value;
-                slot.1 += 1;
+            let first = (start / width) as usize;
+            let last = ((end / width) as usize).min(self.len.saturating_sub(1));
+            for (index, slot) in sums.iter_mut().enumerate().take(last + 1).skip(first) {
+                let from = start.max(index as f64 * width);
+                let to = end.min((index + 1) as f64 * width);
+                if to > from {
+                    slot.0 += value * (to - from);
+                    slot.1 += to - from;
+                }
             }
         }
         sums.into_iter()
-            .map(|(sum, count)| {
+            .map(|(sum, shared)| {
                 // Three decimals are plenty for a chart and keep the page small.
-                (count > 0).then(|| (sum / f64::from(count) * 1000.0).round() / 1000.0)
+                (shared > 0.0).then(|| (sum / shared * 1000.0).round() / 1000.0)
             })
             .collect()
     }
@@ -374,12 +390,9 @@ pub const SYSTEM_HTML: &str = r##"
 pub const SYSTEM_JS: &str = r##"
 // --- System section ---------------------------------------------------------
 // A colour per CPU state, memory class and I/O direction, the same on every
-// host. The set is its own: it keeps stacked areas apart for colour-blind
-// readers, on the dark panel and on the light one.
-const SYS_COLORS = {
-  dark:  ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#0ca30c', '#9085e9', '#e66767'],
-  light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'],
-};
+// host and in both themes: the colours of the transaction charts, in their
+// order.
+const SYS_COLORS = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7'];
 const SYS = DATA.system || [];
 const sysHostSelect = document.getElementById('sys-host');
 const sysDeviceSelect = document.getElementById('sys-device');
@@ -464,7 +477,7 @@ function sysChart(id, title, yTitle, datasets, o = {}) {
 function renderSystem() {
   if (!SYS.length) return;
   const themeName = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-  const s = SYS_COLORS[themeName];
+  const s = SYS_COLORS;
   const muted = themeName === 'light' ? '#475569' : '#94a3b8';
   const hostIndex = Number(sysHostSelect.value) || 0;
   const {host, summary, cpu, mem, disks} = SYS[hostIndex];
@@ -744,9 +757,11 @@ mod tests {
         );
         let system = system_json(&[series], Some(1001), Some(1000), &[0, 2, 4, 6]);
         let host = &system[0];
-        // The mean of a bucket's samples, null where there is none.
-        assert_eq!(host["cpu"]["user"], json!([20.0, 50.0, 70.0, null]));
-        assert_eq!(host["cpu"]["idle"], json!([80.0, 50.0, 30.0, null]));
+        // Each sample counts for the time its second shares with the bucket:
+        // the first bucket has 0.4 s at 10, 1 s at 30 and 0.6 s at 50; the
+        // second 0.4 s at 50 and 0.6 s at 70; the last is never reached.
+        assert_eq!(host["cpu"]["user"], json!([32.0, 62.0, 70.0, null]));
+        assert_eq!(host["cpu"]["idle"], json!([68.0, 38.0, 30.0, null]));
         // 1 GiB anonymous, 0.5 shared, 0.5 of page cache, and what is left
         // of the 4 once the free GiB is counted.
         assert_eq!(host["mem"]["anon"][0], 1.0);
@@ -759,6 +774,38 @@ mod tests {
         // began after the ramp-up ended at 1001.
         assert_eq!(host["summary"]["samples"], 2);
         assert_eq!(host["summary"]["cpu"]["busy_pct"]["avg"], 60.0);
+    }
+
+    #[test]
+    fn a_late_sample_or_a_long_interval_leaves_no_hole() {
+        let at = |timestamp: f64, interval_s: f64, user: f64| {
+            let mut timed = sample(timestamp, user, 1.0);
+            timed.sample.interval_s = interval_s;
+            timed
+        };
+        // One-second buckets. The third sample comes 60 ms late and lands
+        // past second 3: bucket 2 is still covered by it.
+        let late = host(
+            vec![
+                at(1001.0, 1.0, 10.0),
+                at(1002.0, 1.0, 20.0),
+                at(1003.06, 1.06, 30.0),
+                at(1004.0, 0.94, 40.0),
+            ],
+            None,
+        );
+        let system = system_json(&[late], None, Some(1000), &[0, 1, 2, 3]);
+        let user = system[0]["cpu"]["user"].as_array().unwrap();
+        assert!(user.iter().all(|v| !v.is_null()), "{user:?}");
+        assert_eq!(user[2], 30.0);
+        // A sample every 5 s fills the five buckets it describes.
+        let slow = host(vec![at(1005.0, 5.0, 40.0), at(1010.0, 5.0, 60.0)], None);
+        let axis: Vec<u64> = (0..10).collect();
+        let system = system_json(&[slow], None, Some(1000), &axis);
+        assert_eq!(
+            system[0]["cpu"]["user"],
+            json!([40.0, 40.0, 40.0, 40.0, 40.0, 60.0, 60.0, 60.0, 60.0, 60.0])
+        );
     }
 
     #[test]
