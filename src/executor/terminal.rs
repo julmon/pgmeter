@@ -132,6 +132,12 @@ pub fn err_msg(error: &str) {
     eprintln!("{} {}", style("error:").red().bold(), error);
 }
 
+// A condition the run survives but the user must know about. Printed even
+// under --quiet, on stderr, like an error.
+pub fn warn_msg(warning: &str) {
+    eprintln!("{} {}", style("warning:").yellow().bold(), warning);
+}
+
 // Determinate bar tracking the workload's elapsed/total seconds of a timed
 // run. The message suffix (live throughput/latency) is set by the caller.
 // Hidden on a non-TTY so callers can fall back to periodic log lines.

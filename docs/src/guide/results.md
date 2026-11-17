@@ -97,6 +97,7 @@ Each run creates a directory named after its start time in UTC, such as
 | `pgmeter-throughput-<name>.csv` | Throughput per second of each transaction, and `all`, over the whole run |
 | `pgmeter-response-time-<name>.csv` | Response time over time of each transaction |
 | `pgmeter-stats-<name>.csv` | The statistical summary of each transaction for the steady-state window |
+| `pgmeter-system-<host>-{cpu,memory,disk}.csv` | With `--sysmon`: the system metrics of each monitored host, one row per sample |
 
 [Output files](../reference/output-files.md) gives the exact format of each.
 The two logs are plain text so that a run can be re-analysed with other tools;
@@ -145,12 +146,17 @@ A stream run's report shows instead:
 
 [View a sample throughput report](../sample-report.html): a PGM-C run with 10
 warehouses and 8 clients for 60 s after a 10 s ramp-up, the first after the
-load, which the steady-state check flags as drifted.
+load, with `--sysmon local`, so the page ends with the System section of the
+machine it ran on.
 
 ![The charts of a stream report](../images/report-stream.png)
 
 [View a sample stream report](../sample-stream-report.html): PGM-DS at scale
 factor 1, two streams with `--once`.
+
+With `--sysmon`, both layouts end with a System section: the CPU, memory
+and disk figures of each monitored host on the same time axis as the
+throughput. [Monitoring the system](monitoring.md) describes it.
 
 Hover the charts; the pages have a light and a dark theme.
 

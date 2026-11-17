@@ -61,13 +61,21 @@ The server log tells you when a run was not measuring what you thought:
   tens of seconds in the throughput chart, with nothing in the PostgreSQL
   log to explain them.
 
+`--sysmon` puts the machine's own figures next to the throughput: CPU time
+by state, memory, and for each volume its throughput, request time and
+flush time, on the same time axis. A throughput that halves at the second
+the WAL disk's flush time triples needs no further explanation. See
+[Monitoring the system](monitoring.md).
+
 ## Where the client runs
 
 The load generator uses CPU too. When it shares the machine with the
 server, every core-second it burns is taken from PostgreSQL, and the
 comparison between tools or between pgmeter versions becomes partly a
 comparison of load generators. For a server comparison, run pgmeter on
-another machine, or at least keep it on the same one for every run. On a
+another machine, or at least keep it on the same one for every run. Add
+`--sysmon local` to see what the load generator itself used: one that runs
+out of CPU caps the throughput, and nothing on the server shows it. On a
 shared machine, simple-mode specs cost less with the default `--threads`
 than with one worker per CPU, because the workers compete with the server.
 

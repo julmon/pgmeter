@@ -13,8 +13,10 @@ mod data_agg;
 pub mod error;
 mod init;
 mod report;
+mod report_system;
 mod run;
 mod summary;
+mod sysmon;
 mod terminal;
 mod tls;
 mod txmessage;
@@ -25,6 +27,8 @@ mod yaml_types;
 use super::args::{OutputFormat, SslMode};
 use benchmark::{Counter, ResponseTimeStatistics};
 use error::Error;
+pub use sysmon::Spec as SysmonSpec;
+pub use sysmon::Target as SysmonTarget;
 
 use yaml_benchmark::YamlBenchmark;
 use yaml_types::ReportKind;
@@ -69,6 +73,9 @@ pub struct Executor {
     /// CSVs, run.json and the results.
     throughput_unit: String,
     throughput_factor: f64,
+    /// `--sysmon`: what each monitored host's sampler delivered during the
+    /// run; empty when no host was monitored.
+    system: Vec<sysmon::HostSeries>,
     // Target directory used to store collected and aggregated data
     target_dir: PathBuf,
 }
@@ -148,6 +155,7 @@ impl Executor {
             seed: None,
             throughput_unit: "TPM".to_string(),
             throughput_factor: 60.0,
+            system: Vec::new(),
             target_dir: get_target_dir_path()?,
         })
     }
@@ -214,6 +222,12 @@ impl Executor {
             .collect();
         let steady = self.steady_state();
         let stream = self.stream_summary(&transactions);
+        // The hosts given to --sysmon, over the same window as the rest.
+        let system: Vec<sysmon::window::HostSummary> = self
+            .system
+            .iter()
+            .map(|host| sysmon::window::summarize(host, self.rampup_end_ts))
+            .collect();
 
         match format {
             OutputFormat::Table if stream.is_some() => {
@@ -249,6 +263,7 @@ impl Executor {
                         self.interrupted,
                         steady.as_ref(),
                         stream.as_ref(),
+                        &system,
                     )
                 );
             }
@@ -258,6 +273,11 @@ impl Executor {
                     data_agg::results_csv(&summary.transactions, &data_stats, &throughput_unit)
                 );
             }
+        }
+        // --format csv stays one row per transaction.
+        if matches!(format, OutputFormat::Table) && !system.is_empty() {
+            println!();
+            print!("{}", data_agg::system_tables(&system));
         }
 
         Ok(self)
@@ -341,6 +361,7 @@ impl Executor {
             clients: self.n_clients,
             duration_s: self.duration_s,
             rampup_s: self.rampup_s,
+            system: &self.system,
         };
 
         match report::generate(&input, &mut client) {

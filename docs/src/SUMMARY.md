@@ -13,6 +13,7 @@
 - [Initializing a benchmark](guide/initializing.md)
 - [Running a benchmark](guide/running.md)
 - [Reading the results](guide/results.md)
+- [Monitoring the system](guide/monitoring.md)
 - [Measuring well](guide/measuring.md)
 - [Troubleshooting](guide/troubleshooting.md)
 - [Bundled workloads](guide/workloads.md)

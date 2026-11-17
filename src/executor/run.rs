@@ -24,7 +24,7 @@ use super::error::{error_detail, Error};
 use super::txmessage::{TXMessage, TXMessageKind};
 use super::yaml_benchmark::YamlBenchmark;
 use super::yaml_lua;
-use super::{redact_dsn, summary, terminal, Executor, ERROR_FILE, LOG_FILE, RUN_FILE};
+use super::{redact_dsn, summary, sysmon, terminal, Executor, ERROR_FILE, LOG_FILE, RUN_FILE};
 use crate::args::RunArgs;
 
 /// How the clients are driven; decided by the spec, see `Executor::engine`.
@@ -395,6 +395,42 @@ impl Executor {
             ))
         });
 
+        // The system samplers start before the clients, so that the ramp-up
+        // is covered, and each must have delivered a first sample: a host
+        // that cannot be monitored fails the run here and not after it.
+        let system_monitor = if args.sysmon.is_empty() {
+            None
+        } else {
+            let step = Instant::now();
+            terminal::start_msg(command, "Starting the system metrics samplers");
+            // Which of the hosts is the database server, and where
+            // PostgreSQL keeps its files there, as far as the server tells.
+            let database = if args.sysmon_marked.len() > 1 {
+                Err(Error::Other(
+                    "--sysmon: only one target can be marked db:, the database server".to_string(),
+                ))
+            } else {
+                self.connect().map(|mut client| {
+                    sysmon::Database::lookup(&mut client, args.sysmon_marked.first().copied())
+                })
+            }
+            .inspect_err(|_| {
+                let _ = std::fs::remove_dir(&self.target_dir);
+            })?;
+            let monitor = sysmon::Monitor::start(
+                &args.sysmon,
+                f64::from(args.sysmon_interval),
+                &self.target_dir,
+                &database,
+            )
+            .inspect_err(|_| {
+                // Nothing ran: leave no empty results directory behind.
+                let _ = std::fs::remove_dir(&self.target_dir);
+            })?;
+            terminal::done_msg(step.elapsed().as_micros() as f64 / 1000_f64);
+            Some(monitor)
+        };
+
         // Start the data collector only now that everything that can fail
         // before the clients start has succeeded.
         let dc_tx_counters = tx_counters.clone();
@@ -479,6 +515,22 @@ impl Executor {
             terminal::interrupted_msg();
         }
 
+        // The workload is over: stop the samplers. One that ended on its own
+        // (a lost SSH connection) left a shorter series; say so.
+        if let Some(monitor) = system_monitor {
+            self.system = monitor.stop();
+            for host in &self.system {
+                if let Some(reason) = &host.truncated {
+                    terminal::warn_msg(&format!(
+                        "system metrics of {} ended before the run did, after {} sample(s): {}",
+                        host.info.target,
+                        host.samples.len(),
+                        reason
+                    ));
+                }
+            }
+        }
+
         // Send termination message to the data collector
         tx.send(TXMessage::terminate_data_collector()).unwrap();
         // Wait for the end of the data collection thread
@@ -514,6 +566,7 @@ impl Executor {
             "throughput_unit": self.throughput_unit,
             "throughput_factor": self.throughput_factor,
             "interrupted": self.interrupted,
+            "system": self.system.iter().map(|host| host.metadata()).collect::<Vec<_>>(),
         });
         let path = self.target_dir.join(RUN_FILE);
         if let Err(error) = std::fs::write(&path, format!("{:#}\n", doc)) {
@@ -571,6 +624,26 @@ impl Executor {
         }
         if args.progress > 0 {
             eprintln!("  progress: every {} s", args.progress);
+        }
+        if !args.sysmon.is_empty() {
+            let targets: Vec<String> = args
+                .sysmon
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let marker = if args.sysmon_marked.contains(&index) {
+                        "db:"
+                    } else {
+                        ""
+                    };
+                    format!("{marker}{target}")
+                })
+                .collect();
+            eprintln!(
+                "  sysmon:   {} every {} s",
+                targets.join(", "),
+                args.sysmon_interval
+            );
         }
         eprintln!("  started:  {}", started.format("%Y-%m-%dT%H:%M:%SZ"));
         eprintln!();

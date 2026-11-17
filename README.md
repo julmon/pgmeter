@@ -36,6 +36,9 @@ command-line, Lua API and output file reference.
   self-contained HTML report with charts: throughput runs
   ([sample](https://julmon.github.io/pgmeter/sample-report.html)) and query
   streams ([sample](https://julmon.github.io/pgmeter/sample-stream-report.html)).
+- System metrics of the database server and the load generator during a
+  run (`--sysmon`): CPU, memory and disks of Linux hosts, local or over SSH,
+  on the same time axis as the throughput.
 - Parallel `COPY`-based data loading.
 
 ## Requirements

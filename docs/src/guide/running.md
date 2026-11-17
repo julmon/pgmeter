@@ -127,3 +127,10 @@ status 1, after the collector has written the logs of what ran.
 [Reading the results](results.md). `--format json` prints one JSON document
 with the same figures and `--format csv` one CSV table, both for scripting;
 they imply `--quiet` so stdout holds only the result data.
+
+## Watching the machines
+
+`--sysmon local` or `--sysmon [user@]host` samples the CPU, the memory and
+the disks of a Linux machine during the run, over SSH for a remote one, and
+adds them to the console tables, the JSON output, the results directory and
+the report. [Monitoring the system](monitoring.md) covers it.

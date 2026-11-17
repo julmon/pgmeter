@@ -13,6 +13,17 @@ First public release.
 
 ### Added
 
+- `pgmeter run --sysmon <target>` samples the system metrics of Linux hosts
+  during a run: `local`, or `[user@]host[:port]` over the system's `ssh`,
+  repeatable, every `--sysmon-interval` seconds. Nothing is installed on the
+  hosts and nothing is monitored unless asked. CPU time by state, load,
+  pressure, memory, paging and, per block device, the figures of `iostat -x`
+  with flush counts and times go to three CSV files per host; the measured
+  window is summarised on the console and in `--format json`; the HTML
+  report gains a System section on the time axis of the throughput. pgmeter
+  tells which host is the database server (`db:<target>` to say so) and,
+  when it may read `data_directory`, which volumes hold the data and the
+  WAL.
 - `pgmeter init` creates the schema, loads data in parallel (`--jobs`,
   `--scalefactor`), then adds primary keys, foreign keys (`--no-fkey` to skip),
   indexes, vacuums and checkpoints. `--post-create-table` runs an SQL script
