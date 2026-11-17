@@ -315,6 +315,10 @@ pub const SYSTEM_CSS: &str = r##"
   .sys-grid { grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); }
   .sys-grid .card { min-width: 0; }
   .sys-grid .wide { grid-column: 1 / -1; }
+  /* A card grows with the note under its chart. */
+  .sys-grid .line-card { height: auto; min-height: 420px; }
+  .sys-grid .line-card .legend { flex: 0 0 auto; }
+  .sys-grid .line-card .note { margin: 10px 0 0; }
   .sys-volumes { overflow-x: auto; }
   .sys-volumes table { font-variant-numeric: tabular-nums; }
   .sys-volumes th, .sys-volumes td { white-space: nowrap; }
@@ -338,23 +342,21 @@ pub const SYSTEM_HTML: &str = r##"
 
   <h3>CPU</h3>
   <div class="grid sys-grid">
-    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-cpu"></canvas></div><div class="legend sys-legend" id="sys-cpu-legend"></div></div>
+    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-cpu"></canvas></div><div class="legend sys-legend" id="sys-cpu-legend"></div><p class="note" id="sys-cpu-note"></p></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-load"></canvas></div><div class="legend sys-legend" id="sys-load-legend"></div></div>
-    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-psi"></canvas></div><div class="legend sys-legend" id="sys-psi-legend"></div></div>
+    <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-psi"></canvas></div><div class="legend sys-legend" id="sys-psi-legend"></div><p class="note" id="sys-psi-note"></p></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-ctxt"></canvas></div><div class="legend sys-legend" id="sys-ctxt-legend"></div></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-forks"></canvas></div><div class="legend sys-legend" id="sys-forks-legend"></div></div>
   </div>
-  <p class="note" id="sys-cpu-note"></p>
 
   <h3>Memory</h3>
   <div class="grid sys-grid">
-    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-mem"></canvas></div><div class="legend sys-legend" id="sys-mem-legend"></div></div>
+    <div class="card chart-card line-card wide"><div class="cwrap"><canvas id="sys-mem"></canvas></div><div class="legend sys-legend" id="sys-mem-legend"></div><p class="note" id="sys-mem-note"></p></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-dirty"></canvas></div><div class="legend sys-legend" id="sys-dirty-legend"></div></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-paging"></canvas></div><div class="legend sys-legend" id="sys-paging-legend"></div></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-faults"></canvas></div><div class="legend sys-legend" id="sys-faults-legend"></div></div>
     <div class="card chart-card line-card"><div class="cwrap"><canvas id="sys-swap"></canvas></div><div class="legend sys-legend" id="sys-swap-legend"></div></div>
   </div>
-  <p class="note" id="sys-mem-note"></p>
 
   <div id="sys-disk">
   <h3>Disk</h3>
@@ -553,11 +555,14 @@ function renderSystem() {
     [{label: 'context switches', data: cpu.ctxt, color: s[0]}], {unit: '/s', decimals: 0});
   sysChart('sys-forks', 'Processes created', 'Processes/s',
     [{label: 'processes created', data: cpu.forks, color: s[0]}], {unit: '/s', decimals: 0});
+  // Each note sits in the card of the chart it explains, so a screenshot of
+  // one chart keeps its explanation.
   document.getElementById('sys-cpu-note').textContent =
-    'The unfilled part up to 100% is idle time. '
-    + (absent.length ? `Never above zero during this run, so not drawn: ${absent.join(', ')}. ` : '')
-    + (hasPsi ? 'Pressure is the share of time some task waited for the resource; dashed lines are the time every task did.'
-              : 'This host reports no pressure figures (they need Linux 4.20 or later, with pressure stall information enabled).');
+    'The unfilled part up to 100% is idle time.'
+    + (absent.length ? ` Never above zero during this run, so not drawn: ${absent.join(', ')}.` : '');
+  document.getElementById('sys-psi-note').textContent = hasPsi
+    ? 'The share of time some task waited for the resource; dashed lines are the time every task did.'
+    : 'This host reports no pressure figures (they need Linux 4.20 or later, with pressure stall information enabled).';
 
   const memTotal = host.memTotalKb / GIB;
   sysChart('sys-mem', 'Memory use', 'GiB', [

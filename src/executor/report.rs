@@ -852,12 +852,14 @@ fn render_html(json_blob: &str) -> String {
     --muted: #94a3b8; --accent: #38bdf8; --border: #334155; --good: #4ade80; --bad: #f87171;
     --warn: #f5a35c;
     --logo-arc: #8fb8dc; --logo-track: #3d5a7a; --logo-hub: #e2e8f0;
+    color-scheme: dark;
   }}
   :root[data-theme="light"] {{
     --bg: #f8fafc; --panel: #ffffff; --panel2: #eef2f7; --text: #1e293b;
     --muted: #64748b; --accent: #0284c7; --border: #d8dee9; --good: #16a34a; --bad: #dc2626;
     --warn: #b4470b;
     --logo-arc: #336791; --logo-track: #c9d8e6; --logo-hub: #1f2f45;
+    color-scheme: light;
   }}
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; background: var(--bg); color: var(--text);
@@ -903,8 +905,51 @@ fn render_html(json_blob: &str) -> String {
     padding: 3px 8px; cursor: pointer; opacity: 0; transition: opacity .15s; }}
   .chart-card:hover .dlbtn {{ opacity: 1; }}
   .dlbtn:hover {{ color: var(--text); border-color: var(--accent); }}
-  .page-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
-  .brand {{ display: flex; align-items: center; gap: 14px; min-width: 0; }}
+  .page-head {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }}
+  .brand {{ display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1 1 280px; }}
+  /* The bar that stays on top: which run this is, and where to jump. */
+  .topnav {{ position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--border);
+    margin: 18px -20px 22px; padding: 10px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; }}
+  .topnav .run {{ font-weight: 700; margin-right: auto; }}
+  .topnav .links {{ display: flex; flex-wrap: wrap; gap: 4px 16px; }}
+  .topnav a {{ color: var(--muted); text-decoration: none; font-size: 13px; }}
+  .topnav a:hover, .topnav a:focus-visible {{ color: var(--text); }}
+  .topnav button {{ background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; padding: 5px 10px; cursor: pointer; }}
+  .topnav button:hover {{ border-color: var(--accent); }}
+  h2, .hero, .sys-head {{ scroll-margin-top: 58px; }}
+  /* The answer: the headline figure and its verdict, next to the chart of it. */
+  .hero {{ display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; }}
+  .hero > .card {{ min-width: 0; }}
+  .hero-big {{ font-size: 46px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }}
+  .hero-big small {{ font-size: 18px; font-weight: 600; color: var(--muted); margin-left: 8px; }}
+  .hero-said {{ margin: 12px 0 0; font-size: 15px; }}
+  .hero-cond {{ margin: 6px 0 0; color: var(--muted); font-size: 13px; }}
+  .hero-facts {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }}
+  .hero-facts > div {{ border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }}
+  .hero-facts .k {{ color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }}
+  .hero-facts .v {{ font-size: 16px; font-weight: 700; margin-top: 2px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }}
+  .hero-facts .s {{ color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }}
+  /* The table keeps the full width: nine columns do not fit beside a chart. */
+  .tx-grid {{ grid-template-columns: minmax(0, 1fr); }}
+  .tx-grid > .card {{ min-width: 0; }}
+  /* The selector sits above the chart, not on its title. */
+  .tx-grid .chart-tools {{ position: static; display: block; margin-bottom: 8px; }}
+  .tx-grid .line-card {{ height: auto; }}
+  /* The setup is reference material: closed until asked for. */
+  .fold {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-top: 10px; }}
+  .fold > summary {{ cursor: pointer; padding: 12px 16px; font-weight: 600; }}
+  .fold > summary span {{ color: var(--muted); font-weight: 400; margin-left: 10px; }}
+  .fold > .in {{ padding: 4px 16px 16px; }}
+  .fold .card {{ background: transparent; }}
+  @media (max-width: 860px) {{
+    .hero {{ grid-template-columns: minmax(0, 1fr); }}
+    .hero-facts {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    .hero-big {{ font-size: 38px; }}
+    /* On a narrow screen the bar wraps to several lines: it scrolls away. */
+    .topnav {{ position: static; }}
+  }}
   .brand .mark {{ width: 56px; height: 56px; flex: 0 0 auto; }}
   .brand .desc {{ margin-bottom: 0; }}
   .theme-toggle {{ color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px;
@@ -959,13 +1004,90 @@ fn render_html(json_blob: &str) -> String {
     </label>
   </div>
 
-  <h2>Environment</h2>
+  <nav class="topnav" id="topnav" aria-label="Sections">
+    <span class="run" id="nav-run"></span>
+    <span class="links" id="nav-links"></span>
+    <button id="dl-all">Download all charts (PNG)</button>
+  </nav>
+
+  <div class="hero" id="result">
+    <div class="card hero-main">
+      <div class="hero-big"><span id="hero-value"></span><small id="hero-unit"></small></div>
+      <p class="hero-said"><span class="badge" id="hero-badge" hidden></span><span id="hero-said"></span></p>
+      <p class="hero-cond" id="hero-cond"></p>
+      <div class="hero-facts" id="hero-facts"></div>
+    </div>
+    <div class="card chart-card line-card" id="hero-throughput"><div class="cwrap"><canvas id="throughput"></canvas></div><div class="legend" id="throughput-legend"></div></div>
+    <div class="card" id="hero-time-bars" hidden>
+      <div class="toolbar">
+        <span class="hint" id="time-bars-hint"></span>
+        <span>
+          <button type="button" id="time-bars-log" aria-pressed="false">Log scale</button>
+          <button type="button" id="time-bars-all" aria-pressed="false">Show all</button>
+        </span>
+      </div>
+      <div class="chart-card stream-chart" id="time-bars-wrap"><canvas id="time-bars"></canvas></div>
+    </div>
+  </div>
+
+  <div id="throughput-view">
+  <h2 id="steady-state">Steady state</h2>
+  <div class="card steady" id="steady"></div>
+
+  <h2 id="transactions">Transactions</h2>
+  <div class="grid tx-grid">
+    <div class="card" style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Transaction</th><th>Committed</th><th>Errors</th><th>Error %</th>
+          <th id="tx-throughput-head">TPM</th><th>Avg ms</th><th>p95 ms</th><th>p99 ms</th><th>Max ms</th>
+        </tr></thead>
+        <tbody id="txbody"></tbody>
+      </table>
+    </div>
+    <div class="card chart-card line-card"><label class="chart-tools">Transaction<select id="latency-select"></select></label><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
+  </div>
+
+  <h2 id="charts">Charts</h2>
+  <div class="grid chart-grid">
+    <div class="card chart-card" id="card-percentiles"><canvas id="percentiles"></canvas></div>
+    <div class="card chart-card"><canvas id="histogram"></canvas></div>
+    <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
+    <div class="card chart-card"><canvas id="errors"></canvas></div>
+  </div>
+  </div>
+
+  <div id="stream-view" hidden>
+  <h2 id="timeline-section">Timeline</h2>
+  <div class="card">
+    <div class="toolbar"><span class="hint" id="timeline-hint">One lane per client; each bar is one execution, where it ran. Hover a bar for its name and time.</span></div>
+    <div class="chart-card stream-chart" id="timeline-wrap"><canvas id="timeline"></canvas></div>
+    <div class="legend" id="timeline-legend"></div>
+  </div>
+
+  <h2 id="stream-transactions">Transactions</h2>
+  <div class="card" style="overflow-x:auto">
+    <div class="toolbar">
+      <span class="hint">Click a column to sort. Times are the transaction's own, summed over its executions.</span>
+      <label class="hint">Filter <input type="search" id="stream-filter" placeholder="name"></label>
+    </div>
+    <table>
+      <thead><tr id="stream-head"></tr></thead>
+      <tbody id="stream-body"></tbody>
+    </table>
+  </div>
+  </div>
+
+{system_html}
+
+  <h2 id="setup">Setup</h2>
+  <details class="fold"><summary>Environment<span id="env-sum"></span></summary><div class="in">
   <div class="grid meta-grid" id="meta"></div>
   <div class="card" style="margin-top:16px">
     <table class="settings"><tbody id="settings"></tbody></table>
   </div>
-
-  <h2>Data set</h2>
+  </div></details>
+  <details class="fold"><summary>Data set<span id="data-sum"></span></summary><div class="in">
   <div class="grid kpi-grid" id="data-kpis"></div>
   <div class="card" style="overflow-x:auto; margin-top:16px">
     <table>
@@ -984,69 +1106,8 @@ fn render_html(json_blob: &str) -> String {
       <tbody id="indexes-body"></tbody>
     </table>
   </div>
+  </div></details>
 
-  <h2>Summary</h2>
-  <div class="grid kpi-grid" id="kpis"></div>
-
-  <div id="throughput-view">
-  <h2>Steady state</h2>
-  <div class="card steady" id="steady"></div>
-
-  <h2>Per-transaction results</h2>
-  <div class="card" style="overflow-x:auto">
-    <table>
-      <thead><tr>
-        <th>Transaction</th><th>Committed</th><th>Errors</th><th>Error %</th>
-        <th id="tx-throughput-head">TPM</th><th>Avg ms</th><th>p95 ms</th><th>p99 ms</th><th>Max ms</th>
-      </tr></thead>
-      <tbody id="txbody"></tbody>
-    </table>
-  </div>
-
-  <div class="charts-head"><h2>Charts</h2><button id="dl-all">Download all charts (PNG)</button></div>
-  <div class="grid chart-grid">
-    <div class="card chart-card line-card"><div class="cwrap"><canvas id="throughput"></canvas></div><div class="legend" id="throughput-legend"></div></div>
-    <div class="card chart-card line-card"><label class="chart-tools">Transaction<select id="latency-select"></select></label><div class="cwrap"><canvas id="latency"></canvas></div><div class="legend" id="latency-legend"></div></div>
-    <div class="card chart-card" id="card-percentiles"><canvas id="percentiles"></canvas></div>
-    <div class="card chart-card"><canvas id="histogram"></canvas></div>
-    <div class="card chart-card line-card" id="card-mix"><div class="cwrap"><canvas id="mix"></canvas></div><div class="legend" id="mix-legend"></div></div>
-    <div class="card chart-card"><canvas id="errors"></canvas></div>
-  </div>
-  </div>
-
-  <div id="stream-view" hidden>
-  <h2>Where the time went</h2>
-  <div class="card">
-    <div class="toolbar">
-      <span class="hint" id="time-bars-hint"></span>
-      <span>
-        <button type="button" id="time-bars-log" aria-pressed="false">Log scale</button>
-        <button type="button" id="time-bars-all" aria-pressed="false">Show all</button>
-      </span>
-    </div>
-    <div class="chart-card stream-chart" id="time-bars-wrap"><canvas id="time-bars"></canvas></div>
-  </div>
-
-  <h2>Stream timeline</h2>
-  <div class="card">
-    <div class="toolbar"><span class="hint" id="timeline-hint">One lane per client; each bar is one execution, where it ran. Hover a bar for its name and time.</span></div>
-    <div class="chart-card stream-chart" id="timeline-wrap"><canvas id="timeline"></canvas></div>
-  </div>
-
-  <h2>Per-transaction results</h2>
-  <div class="card" style="overflow-x:auto">
-    <div class="toolbar">
-      <span class="hint">Click a column to sort. Times are the transaction's own, summed over its executions.</span>
-      <label class="hint">Filter <input type="search" id="stream-filter" placeholder="name"></label>
-    </div>
-    <table>
-      <thead><tr id="stream-head"></tr></thead>
-      <tbody id="stream-body"></tbody>
-    </table>
-  </div>
-  </div>
-
-{system_html}
   <footer>Generated by pgmeter</footer>
 </div>
 
@@ -1195,37 +1256,89 @@ for (const x of diIndexes) {
   indexesBody.appendChild(tr);
 }
 
-const kpis = document.getElementById('kpis');
 const tpUnit = DATA.meta.throughputUnit || 'TPM';
 const isStream = DATA.meta.report === 'stream';
 // A response time for a reader: seconds from one second up, else ms.
 const fmtMs = (ms) => ms >= 1000 ? fmt(ms / 1000, 2) + ' s' : (ms >= 10 ? fmt(ms) + ' ms' : fmt(ms, 2) + ' ms');
+// The same in seconds, for a column of a table: one unit down the column.
+const fmtSecs = (ms) => fmt(ms / 1000, 3);
 const S = DATA.stream;
 const streamRanked = isStream
   ? S.rows.map((r, idx) => ({...r, idx})).filter(r => r.executed > 0).sort((a, b) => b.totalMs - a.totalMs)
   : [];
 const streamSlowest = streamRanked.length ? streamRanked[0] : null;
-const kpiItems = isStream ? [
-  ['Elapsed', fmt(S.elapsedS, 1) + ' s'],
-  ['Executed', fmt(S.executed)],
-  ['Geometric mean', fmtMs(S.geomeanMs)],
-  [streamSlowest ? `Slowest: ${streamSlowest.name} (${fmt(streamSlowest.sharePct, 1)}%)` : 'Slowest', streamSlowest ? fmtMs(streamSlowest.totalMs) : '-'],
-  ['Errors', fmt(S.errors)],
-] : [
-  [tpUnit, fmt(DATA.kpis.throughput)],
-  ['Committed', fmt(DATA.kpis.committed)],
-  ['Errors', fmt(DATA.kpis.errors)],
-  ['Error rate', fmt(DATA.kpis.errorRate, 2) + ' %'],
-  ['Avg latency', fmt(DATA.kpis.avgLatency, 2) + ' ms'],
-  ['p95 latency', fmt(DATA.kpis.p95Latency, 2) + ' ms'],
-  ['p99 latency', fmt(DATA.kpis.p99Latency, 2) + ' ms'],
-];
-for (const [k, v] of kpiItems) {
-  const el = document.createElement('div');
-  el.className = 'card kpi';
-  el.innerHTML = `<div class="label">${esc(k)}</div><div class="value">${esc(v)}</div>`;
-  kpis.appendChild(el);
+// The answer first: the headline figure, its verdict, and what it was
+// measured under. A throughput run's headline is its rate; a stream's is the
+// time it took.
+const clock = (s) => s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${fmt(s, 1)} s`;
+const scaleText = (DATA.dataInfo && DATA.dataInfo.scaleFactor != null)
+  ? `scale factor ${fmt(DATA.dataInfo.scaleFactor)}`
+    + ((DATA.dataInfo.scalingUnit || 'scalefactor') === 'scalefactor' ? '' : ` (${DATA.dataInfo.scalingUnit})`) : '';
+const headline = isStream ? clock(S.elapsedS) : `${fmt(DATA.kpis.throughput)} ${tpUnit}`;
+document.getElementById('hero-value').textContent = isStream ? clock(S.elapsedS) : fmt(DATA.kpis.throughput);
+document.getElementById('hero-unit').textContent = isStream ? '' : tpUnit;
+document.title = `${DATA.meta.name || 'pgmeter'} · ${headline} · pgmeter report`;
+document.getElementById('nav-run').textContent = [DATA.meta.name, `${fmt(DATA.meta.clients)} clients`, headline].filter(Boolean).join(' · ');
+const heroBadge = document.getElementById('hero-badge');
+const steadySaid = {
+  steady: 'The rate held over the measured window.',
+  unstable: 'The rate swung from second to second without drifting.',
+  drifted: 'The two halves of the window ran at different rates.',
+};
+if (isStream) {
+  heroBadge.hidden = false;
+  heroBadge.textContent = S.errors ? `${fmt(S.errors)} errors` : 'no errors';
+  heroBadge.className = 'badge ' + (S.errors ? 'steady-warn' : 'steady-ok');
+  document.getElementById('hero-said').textContent = `${fmt(S.executed)} executions of ${fmt(streamRanked.length)} transactions.`;
+} else if (DATA.steady) {
+  heroBadge.hidden = false;
+  heroBadge.textContent = DATA.steady.verdict;
+  heroBadge.className = 'badge ' + (DATA.steady.verdict === 'steady' ? 'steady-ok' : 'steady-warn');
+  document.getElementById('hero-said').textContent = steadySaid[DATA.steady.verdict] || '';
+} else {
+  document.getElementById('hero-said').textContent = 'The steady state was not judged: the measured window is too short.';
 }
+document.getElementById('hero-cond').textContent = [
+  DATA.meta.name,
+  scaleText,
+  `${fmt(DATA.meta.clients)} clients`,
+  isStream ? '' : `${fmt(DATA.meta.duration)} s after a ${fmt(DATA.meta.rampup)} s ramp-up`,
+  isStream ? '' : `${fmt(DATA.kpis.committed)} committed`,
+  DATA.meta.interrupted ? 'interrupted by Ctrl-C (partial run)' : '',
+].filter(Boolean).join(' · ');
+const heroFacts = isStream ? [
+  ['Geometric mean', fmtMs(S.geomeanMs), ''],
+  ['Slowest', streamSlowest ? fmtMs(streamSlowest.totalMs) : '-', streamSlowest ? `${streamSlowest.name}, ${fmt(streamSlowest.sharePct, 1)}% of the time` : ''],
+  ['Executed', fmt(S.executed), ''],
+  ['Errors', fmt(S.errors), ''],
+] : [
+  ['Avg', fmt(DATA.kpis.avgLatency, 2) + ' ms', ''],
+  ['p95', fmt(DATA.kpis.p95Latency, 2) + ' ms', ''],
+  ['p99', fmt(DATA.kpis.p99Latency, 2) + ' ms', ''],
+  ['Errors', fmt(DATA.kpis.errorRate, 2) + '%', `${fmt(DATA.kpis.errors)} failed`],
+];
+for (const [k, v, sub] of heroFacts) {
+  const el = document.createElement('div');
+  for (const [cls, text] of [['k', k], ['v', v], ['s', sub]]) {
+    if (!text) continue;
+    const d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    el.appendChild(d);
+  }
+  document.getElementById('hero-facts').appendChild(el);
+}
+// What the folded sections hold, said on their closed line.
+document.getElementById('env-sum').textContent = [
+  DATA.server.settings && DATA.server.settings.server_version ? `PostgreSQL ${String(DATA.server.settings.server_version).split(' ')[0]}` : '',
+  DATA.server.database ? `database ${DATA.server.database}` : '',
+  DATA.server.settings && DATA.server.settings.shared_buffers ? `shared_buffers ${DATA.server.settings.shared_buffers}` : '',
+].filter(Boolean).join(', ');
+document.getElementById('data-sum').textContent = [
+  scaleText, `${fmt(diTables.length)} tables`, `${fmt(diIndexes.length)} indexes`, humanBytes(totalTableBytes + totalIndexBytes),
+].filter(Boolean).join(', ');
+// A printed report shows everything.
+window.addEventListener('beforeprint', () => document.querySelectorAll('details').forEach(d => { d.open = true; }));
 
 // Steady state: did the rate hold over the measured window?
 const steadyBox = document.getElementById('steady');
@@ -1239,7 +1352,7 @@ if (st) {
   }[st.verdict] || '';
   const badge = ok ? 'steady-ok' : 'steady-warn';
   steadyBox.innerHTML = `<div class="verdict"><span class="badge ${esc(badge)}">${esc(st.verdict)}</span>${esc(what)}`
-    + `<div class="note">Steady means under ${fmt(st.maxCvPct)}% variation per second and under ${fmt(st.maxDriftPct)}% drift between the halves, over ${fmt(st.seconds)} full seconds.</div></div>`
+    + `<div class="note">Steady means under ${fmt(st.maxCvPct)}% variation per second and under ${fmt(st.maxDriftPct)}% drift between the halves, over ${fmt(st.seconds)} full seconds. The window mean counts those full seconds only, so it differs a little from the headline, which divides everything committed by the measured time.</div></div>`
     + `<div class="figures">`
     + `<div><div class="k">Window mean</div><div class="v">${fmt(st.mean)} ${esc(tpUnit)}</div></div>`
     + `<div><div class="k">Variation per second</div><div class="v">${fmt(st.cvPct, 1)}%</div></div>`
@@ -1329,6 +1442,8 @@ const charts = {};
 if (isStream) {
   document.getElementById('throughput-view').hidden = true;
   document.getElementById('stream-view').hidden = false;
+  document.getElementById('hero-throughput').hidden = true;
+  document.getElementById('hero-time-bars').hidden = false;
 } else {
 // Throughput over time
 charts.throughput = new Chart(document.getElementById('throughput'), {
@@ -1457,13 +1572,15 @@ if (DATA.errors.counts.length) {
 }
 
 // --- Stream view ------------------------------------------------------------
-// Colours shared by the stream charts: the slowest transaction stands out.
+// Colours shared by the stream charts: the heaviest transactions have one
+// each, the same in the bars and in the timeline; the others are muted.
+const STREAM_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7'];
+const TOP_BARS = STREAM_PALETTE.length;
+const streamColorOf = new Map(streamRanked.slice(0, TOP_BARS).map((r, i) => [r.idx, STREAM_PALETTE[i]]));
 function streamColors() {
   const css = getComputedStyle(document.documentElement);
   return {
-    accent: '#4e79a7',
-    slow: css.getPropertyValue('--warn').trim() || '#f28e2b',
-    rest: '#94a3b8',
+    rest: (css.getPropertyValue('--border') || '#334155').trim(),
     panel: css.getPropertyValue('--panel').trim() || '#1e293b',
   };
 }
@@ -1474,9 +1591,9 @@ function renderStream() {
   renderStreamTable();
 }
 
-// Where the time went: total time per transaction, slowest first. The 16
-// slowest are drawn and the rest grouped, unless "Show all" is pressed.
-const TOP_BARS = 16;
+// Where the time went: total time per transaction, slowest first. The
+// heaviest are drawn and the rest grouped in a last bar, unless "Show all"
+// is pressed.
 const timeBarsState = {log: false, all: false};
 function renderTimeBars() {
   const c = streamColors();
@@ -1485,7 +1602,7 @@ function renderTimeBars() {
   const labels = shown.map(r => r.name);
   const values = shown.map(r => r.totalMs / 1000);
   const shares = shown.map(r => r.sharePct);
-  const colors = shown.map(r => streamSlowest && r.idx === streamSlowest.idx ? c.slow : c.accent);
+  const colors = shown.map(r => streamColorOf.get(r.idx) || c.rest);
   if (grouped) {
     const rest = streamRanked.slice(TOP_BARS);
     labels.push(`${rest.length} others`);
@@ -1496,7 +1613,7 @@ function renderTimeBars() {
   const top = streamRanked.slice(0, Math.min(TOP_BARS, streamRanked.length));
   const topShare = top.reduce((a, r) => a + r.sharePct, 0);
   document.getElementById('time-bars-hint').textContent = streamRanked.length > TOP_BARS
-    ? `Total time per transaction, slowest first. The ${top.length} slowest take ${fmt(topShare, 1)}% of the time.`
+    ? `Total time per transaction, slowest first. The ${top.length} slowest take ${fmt(topShare, 1)}% of the time; the last bar is all the others together.`
     : 'Total time per transaction, slowest first.';
   const wrap = document.getElementById('time-bars-wrap');
   wrap.style.height = (labels.length * 24 + 70) + 'px';
@@ -1542,13 +1659,30 @@ function renderTimeline() {
   const c = streamColors();
   const labels = T.clients.map(id => 'client ' + id);
   wrap.style.height = Math.min(labels.length * 36 + 90, 900) + 'px';
+  // The key of the colours, which the bars above share.
+  const legend = document.getElementById('timeline-legend');
+  legend.replaceChildren();
+  const keys = streamRanked.slice(0, TOP_BARS).map(r => [r.name, streamColorOf.get(r.idx)]);
+  if (streamRanked.length > TOP_BARS) keys.push([`${streamRanked.length - TOP_BARS} others`, c.rest]);
+  for (const [name, color] of keys) {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.style.cursor = 'default';
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = color;
+    const txt = document.createElement('span');
+    txt.textContent = name;
+    el.append(sw, txt);
+    legend.appendChild(el);
+  }
   if (charts.timeline) charts.timeline.destroy();
   charts.timeline = new Chart(document.getElementById('timeline'), {
     type: 'bar',
     data: {labels, datasets: [{
       label: 'Executions',
       data: T.items.map(([lane, start, dur]) => ({x: [start / 1000, (start + dur) / 1000], y: labels[lane]})),
-      backgroundColor: T.items.map(it => streamSlowest && it[3] === streamSlowest.idx ? c.slow : c.accent),
+      backgroundColor: T.items.map(it => streamColorOf.get(it[3]) || c.rest),
       borderColor: c.panel, borderWidth: 1, borderSkipped: false,
       barPercentage: 0.8, categoryPercentage: 1, minBarLength: 1,
     }]},
@@ -1574,8 +1708,8 @@ function renderTimeline() {
 // total time; any column sorts, and the filter matches names.
 const streamColumns = [
   ['rank', 'Rank'], ['name', 'Transaction'], ['executed', 'Executed'], ['errors', 'Errors'],
-  ['totalMs', 'Total'], ['sharePct', 'Share'], ['cumPct', 'Cumulative'],
-  ['mean', 'Avg'], ['min', 'Min'], ['max', 'Max'],
+  ['totalMs', 'Total s'], ['sharePct', 'Share'], ['cumPct', 'Cumulative'],
+  ['mean', 'Avg s'], ['min', 'Min s'], ['max', 'Max s'],
 ];
 const streamSort = {key: 'rank', dir: 1};
 function renderStreamTable() {
@@ -1615,9 +1749,9 @@ function renderStreamTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${esc(r.rank ?? '-')}</td><td style="text-align:left">${esc(r.name)}</td>`
       + `<td>${fmt(r.executed)}</td><td>${fmt(r.errors)}</td>`
-      + `<td>${esc(fmtMs(r.totalMs))}</td><td>${esc(r.cumPct == null ? '-' : fmt(r.sharePct, 1) + '%')}</td>`
+      + `<td>${esc(fmtSecs(r.totalMs))}</td><td>${esc(r.cumPct == null ? '-' : fmt(r.sharePct, 1) + '%')}</td>`
       + `<td>${esc(r.cumPct == null ? '-' : fmt(r.cumPct, 1) + '%')}</td>`
-      + `<td>${esc(fmtMs(r.mean))}</td><td>${esc(fmtMs(r.min))}</td><td>${esc(fmtMs(r.max))}</td>`;
+      + `<td>${esc(fmtSecs(r.mean))}</td><td>${esc(fmtSecs(r.min))}</td><td>${esc(fmtSecs(r.max))}</td>`;
     if (r.description) tr.title = r.description;
     body.appendChild(tr);
   }
@@ -1626,6 +1760,20 @@ document.getElementById('stream-filter').addEventListener('input', () => renderS
 if (isStream) renderStream();
 
 //@@SYSTEM_JS@@
+// The links of the bar on top: the sections this report has, in page order.
+for (const [id, label] of [
+  ['result', 'Result'],
+  ['steady-state', 'Steady state'], ['transactions', 'Transactions'], ['charts', 'Charts'],
+  ['timeline-section', 'Timeline'], ['stream-transactions', 'Transactions'],
+  ['system-view', 'System'], ['setup', 'Setup'],
+]) {
+  const target = document.getElementById(id);
+  if (!target || target.hidden || (target.closest('[hidden]'))) continue;
+  const a = document.createElement('a');
+  a.href = '#' + id;
+  a.textContent = label;
+  document.getElementById('nav-links').appendChild(a);
+}
 // --- Chart PNG export -------------------------------------------------------
 // Chart.js draws to a canvas whose backing store is (CSS size x devicePixelRatio).
 // To export at high resolution regardless of the viewer's screen, we bump the
@@ -2153,6 +2301,43 @@ transactions:
         assert!(script < buttons);
         // Hidden until a monitored host is found.
         assert!(html.contains(r#"<div id="system-view" hidden>"#));
+    }
+
+    #[test]
+    fn rendered_html_answers_first_and_folds_the_setup() {
+        let html = render_html("{}");
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} is not in the page"))
+        };
+        // The bar on top, then the result, then what explains it, then the
+        // reference material, closed.
+        let order = [
+            r#"<nav class="topnav""#,
+            r#"<div class="hero" id="result">"#,
+            r#"<h2 id="steady-state">"#,
+            r#"<h2 id="transactions">"#,
+            r#"<h2 id="charts">"#,
+            r#"<div id="system-view" hidden>"#,
+            r#"<h2 id="setup">"#,
+            r#"<details class="fold"><summary>Environment"#,
+            r#"<details class="fold"><summary>Data set"#,
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                at(pair[0]) < at(pair[1]),
+                "{} comes after {}",
+                pair[0],
+                pair[1]
+            );
+        }
+        // The throughput chart is part of the answer; a stream's bars too.
+        assert!(at(r#"<canvas id="throughput">"#) < at(r#"<h2 id="steady-state">"#));
+        assert!(at(r#"<canvas id="time-bars">"#) < at(r#"<h2 id="timeline-section">"#));
+        // Every section the bar may link to exists once.
+        for id in ["timeline-section", "stream-transactions", "setup", "charts"] {
+            assert_eq!(html.matches(&format!(r#"id="{id}""#)).count(), 1, "{id}");
+        }
     }
 
     fn chart_js_version() -> &'static str {
