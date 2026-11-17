@@ -63,6 +63,8 @@ Drives the spec's transaction mix. See [Running a benchmark](../guide/running.md
 | `-j, --threads <NUM>` | 0 | Worker threads of the async engine (simple-mode specs); 0 is half the CPUs, at most one per client |
 | `--once` | off | Each client runs every transaction of the spec once, in its own random order, then stops (a TPC-H/DS-style query stream); cannot be combined with `--time` |
 | `--seed <NUM>` | none | Seed of the clients' random draws: the same seed, spec and client count run the same transactions with the same parameters, whatever the engine or `--threads` |
+| `--sysmon <TARGET>` | none | Sample the system metrics (CPU, memory, I/O) of a Linux host during the run: `local` for this machine, or an SSH destination, `[user@]host[:port]`, reached with the system's `ssh` (key or agent authentication). Repeat the option to monitor several hosts. Prefix one target with `db:` to say it is the database server when pgmeter cannot tell (a pooler in between) |
+| `--sysmon-interval <NUM>` | 1 | Seconds between two samples of the system metrics, from 1 to 3600; needs `--sysmon` |
 | `--format <FMT>` | table | `table`, `json` or `csv` |
 | `-q, --quiet` | off | No progress output; only the result data on stdout |
 

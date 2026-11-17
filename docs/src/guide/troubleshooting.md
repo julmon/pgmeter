@@ -93,6 +93,25 @@ fast**: the spec has at least one `script` transaction, which selects the
 thread engine. `--threads` only applies when every transaction is in
 `simple` mode.
 
+**`system metrics of <host>: ...` and the run does not start**: a host given
+to `--sysmon` did not deliver a sample within 15 seconds; what follows the
+colon is what `ssh` said. `Permission denied` means no key was accepted:
+pgmeter never prompts for a password, so `ssh -o BatchMode=yes <host> true`
+must work first. `Host key verification failed` means the host is not in
+`known_hosts` yet: connect to it once by hand. `unsupported operating
+system` means the host is not Linux.
+
+**`warning: system metrics of <host> ...` when the run ends**: that host's
+sampler died during the run, usually with its SSH connection. The run and
+its results are complete; the host's series stops at that moment and the
+report marks it as truncated.
+
+**The report opens on the wrong host, or no volume is labelled `data` or
+`WAL`**: behind a pooler or a load balancer pgmeter cannot tell which host
+PostgreSQL runs on; mark it with `--sysmon db:<target>`. The labels also
+need a role that may read `data_directory`. [Monitoring the
+system](monitoring.md) has both.
+
 **Ctrl-C does not stop it**: one Ctrl-C ends the run gracefully at the end
 of each client's current transaction and writes the results; a second one
 aborts immediately with status 130. A client stuck in a long statement

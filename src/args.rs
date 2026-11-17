@@ -8,6 +8,8 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use urlencoding::encode;
 
+use crate::executor::{SysmonSpec, SysmonTarget};
+
 // clap value parser for --spec: accept either a benchmark directory (resolved
 // to <dir>/spec.yaml) or a single spec file, and fail fast at parse time if
 // neither exists instead of after connecting to the database.
@@ -61,6 +63,11 @@ fn output_format_value(s: &str) -> Result<OutputFormat, String> {
     }
 }
 
+// clap value parser for --sysmon.
+fn sysmon_target_value(s: &str) -> Result<SysmonSpec, String> {
+    SysmonSpec::parse(s)
+}
+
 // run sub-command arguments
 pub struct RunArgs {
     // Number of concurrent client connected to the database
@@ -79,6 +86,13 @@ pub struct RunArgs {
     // Seed of the clients' random draws (transaction order and parameters);
     // None draws fresh values every run
     pub seed: Option<u64>,
+    // Hosts whose system metrics are sampled during the run (--sysmon)
+    pub sysmon: Vec<SysmonTarget>,
+    // The positions, in `sysmon`, of the targets given as db:<target>: the
+    // database server. More than one is refused when the run starts.
+    pub sysmon_marked: Vec<usize>,
+    // Sampling period of the system metrics, in seconds
+    pub sysmon_interval: u16,
 }
 
 // init sub-command arguments
@@ -137,6 +151,9 @@ impl RunArgs {
             threads: 0,
             once: false,
             seed: None,
+            sysmon: Vec::new(),
+            sysmon_marked: Vec::new(),
+            sysmon_interval: 1,
         }
     }
 }
@@ -298,6 +315,32 @@ impl CliArgs {
             )
             .conflicts_with("time");
 
+        // run: Define the --sysmon command line option
+        let sysmon_option = Arg::new("sysmon")
+            .long("sysmon")
+            .action(ArgAction::Append)
+            .help(
+                "Sample the system metrics (CPU, memory, I/O) of a Linux host during the run: \
+                 'local' for this machine, or an SSH destination, [user@]host[:port], reached \
+                 with the system's ssh (key or agent authentication). Repeat the option to \
+                 monitor several hosts. Prefix one target with 'db:' to say it is the database \
+                 server when pgmeter cannot tell (a pooler in between)",
+            )
+            .required(false)
+            .value_name("TARGET")
+            .value_parser(sysmon_target_value);
+
+        // run: Define the --sysmon-interval command line option
+        let sysmon_interval_option = Arg::new("sysmon_interval")
+            .long("sysmon-interval")
+            .action(ArgAction::Set)
+            .help("Seconds between two samples of the system metrics")
+            .required(false)
+            .value_name("NUM")
+            .value_parser(clap::value_parser!(u16).range(1..=3600))
+            .default_value("1")
+            .requires("sysmon");
+
         // run: Define the --format command line option
         let format_option = Arg::new("format")
             .long("format")
@@ -414,6 +457,8 @@ impl CliArgs {
             .arg(threads_option)
             .arg(once_option)
             .arg(run_seed_option)
+            .arg(sysmon_option)
+            .arg(sysmon_interval_option)
             .arg(format_option)
             .arg(quiet_option);
 
@@ -511,6 +556,17 @@ impl CliArgs {
             let threads = *bm_m.get_one::<u16>("threads").unwrap();
             let once = bm_m.get_flag("once");
             let seed = bm_m.get_one::<u64>("seed").copied();
+            let specs: Vec<SysmonSpec> = bm_m
+                .get_many::<SysmonSpec>("sysmon")
+                .map(|specs| specs.cloned().collect())
+                .unwrap_or_default();
+            let sysmon_marked = specs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, spec)| spec.database.then_some(index))
+                .collect();
+            let sysmon = specs.into_iter().map(|spec| spec.target).collect();
+            let sysmon_interval = *bm_m.get_one::<u16>("sysmon_interval").unwrap();
 
             RunArgs {
                 client,
@@ -520,6 +576,9 @@ impl CliArgs {
                 threads,
                 once,
                 seed,
+                sysmon,
+                sysmon_marked,
+                sysmon_interval,
             }
         }
 
@@ -977,6 +1036,49 @@ mod tests {
             ["pgmeter", "run", "--spec", "samples/pgm-b", "--seed", "-1"].into_iter(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn sysmon_targets_are_repeatable_and_validated() {
+        let run = |extra: &[&str]| {
+            let mut argv = vec!["pgmeter", "run", "--spec", "samples/pgm-b"];
+            argv.extend_from_slice(extra);
+            CliArgs::new_from("u".to_string(), argv.into_iter())
+        };
+
+        let args = run(&[]).unwrap().run_args;
+        assert!(args.sysmon.is_empty());
+        assert_eq!(args.sysmon_interval, 1);
+
+        let args = run(&[
+            "--sysmon",
+            "local",
+            "--sysmon",
+            "postgres@db1:2222",
+            "--sysmon-interval",
+            "5",
+        ])
+        .unwrap()
+        .run_args;
+        let targets: Vec<String> = args.sysmon.iter().map(|t| t.to_string()).collect();
+        assert_eq!(targets, ["local", "postgres@db1:2222"]);
+        assert_eq!(args.sysmon_interval, 5);
+
+        // A destination that would read as an ssh option never gets that far.
+        assert!(args.sysmon_marked.is_empty());
+
+        // db: marks the database server and is not part of the target.
+        let args = run(&["--sysmon", "local", "--sysmon", "db:postgres@db1"])
+            .unwrap()
+            .run_args;
+        let targets: Vec<String> = args.sysmon.iter().map(|t| t.to_string()).collect();
+        assert_eq!(targets, ["local", "postgres@db1"]);
+        assert_eq!(args.sysmon_marked, [1]);
+
+        assert!(run(&["--sysmon=-oProxyCommand=id"]).is_err());
+        assert!(run(&["--sysmon", "local", "--sysmon-interval", "0"]).is_err());
+        // An interval without a host to sample is a mistake.
+        assert!(run(&["--sysmon-interval", "5"]).is_err());
     }
 
     #[test]

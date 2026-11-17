@@ -5,6 +5,7 @@ use std::path::Path;
 
 use super::benchmark::{BenchmarkTransaction, ResponseTimeStatistics, TransactionSummary};
 use super::error::Error;
+use super::sysmon::window::{AvgMax, HostSummary};
 use tabled::{
     builder::Builder,
     settings::{
@@ -314,6 +315,121 @@ pub fn print_transactions_tables(
     println!("{}", stats_table);
 }
 
+// The tables of the hosts given to --sysmon, over the measured window: one
+// row per host, then one row per volume. A figure the host did not report
+// is a dash.
+pub fn system_tables(system: &[HostSummary]) -> String {
+    let header_rule =
+        || Style::blank().horizontals([(1, HorizontalLine::new('─').intersection('─'))]);
+    let avg = |v: Option<AvgMax>, decimals: usize| {
+        v.map_or_else(|| "-".to_string(), |v| format!("{:.decimals$}", v.avg))
+    };
+    let max = |v: Option<AvgMax>, decimals: usize| {
+        v.map_or_else(|| "-".to_string(), |v| format!("{:.decimals$}", v.max))
+    };
+    let gib = |v: Option<AvgMax>| {
+        v.map(|v| AvgMax {
+            avg: v.avg / 1_048_576.0,
+            max: v.max / 1_048_576.0,
+        })
+    };
+    let host_cell = |host: &HostSummary| {
+        if host.database {
+            format!("{} (database)", host.host)
+        } else {
+            host.host.clone()
+        }
+    };
+
+    let mut hosts = Builder::default();
+    hosts.push_record([
+        "Host",
+        "CPU busy (%)",
+        "Max. (%)",
+        "User (%)",
+        "System (%)",
+        "I/O wait (%)",
+        "Mem. used (GiB)",
+        "Max. (GiB)",
+        "I/O pressure (%)",
+    ]);
+    for host in system {
+        hosts.push_record([
+            host_cell(host),
+            avg(host.cpu_busy_pct, 1),
+            max(host.cpu_busy_pct, 1),
+            avg(host.cpu_user_pct, 1),
+            avg(host.cpu_system_pct, 1),
+            avg(host.cpu_iowait_pct, 1),
+            avg(gib(host.mem_used_kb), 1),
+            max(gib(host.mem_used_kb), 1),
+            avg(host.io_pressure_pct, 1),
+        ]);
+    }
+    let mut hosts_table = hosts.build();
+
+    let mut volumes = Builder::default();
+    volumes.push_record([
+        "Host",
+        "Volume",
+        "Holds",
+        "Written (MB/s)",
+        "Read (MB/s)",
+        "Requests/s",
+        "Write (ms)",
+        "Flush (ms)",
+        "Busy (%)",
+        "Max. (%)",
+    ]);
+    for host in system {
+        for volume in &host.volumes {
+            volumes.push_record([
+                host.host.clone(),
+                volume.name.clone(),
+                if volume.holds.is_empty() {
+                    "-".to_string()
+                } else {
+                    volume.holds.join(" + ")
+                },
+                format!("{:.1}", volume.written_mb_s.avg),
+                format!("{:.1}", volume.read_mb_s.avg),
+                super::terminal::fmt_int(volume.requests_s.avg.round() as u64),
+                format!("{:.2}", volume.write_ms),
+                avg(volume.flush_ms, 2),
+                format!("{:.1}", volume.busy_pct.avg),
+                format!("{:.1}", volume.busy_pct.max),
+            ]);
+        }
+    }
+    let mut volumes_table = volumes.build();
+
+    for (table, text_columns) in [(&mut hosts_table, 1), (&mut volumes_table, 3)] {
+        table
+            .with(header_rule())
+            .with(Modify::new(Rows::first()).with(Alignment::center()))
+            .with(
+                Modify::new(Columns::new(text_columns..).not(Rows::first()))
+                    .with(Alignment::right()),
+            );
+    }
+    let target = rendered_width(&hosts_table).max(rendered_width(&volumes_table));
+    hosts_table.with(Width::increase(target));
+    volumes_table.with(Width::increase(target));
+
+    let mut out = format!("System:\n{hosts_table}\n");
+    if system.iter().any(|host| !host.volumes.is_empty()) {
+        out.push_str(&format!("\nVolumes:\n{volumes_table}\n"));
+    }
+    for host in system.iter().filter(|host| !host.idle_volumes.is_empty()) {
+        out.push_str(&format!(
+            "  {}: near idle, not shown: {}\n",
+            host.host,
+            host.idle_volumes.join(", ")
+        ));
+    }
+    out
+}
+
 // The table of a stream run: one row per transaction, the most
 // time-consuming first, with its share of the stream's time.
 pub fn print_stream_table(stream: &super::summary::StreamSummary) {
@@ -354,6 +470,7 @@ pub fn print_stream_table(stream: &super::summary::StreamSummary) {
 // `summary` and `stats` are aligned by index (same transaction order).
 // `workload_secs` is the steady-state window (elapsed minus ramp-up) that the
 // throughput figures are computed over; it is emitted as `duration_s`.
+#[allow(clippy::too_many_arguments)]
 pub fn results_json(
     summary: &[TransactionSummary],
     stats: &[ResponseTimeStatistics],
@@ -362,6 +479,7 @@ pub fn results_json(
     interrupted: bool,
     steady: Option<&super::summary::SteadyState>,
     stream: Option<&super::summary::StreamSummary>,
+    system: &[HostSummary],
 ) -> String {
     let transactions: Vec<serde_json::Value> = summary
         .iter()
@@ -412,6 +530,8 @@ pub fn results_json(
             "drift_pct": s.drift_pct,
         })),
         "transactions": transactions,
+        // The hosts given to --sysmon, over the measured window.
+        "system": system.iter().map(HostSummary::json).collect::<Vec<_>>(),
     });
 
     format!("{}\n", serde_json::to_string_pretty(&doc).unwrap())
@@ -568,7 +688,7 @@ mod tests {
     #[test]
     fn results_json_includes_unit_and_latency() {
         let (summary, stats) = sample_results();
-        let out = results_json(&summary, &stats, "TPS", 30.2, false, None, None);
+        let out = results_json(&summary, &stats, "TPS", 30.2, false, None, None, &[]);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["throughput_unit"], "TPS");
         assert_eq!(v["duration_s"], 30);
@@ -589,6 +709,7 @@ mod tests {
             true,
             steady.as_ref(),
             None,
+            &[],
         ))
         .unwrap();
         assert_eq!(v["interrupted"], true);
@@ -600,6 +721,101 @@ mod tests {
         assert_eq!(t["errors"], 2);
         assert_eq!(t["throughput"], 3150);
         assert_eq!(t["latency_ms"]["p99"], 1.747);
+    }
+
+    fn system_summary() -> Vec<HostSummary> {
+        use crate::executor::sysmon::window::VolumeSummary;
+        let stat = |avg: f64, max: f64| AvgMax { avg, max };
+        vec![
+            HostSummary {
+                target: "postgres@db1".into(),
+                host: "db1".into(),
+                database: true,
+                samples: 60,
+                cpu_busy_pct: Some(stat(71.66, 85.3)),
+                cpu_user_pct: Some(stat(40.0, 55.0)),
+                cpu_system_pct: Some(stat(16.0, 27.0)),
+                cpu_iowait_pct: Some(stat(10.94, 15.5)),
+                mem_used_kb: Some(stat(9.5 * 1_048_576.0, 9.75 * 1_048_576.0)),
+                mem_total_kb: 16_134_528,
+                io_pressure_pct: Some(stat(21.4, 26.0)),
+                volumes: vec![VolumeSummary {
+                    device: "dm-1".into(),
+                    name: "vg-data".into(),
+                    holds: vec!["data".into(), "WAL".into()],
+                    on: vec!["nvme0n1".into()],
+                    written_mb_s: stat(29.74, 55.5),
+                    requests_s: stat(2067.4, 4100.0),
+                    write_ms: 1.514,
+                    flush_device: Some("nvme0n1".into()),
+                    flush_ms: Some(stat(2.371, 3.63)),
+                    busy_pct: stat(87.44, 96.0),
+                    ..VolumeSummary::default()
+                }],
+                idle_volumes: vec!["vg-swap".into()],
+                ..HostSummary::default()
+            },
+            // A host whose sampler died before the measured window.
+            HostSummary {
+                target: "app1".into(),
+                host: "app1".into(),
+                ..HostSummary::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn system_tables_have_a_row_per_host_and_per_volume() {
+        let out = system_tables(&system_summary());
+        let line = |needle: &str| {
+            out.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{out}"))
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert!(out.starts_with("System:\n"), "{out}");
+        assert_eq!(
+            line("db1 (database)"),
+            "db1 (database) 71.7 85.3 40.0 16.0 10.9 9.5 9.8 21.4"
+        );
+        // No sample in the window: dashes, not zeros.
+        assert_eq!(line("app1"), "app1 - - - - - - - -");
+        assert_eq!(
+            line("vg-data"),
+            "db1 vg-data data + WAL 29.7 0.0 2 067 1.51 2.37 87.4 96.0"
+        );
+        assert!(out.contains("db1: near idle, not shown: vg-swap"), "{out}");
+    }
+
+    #[test]
+    fn results_json_carries_the_system_figures() {
+        let (summary, stats) = sample_results();
+        let out = results_json(
+            &summary,
+            &stats,
+            "TPS",
+            30.0,
+            false,
+            None,
+            None,
+            &system_summary(),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let system = v["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert_eq!(system[0]["host"], "db1");
+        assert_eq!(system[0]["database"], true);
+        assert_eq!(system[0]["cpu"]["busy_pct"]["max"], 85.3);
+        assert_eq!(system[0]["volumes"][0]["holds"][1], "WAL");
+        assert_eq!(system[0]["volumes"][0]["flush_ms"]["avg"], 2.371);
+        assert_eq!(system[0]["idle_volumes"][0], "vg-swap");
+        assert!(system[1]["cpu"]["busy_pct"].is_null());
+        // Without --sysmon the key is there and empty.
+        let out = results_json(&summary, &stats, "TPS", 30.0, false, None, None, &[]);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["system"], serde_json::json!([]));
     }
 
     #[test]
@@ -616,7 +832,16 @@ mod tests {
         )]);
         let stream =
             crate::executor::summary::stream_summary(&txs, &counters, &HashMap::new(), 4000, 0);
-        let out = results_json(&summary, &stats, "TPS", 4.0, false, None, Some(&stream));
+        let out = results_json(
+            &summary,
+            &stats,
+            "TPS",
+            4.0,
+            false,
+            None,
+            Some(&stream),
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["report"], "stream");
         assert_eq!(v["stream"]["executed"], 2);

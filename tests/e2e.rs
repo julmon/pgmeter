@@ -964,3 +964,199 @@ end
     let other_seed = load("init --seed 8 -j 3", &["--seed", "8", "-j", "3"]);
     assert_ne!(one_job, other_seed, "another seed must load other rows");
 }
+
+/// A schema of its own for a test that loads a bundled sample, so that it
+/// does not share tables with the other tests loading the same one: every
+/// connection of the returned environment has it as its search path.
+#[cfg(target_os = "linux")]
+fn in_private_schema(
+    mut env: Vec<(&'static str, String)>,
+    schema: &str,
+) -> Vec<(&'static str, String)> {
+    let dsn = std::env::var("PGMETER_TEST_DSN").unwrap();
+    let mut client = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+        ))
+        .unwrap();
+    env.push(("PGOPTIONS", format!("-c search_path={schema}")));
+    env
+}
+
+/// `--sysmon local`: the sampler runs beside the workload and its figures
+/// land in the result directory, on the clock of `transaction.log`.
+#[cfg(target_os = "linux")]
+#[test]
+fn system_metrics_of_the_local_host_land_in_the_result_directory() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let env = in_private_schema(env, "e2e_sysmon");
+    let tmp = workdir("sysmon");
+    let cwd = tmp.path().to_path_buf();
+    let spec = sample("custom-simple");
+
+    let init = pgmeter(&env, &cwd, &["init", "--spec", spec.to_str().unwrap()]);
+    assert_success(&init, "init custom-simple");
+
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "run",
+            "--spec",
+            spec.to_str().unwrap(),
+            "-c",
+            "2",
+            "-T",
+            "3",
+            "-r",
+            "1",
+            "--sysmon",
+            "local",
+        ],
+    );
+    assert_success(&run, "run --sysmon local");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("sysmon:   local every 1 s"), "{stderr}");
+    assert!(!stderr.contains("warning:"), "{stderr}");
+
+    let dir = result_dir(&cwd);
+    let run_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    let system = run_json["system"].as_array().unwrap();
+    assert_eq!(system.len(), 1, "{run_json}");
+    let host = &system[0];
+    assert_eq!(host["target"], "local");
+    assert_eq!(host["truncated"], false);
+    assert_eq!(host["interval_s"], 1.0);
+    assert!(host["cpus"].as_u64().unwrap() >= 1, "{host}");
+    assert!(host["mem_total_kb"].as_u64().unwrap() > 0, "{host}");
+    assert!(!host["kernel"].as_str().unwrap().is_empty(), "{host}");
+    // The only host monitored is the database server, by address or, failing
+    // that, as the first target.
+    assert_eq!(host["database"], true, "{host}");
+    let devices = host["devices"].as_array().unwrap();
+    assert!(
+        devices.iter().all(|d| d["holds"].is_array()),
+        "every device says what PostgreSQL keeps on it, if anything: {host}"
+    );
+    let samples = host["samples"].as_u64().unwrap() as usize;
+    // 4 s of run at one sample a second.
+    assert!((2..=8).contains(&samples), "{host}");
+    assert_eq!(
+        host["files"],
+        serde_json::json!([
+            "pgmeter-system-local-cpu.csv",
+            "pgmeter-system-local-memory.csv",
+            "pgmeter-system-local-disk.csv"
+        ])
+    );
+
+    let cpu = fs::read_to_string(dir.join("pgmeter-system-local-cpu.csv")).unwrap();
+    let mut lines = cpu.lines();
+    let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+    assert_eq!(&header[..3], ["timestamp", "user_pct", "nice_pct"]);
+    let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
+    assert_eq!(rows.len(), samples);
+    let rampup_end = run_json["rampup_end_ts"].as_i64().unwrap() as f64;
+    let mut after_rampup = 0;
+    for row in &rows {
+        assert_eq!(row.len(), header.len(), "{row:?}");
+        // The ten shares of CPU time add up to 100.
+        let shares: f64 = row[1..11].iter().map(|v| v.parse::<f64>().unwrap()).sum();
+        assert!((shares - 100.0).abs() < 0.1, "{row:?}");
+        if row[0].parse::<f64>().unwrap() >= rampup_end {
+            after_rampup += 1;
+        }
+    }
+    assert!(after_rampup >= 1, "no sample in the measured window: {cpu}");
+
+    let memory = fs::read_to_string(dir.join("pgmeter-system-local-memory.csv")).unwrap();
+    assert_eq!(memory.lines().count(), samples + 1);
+    let header: Vec<&str> = memory.lines().next().unwrap().split(',').collect();
+    let first: Vec<&str> = memory.lines().nth(1).unwrap().split(',').collect();
+    let total = header.iter().position(|c| *c == "MemTotal").unwrap();
+    assert_eq!(
+        first[total].parse::<u64>().unwrap(),
+        host["mem_total_kb"].as_u64().unwrap()
+    );
+    assert!(dir.join("pgmeter-system-local-disk.csv").exists());
+
+    // The same run without the option samples nothing.
+    let tmp = workdir("sysmon-off");
+    let cwd = tmp.path().to_path_buf();
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &["run", "--spec", spec.to_str().unwrap(), "-T", "1"],
+    );
+    assert_success(&run, "run without --sysmon");
+    let dir = result_dir(&cwd);
+    let run_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+    assert_eq!(run_json["system"], serde_json::json!([]));
+    assert!(!file_names(&dir)
+        .iter()
+        .any(|name| name.starts_with("pgmeter-system-")));
+}
+
+/// A host that cannot be monitored fails the run before any client starts,
+/// with what `ssh` said, and leaves no result directory.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_host_that_cannot_be_monitored_fails_the_run_before_it_starts() {
+    let Some(env) = connection_env() else {
+        eprintln!("PGMETER_TEST_DSN not set, skipping");
+        return;
+    };
+    let mut env = in_private_schema(env, "e2e_sysmon_refused");
+    let tmp = workdir("sysmon-refused");
+    let cwd = tmp.path().to_path_buf();
+    let spec = sample("custom-simple");
+
+    let init = pgmeter(&env, &cwd, &["init", "--spec", spec.to_str().unwrap()]);
+    assert_success(&init, "init custom-simple");
+
+    // Stands in for an `ssh` whose key the server refuses.
+    let shim = cwd.join("ssh-shim.sh");
+    fs::write(
+        &shim,
+        "echo 'postgres@db1: Permission denied (publickey).' >&2\nexit 255\n",
+    )
+    .unwrap();
+    env.push(("PGMETER_SSH", format!("sh {}", shim.display())));
+
+    let run = pgmeter(
+        &env,
+        &cwd,
+        &[
+            "run",
+            "--spec",
+            spec.to_str().unwrap(),
+            "-T",
+            "1",
+            "--sysmon",
+            "local",
+            "--sysmon",
+            "postgres@db1",
+        ],
+    );
+    assert_eq!(run.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains(
+            "system metrics of postgres@db1: the sampler ended before its first sample: \
+postgres@db1: Permission denied (publickey)."
+        ),
+        "{stderr}"
+    );
+    assert!(run.stdout.is_empty());
+    let left: Vec<String> = file_names(&cwd)
+        .into_iter()
+        .filter(|name| name.starts_with("pgmeter-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

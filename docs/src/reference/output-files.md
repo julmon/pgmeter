@@ -24,6 +24,21 @@ The run parameters and timing, one JSON object:
 | `throughput_unit` | The spec's unit, such as `TPM`, `TPS` or `queries/hr` |
 | `throughput_factor` | Seconds per unit of throughput: 60 for TPM, 1 for TPS, 3600 per hour |
 | `interrupted` | `true` when the run was ended with Ctrl-C |
+| `system` | One object per `--sysmon` host, described below; `[]` without the option |
+
+Each entry of `system`:
+
+| Key | Meaning |
+|---|---|
+| `target` | The `--sysmon` value, without its `db:` prefix |
+| `host`, `kernel` | What the host reports as its name and kernel release |
+| `cpus`, `mem_total_kb` | Its number of CPUs and its memory |
+| `interval_s` | `--sysmon-interval` |
+| `samples` | Samples received over the whole run |
+| `truncated` | `true` when the sampler ended before the run did |
+| `database` | `true` on the host PostgreSQL runs on: the one marked `db:`, else the one the server's address belongs to, else the first |
+| `files` | The host's three CSV files, described below |
+| `devices` | Its block devices: `name`, `mapper_name` (of a device-mapper volume, else `null`), `on` (the devices directly under it), `top` (no device sits on it) and `holds` (what PostgreSQL keeps on it: `data`, `WAL`, `tablespace <name>`; empty when unknown) |
 
 ## `transaction.log`
 
@@ -110,6 +125,54 @@ max,46.398
 
 `count` is the number of committed transactions in the window; the other
 rows are in milliseconds.
+
+## `pgmeter-system-<host>-cpu.csv`
+
+Written with `--sysmon`, like the two files below. `<host>` is `local`, or
+the name the remote host reports, with `-2` added to the second of two
+hosts of the same name. One row per sample, ramp-up included; `timestamp`
+is Unix seconds with milliseconds, on the clock of the machine pgmeter runs
+on, so its integer part compares with `transaction.log`. A figure the host
+does not report is an empty cell, never a zero.
+
+| Column | Meaning |
+|---|---|
+| `user_pct` ... `idle_pct` | Share of CPU time in each state over the interval, all CPUs together: `user`, `nice`, `system`, `iowait`, `irq`, `softirq`, `steal`, `guest`, `guest_nice`, `idle`. They sum to 100; guest time is not counted again in `user` |
+| `ctxt_s`, `forks_s` | Context switches and processes created per second |
+| `procs_running`, `procs_blocked` | Tasks runnable and tasks blocked on I/O when the sample was taken |
+| `load1`, `load5`, `load15` | Load averages |
+| `psi_cpu_some_pct`, `psi_cpu_full_pct`, `psi_memory_*`, `psi_io_*` | Pressure stall information: share of the interval some task, or every task, waited for the resource. Linux 4.20 or later, when enabled |
+
+## `pgmeter-system-<host>-memory.csv`
+
+One row per sample. After `timestamp` come the fields of `/proc/meminfo`
+under their kernel names, in kB except the huge page counts: `MemTotal`,
+`MemFree`, `MemAvailable`, `Buffers`, `Cached`, `Shmem`, `AnonPages`,
+`Mapped`, `Dirty`, `Writeback`, `Slab`, `SReclaimable`, `SUnreclaim`,
+`PageTables`, `KernelStack`, `SwapTotal`, `SwapFree`, `SwapCached`,
+`CommitLimit`, `Committed_AS`, `HugePages_Total`, `HugePages_Free`,
+`HugePages_Rsvd`, `Hugepagesize`. Then the rates per second of these
+`/proc/vmstat` counters: `pgpgin_s` and `pgpgout_s` (kB paged in and out),
+`pswpin_s` and `pswpout_s` (pages swapped in and out), `pgfault_s`,
+`pgmajfault_s` and `oom_kill_s`.
+
+## `pgmeter-system-<host>-disk.csv`
+
+One row per sample and device, with the figures of `iostat -x`. Every whole
+device that has done I/O since boot has its rows, every layer of a stack
+included; partitions, loop and RAM devices have none.
+
+| Column | Meaning |
+|---|---|
+| `device` | The kernel name, as in `/proc/diskstats`; `run.json` maps it to a mapper name and a stack |
+| `r_s`, `w_s` | Reads and writes completed per second |
+| `rkb_s`, `wkb_s` | kB read and written per second |
+| `r_await_ms`, `w_await_ms` | Average time of a read and of a write, queue included; 0 without any |
+| `rareq_kb`, `wareq_kb` | Average size of a read and of a write |
+| `aqu_sz` | Average number of requests waiting or in progress |
+| `util_pct` | Share of the interval with at least one request in progress |
+| `d_s`, `dkb_s` | Discards per second and kB discarded per second (Linux 4.18) |
+| `f_s`, `f_await_ms` | Flushes per second and their average time (Linux 5.5); counted on physical disks only |
 
 ## `report.html`
 
