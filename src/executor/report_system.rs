@@ -450,7 +450,7 @@ function sysChart(id, title, yTitle, datasets, o = {}) {
   const decimals = o.decimals == null ? 1 : o.decimals;
   const sets = datasets.map((ds, i) => o.stacked
     ? {label: ds.label, data: ds.data, backgroundColor: ds.color, borderColor: panel, borderWidth: 1.5,
-       fill: i === 0 ? 'origin' : '-1', cubicInterpolationMode: 'monotone'}
+       fill: i === 0 ? 'origin' : '-1'}
     : {label: ds.label, data: ds.data, borderColor: ds.color, backgroundColor: ds.color,
        borderWidth: ds.width || 1.5, borderDash: ds.dash, fill: false});
   const opts = lineOpts(yTitle);
