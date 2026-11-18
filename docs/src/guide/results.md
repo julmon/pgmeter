@@ -163,7 +163,7 @@ machine it ran on.
 ![The top of a stream report](../images/report-stream.png)
 
 [View a sample stream report](../sample-stream-report.html): PGM-DS at scale
-factor 1, two streams with `--once`.
+factor 1, two streams with `--once` and `--sysmon local`.
 
 With `--sysmon`, both layouts end with a System section: the CPU, memory
 and disk figures of each monitored host on the same time axis as the

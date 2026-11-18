@@ -1386,7 +1386,7 @@ const lineOpts = (yTitle) => ({
     x: {title: {display: true, text: 'Elapsed (s)'}, grid: {display: false}},
     y: {title: {display: true, text: yTitle}, beginAtZero: true}
   },
-  elements: {point: {radius: 0}, line: {borderWidth: 1.5, tension: 0.2}}
+  elements: {point: {radius: 0}, line: {borderWidth: 1.5, tension: 0}}
 });
 
 // Shades the ramp-up window on time-series charts. Samples in that window are
